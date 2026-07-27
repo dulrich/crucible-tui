@@ -152,6 +152,24 @@ bullets, so it stayed green while 250 of 256 real files overflowed.
 
 **The corpora are the user's real data. Open them read-only; never write to them.**
 
+#### The default vault run is a 0.7% sample
+
+`vault` is stride-sampled to **300 of ~42,957 files** unless you pass `--all`. The gate
+runs the sample; that is a deliberate speed trade, but it means **a green gate is not a
+green corpus**. Measured directly: the sample was clean while the full corpus was not.
+
+Last full verification — **`--all`, both tiers, byte-identical results**:
+
+| Corpus | Files | Combos | Overflow | Errors | Elapsed |
+|---|---|---|---|---|---|
+| repo | 281 | 843 | 0 | 0 | ~6s |
+| reports | 24 | 72 | 0 | 0 | ~1s |
+| vault (`--all`) | 42,957 | 128,871 | **4** (3 files) | 0 | 425s |
+
+*As of 2026-07-27. The vault is live and grows daily — re-run `--all` before trusting
+this row, and update it with the date and commit when you do.* The 4 remaining overflows
+are the many-column table limit documented under "Rendering policy" below.
+
 #### ⚠ The sweep proves width, and only width
 
 `--check` and both sweeps **exempt fenced-code ranges from checking**. That exemption is
@@ -227,6 +245,14 @@ bun run mdview/src/cli.ts some/plan.md
   try/catch around `highlightCli` never fires either, because highlight.js *logs* rather
   than throws. Exercising this behavior requires `FORCE_COLOR=3` and capturing
   `console.error`.
+- **The viewer never narrates parser internals to stderr.** `yaml` reports recoverable
+  oddities through `process.emitWarning`, which no `try`/`catch` can intercept, so Node's
+  default handler prints a ~15-line stack trace. Obsidian templates trigger it
+  (`created: {{today}}` parses as a flow mapping used as a key). `formatMetaBlock` passes
+  `logLevel: "error"` — **not `"silent"`**, which also suppresses errors and would let
+  `title: [unterminated` come back silently guessed as `["unterminated"]` instead of
+  throwing and being shown raw. Verified value-neutral over 43,047 frontmatter blocks
+  across all three corpora: identical parse result or identical throw, every one.
 - **Obsidian embeds** (`![[target]]`) render as `embed: target`. Previously the `!`
   leaked through as literal text next to the link (1,350 occurrences in the vault).
 - **Frontmatter is followed by a rule** at the tier's rule character, matching the
@@ -239,6 +265,23 @@ bun run mdview/src/cli.ts some/plan.md
   prose and its box drawing is mangled. The table renderer sizes to the full target
   width with no knowledge of the enclosing list indent. There are zero instances in the
   corpus (verified), so this is unfixed by choice rather than oversight.
+- **Known limitation — many-column tables exceed the target width.** Each column has a
+  minimum content width; below that a cell is unreadable. Once a table has enough
+  columns, that floor times the column count already exceeds the target and the allocator
+  has nowhere left to shrink:
+
+  | Columns | Target | Rendered | Arithmetic |
+  |---|---|---|---|
+  | 9 | 80 | 82 | 9 × (6 + 2 padding) + 10 borders |
+  | 19 | 100 | 153 | 19 × (6 + 2 padding) + 20 borders |
+
+  **This is arithmetic, not a bug to be fixed in the allocator** — a 19-column table
+  cannot be rendered in 100 columns. Any "fix" is a choice of *degradation* (drop cell
+  padding, transpose to a record-per-row layout, or overflow deliberately), and each
+  trades away something the tool currently guarantees. Incidence is 4 combos across 3
+  files in 128,871 full-corpus combos (0.003%), all in imported ML-paper notes, so
+  the choice has been deferred rather than made. If you do fix it, note that dropping
+  padding only buys 2 columns each and does not rescue the 19-column case.
 - `.gitignore` is assembled from the chunk files in
   `skills/project-setup/references/gitignore/`; repo-local entries go under the
   `# --- project-specific ---` marker. `bun.lock` is **ignored**, matching every other

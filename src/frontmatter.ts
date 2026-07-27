@@ -196,7 +196,22 @@ export function formatMetaBlock(meta: string, targetWidth: number): string {
     // parser rewrite scalars. Date-like strings are trimmed in `formatScalar` instead —
     // which is all the requirement ever needed, since `created: 2026-07-06` already
     // arrives as the string "2026-07-06" under this schema.
-    data = parse(meta);
+    //
+    // `logLevel: "error"` because `yaml` reports recoverable oddities through
+    // `process.emitWarning` (dist/log.js:9-15), not a return value — so Node's default
+    // handler prints a ~15-line stack trace to stderr and no try/catch here can stop it.
+    // Obsidian templates trigger this: `created: {{today}}` parses as a flow mapping used
+    // as a key, giving "Keys with collection values will be stringified". Those files are
+    // placeholders that will never be valid YAML, and a *viewer* has no business narrating
+    // parser internals to the terminal. Full-vault sweep: 12 warnings across 4 template
+    // files before this, 0 after.
+    //
+    // NOT `"silent"` — that also suppresses *errors*, so `title: [unterminated` would come
+    // back as a silently-guessed `["unterminated"]` instead of throwing to the catch below
+    // and being shown raw. That would violate this module's whole contract (show what the
+    // file says, never invent). `"error"` disables `warn()` while leaving throws intact;
+    // the "degrades gracefully" test below pins the distinction.
+    data = parse(meta, { logLevel: "error" });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return [dim(`! could not parse frontmatter: ${reason}`), dim(meta.trimEnd())].join("\n");
