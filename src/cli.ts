@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import stringWidth from "string-width";
-import { renderDocument } from "./render";
+import { renderDocumentDetailed } from "./render";
 
 const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--help]
 
@@ -106,12 +106,27 @@ async function runPager(output: string): Promise<void> {
   });
 }
 
-function checkOverflow(output: string, targetWidth: number): { line: number; width: number } | null {
+/**
+ * `codeRanges` are the 1-based, inclusive line ranges `render.ts` recorded for fenced
+ * code blocks — exempt by the user's explicit "never rewrite code" decision (see
+ * `src/render.ts`'s `wrapCode`). Everything else must fit `targetWidth`.
+ */
+function isExemptLine(lineNumber: number, codeRanges: Array<[number, number]>): boolean {
+  return codeRanges.some(([start, end]) => lineNumber >= start && lineNumber <= end);
+}
+
+function checkOverflow(
+  output: string,
+  targetWidth: number,
+  codeRanges: Array<[number, number]>,
+): { line: number; width: number } | null {
   const lines = output.split("\n");
   for (let index = 0; index < lines.length; index += 1) {
+    const lineNumber = index + 1;
+    if (isExemptLine(lineNumber, codeRanges)) continue;
     const width = stringWidth(lines[index] ?? "");
     if (width > targetWidth) {
-      return { line: index + 1, width };
+      return { line: lineNumber, width };
     }
   }
   return null;
@@ -134,10 +149,10 @@ export async function main(args = Bun.argv.slice(2)): Promise<void> {
   }
 
   const targetWidth = resolveWidth(options.width, process.stdout.columns);
-  const output = renderDocument(source, targetWidth);
+  const { text: output, codeRanges } = renderDocumentDetailed(source, targetWidth);
 
   if (options.check) {
-    const overflow = checkOverflow(output, targetWidth);
+    const overflow = checkOverflow(output, targetWidth, codeRanges);
     if (overflow) {
       throw new Error(
         `line ${overflow.line} exceeds target width ${targetWidth} (measured ${overflow.width})`,
