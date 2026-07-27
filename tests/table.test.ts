@@ -13,6 +13,7 @@ import {
   tableGrid,
   wrapText,
 } from "../src/table";
+import { UNICODE_GLYPHS } from "../src/glyphs";
 
 // --- helpers ---------------------------------------------------------------
 
@@ -92,7 +93,7 @@ describe("width reconciliation with cli-table3's own measurement", () => {
       `| Risk | Note | Owner |\n| --- | --- | --- |\n| ${WARNING_SIGN} | escalate before Friday | alex |\n`,
     );
     for (const target of [40, 60, 80, 100]) {
-      expect(maxWidth(renderTable(token, target))).toBeLessThanOrEqual(target);
+      expect(maxWidth(renderTable(token, target, UNICODE_GLYPHS))).toBeLessThanOrEqual(target);
     }
   });
 
@@ -100,18 +101,18 @@ describe("width reconciliation with cli-table3's own measurement", () => {
     const token = lexTable(
       `| Risk | Note |\n| --- | --- |\n| ${WARNING_SIGN} | escalate |\n`,
     );
-    const output = renderTable(token, 60);
+    const output = renderTable(token, 60, UNICODE_GLYPHS);
     expect(stripAnsi(output)).toContain(WARNING_SIGN);
     expect(output).not.toContain("…");
   });
 
   test("a table with no such glyph is not shrunk by the reconciliation pass", () => {
     const token = lexTable("| A | B |\n| --- | --- |\n| one | two |\n");
-    const before = renderTable(token, 80);
+    const before = renderTable(token, 80, UNICODE_GLYPHS);
     expect(maxWidth(before)).toBeLessThanOrEqual(80);
     // Plain ASCII content: cli-table3 and string-width@7 agree, so the first build is
     // already correct and the output must be byte-identical across repeated renders.
-    expect(renderTable(token, 80)).toBe(before);
+    expect(renderTable(token, 80, UNICODE_GLYPHS)).toBe(before);
   });
 });
 
@@ -259,7 +260,7 @@ describe("renderTable width invariant", () => {
   });
 
   test.each([80, 100, 160])("no line exceeds a %i-column target", (target) => {
-    const output = renderTable(WIDE_TABLE, target);
+    const output = renderTable(WIDE_TABLE, target, UNICODE_GLYPHS);
     for (const line of lines(output)) {
       expect(stringWidth(line)).toBeLessThanOrEqual(target);
     }
@@ -269,11 +270,11 @@ describe("renderTable width invariant", () => {
 
 describe("renderTable losslessness", () => {
   test.each([80, 100, 160])("emits no ellipsis at width %i", (target) => {
-    expect(renderTable(WIDE_TABLE, target)).not.toContain("…");
+    expect(renderTable(WIDE_TABLE, target, UNICODE_GLYPHS)).not.toContain("…");
   });
 
   test.each([80, 100, 160])("keeps every long token in full at width %i", (target) => {
-    const output = renderTable(WIDE_TABLE, target);
+    const output = renderTable(WIDE_TABLE, target, UNICODE_GLYPHS);
     expect(squeeze(columnText(output, 0))).toContain(squeeze(GATE_COMMAND));
     expect(squeeze(columnText(output, 1))).toContain(
       squeeze("skills/project-setup/references/gitignore/"),
@@ -298,7 +299,7 @@ describe("renderTable column collapse", () => {
     expect(allocation.widths[1]).toBeGreaterThanOrEqual(MIN_COLUMN_WIDTH);
     expect(allocation.fits).toBe(true);
 
-    const output = renderTable(table, 80);
+    const output = renderTable(table, 80, UNICODE_GLYPHS);
     expect(output).toContain("WP");
     expect(output).toContain("Detail");
     expect(columnText(output, 0)).toContain(narrow);
@@ -307,7 +308,7 @@ describe("renderTable column collapse", () => {
 
   test("a long unbreakable token beside a narrow column does not starve it", () => {
     const table = buildTable(["WP", "Path"], [[narrow, `${LONG_PATH}${LONG_PATH}${LONG_PATH}`]]);
-    const output = renderTable(table, 40);
+    const output = renderTable(table, 40, UNICODE_GLYPHS);
     expect(columnText(output, 0)).toContain(narrow);
     expect(output).not.toContain("…");
     expect(maxWidth(output)).toBe(40);
@@ -332,7 +333,7 @@ describe("renderTable alignment", () => {
   });
 
   test("renders the body row left, centered and right", () => {
-    const output = renderTable(table, 80);
+    const output = renderTable(table, 80, UNICODE_GLYPHS);
     const bodyLine = lines(output).filter((line) => line.startsWith("│")).at(-1) ?? "";
 
     const left = pads(bodyLine, 0);
@@ -351,7 +352,7 @@ describe("renderTable CJK and emoji", () => {
   test.each([80, 100, 160])(
     "column rules land on identical display columns at width %i",
     (target) => {
-      const output = renderTable(WIDE_TABLE, target);
+      const output = renderTable(WIDE_TABLE, target, UNICODE_GLYPHS);
       const rendered = lines(output).filter((line) => line.trim() !== "");
       const expected = ruleColumns(rendered[0] ?? "");
       expect(expected.length).toBe(7);
@@ -369,7 +370,7 @@ describe("renderTable CJK and emoji", () => {
         ["ascii", "plain"],
       ],
     );
-    const output = renderTable(table, 40);
+    const output = renderTable(table, 40, UNICODE_GLYPHS);
     const widths = new Set(lines(output).filter((l) => l !== "").map((l) => stringWidth(l)));
     expect(widths.size).toBe(1);
     expect([...widths][0]).toBeLessThanOrEqual(40);
@@ -394,7 +395,7 @@ describe("chrome invariant", () => {
       const natural = naturalWidths(grid.header, grid.rows);
       const naturalTotal = natural.reduce((a, b) => a + b, 0) + chromeWidth(columnCount);
       const allocation = allocateWidths(natural, target);
-      const output = renderTable(table, target);
+      const output = renderTable(table, target, UNICODE_GLYPHS);
 
       // The rendered geometry is exactly what the allocator predicted: this is the
       // assertion that keeps the prototype's +2-per-table overshoot from returning.
@@ -421,7 +422,7 @@ describe("chrome invariant", () => {
     (columnCount, target) => {
       const headers = Array.from({ length: columnCount }, (_, i) => `H${i}`);
       const rows = [Array.from({ length: columnCount }, (_, i) => `v${i}`)];
-      const output = renderTable(buildTable(headers, rows), target);
+      const output = renderTable(buildTable(headers, rows), target, UNICODE_GLYPHS);
       expect(maxWidth(output)).toBeLessThanOrEqual(target);
       expect(maxWidth(output)).not.toBe(target + 2);
     },
@@ -433,7 +434,7 @@ describe("chrome invariant", () => {
 describe("renderTable already-fits case", () => {
   test("a narrow table is neither shrunk nor reflowed", () => {
     const table = buildTable(["WP", "Owner"], [["WP-3", "analyst"]]);
-    const output = renderTable(table, 120);
+    const output = renderTable(table, 120, UNICODE_GLYPHS);
 
     expect(columnText(output, 0)).toBe("WPWP-3");
     expect(columnText(output, 1)).toBe("Owneranalyst");
@@ -451,7 +452,7 @@ describe("renderTable with nine or more columns", () => {
   const table = buildTable(headers, rows);
 
   test("renders at the minimum feasible width instead of throwing at width 80", () => {
-    const output = renderTable(table, 80);
+    const output = renderTable(table, 80, UNICODE_GLYPHS);
     // 9 columns cannot fit 80: 9*6 + 28 = 82. Documented, sanctioned overflow.
     expect(maxWidth(output)).toBe(82);
     expect(output).not.toContain("…");
@@ -461,14 +462,14 @@ describe("renderTable with nine or more columns", () => {
 
   test("fits normally once the target is wide enough", () => {
     for (const target of [100, 160]) {
-      const output = renderTable(table, target);
+      const output = renderTable(table, target, UNICODE_GLYPHS);
       expect(maxWidth(output)).toBe(target);
       expect(output).not.toContain("…");
     }
   });
 
   test("still keeps every column and loses nothing at width 80", () => {
-    const output = renderTable(table, 80);
+    const output = renderTable(table, 80, UNICODE_GLYPHS);
     for (let index = 0; index < 9; index += 1) {
       expect(squeeze(columnText(output, index))).toContain(squeeze(`value-${index}-longish`));
       expect(squeeze(columnText(output, index))).toContain(`Head${index}`);

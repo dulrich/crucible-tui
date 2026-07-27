@@ -13,7 +13,7 @@ if (!existsSync(TABLE_MODULE_PATH)) {
   // end to end; the allocator's own correctness is WP-3's test file's job, not this
   // one's.
   mock.module("../src/table", () => ({
-    renderTable: (token: Tokens.Table, targetWidth: number): string => {
+    renderTable: (token: Tokens.Table, targetWidth: number, _glyphs?: unknown): string => {
       const cellText = (cell: Tokens.TableCell): string => cell.text;
       const rows = [token.header, ...token.rows];
       const width = Math.max(0, targetWidth);

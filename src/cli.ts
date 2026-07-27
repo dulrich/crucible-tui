@@ -2,15 +2,23 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import stringWidth from "string-width";
 import { renderDocumentDetailed } from "./render";
+import { resolveGlyphs, type GlyphTier } from "./glyphs";
 
-const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--help]
+const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--help]
 
-  <file.md>     markdown file to render (required)
-  --width N     target render width (default: terminal columns, else 100)
-  --no-pager    write plain output to stdout instead of piping to a pager
-  --check       render with no pager; exit non-zero if any line exceeds the
-                target width (this tool's self-smoke gate)
-  --help, -h    print this message and exit
+  <file.md>       markdown file to render (required)
+  --width N       target render width (default: terminal columns, else 100)
+  --no-pager      write plain output to stdout instead of piping to a pager
+  --check         render with no pager; exit non-zero if any line exceeds the
+                  target width (this tool's self-smoke gate)
+  --ascii         force the ASCII glyph tier (bullets, rules, table borders,
+                  task states) regardless of detected terminal capability
+  --unicode       force the Unicode glyph tier; mutually exclusive with --ascii
+  --help, -h      print this message and exit
+
+Glyph tier resolution (highest precedence first): --ascii/--unicode, then
+MDVIEW_GLYPHS=ascii|unicode in the environment, then auto-detection from the
+locale and TERM.
 `;
 
 export interface CliOptions {
@@ -19,6 +27,7 @@ export interface CliOptions {
   noPager: boolean;
   check: boolean;
   help: boolean;
+  glyphTier?: GlyphTier;
 }
 
 /**
@@ -38,6 +47,7 @@ export function parseArgs(args: string[]): CliOptions {
   let noPager = false;
   let check = false;
   let help = false;
+  let glyphTier: GlyphTier | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -51,6 +61,14 @@ export function parseArgs(args: string[]): CliOptions {
     }
     if (arg === "--check") {
       check = true;
+      continue;
+    }
+    if (arg === "--ascii" || arg === "--unicode") {
+      const requested: GlyphTier = arg === "--ascii" ? "ascii" : "unicode";
+      if (glyphTier !== undefined && glyphTier !== requested) {
+        throw new Error("--ascii and --unicode are mutually exclusive");
+      }
+      glyphTier = requested;
       continue;
     }
     if (arg === "--width") {
@@ -77,7 +95,7 @@ export function parseArgs(args: string[]): CliOptions {
     throw new Error("missing required argument: <file.md>");
   }
 
-  return { file: file ?? "", width, noPager, check, help };
+  return { file: file ?? "", width, noPager, check, help, glyphTier };
 }
 
 async function runPager(output: string): Promise<void> {
@@ -149,7 +167,8 @@ export async function main(args = Bun.argv.slice(2)): Promise<void> {
   }
 
   const targetWidth = resolveWidth(options.width, process.stdout.columns);
-  const { text: output, codeRanges } = renderDocumentDetailed(source, targetWidth);
+  const glyphs = resolveGlyphs(process.env, options.glyphTier);
+  const { text: output, codeRanges } = renderDocumentDetailed(source, targetWidth, glyphs);
 
   if (options.check) {
     const overflow = checkOverflow(output, targetWidth, codeRanges);
