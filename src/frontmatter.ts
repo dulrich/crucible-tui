@@ -78,7 +78,13 @@ function trimIsoDate(value: string): string {
 function formatScalar(value: unknown): string {
   if (value instanceof Date) return formatDate(value);
   if (value === null || value === undefined) return "—";
-  if (typeof value === "string") return trimIsoDate(value);
+  // An empty (or whitespace-only) string gets the same em-dash as `[]` and null. The
+  // corpus writes `tags: ""` on files with no tags, and rendering that as blank makes
+  // the metadata block look broken rather than empty — the exact failure the em-dash
+  // rule exists to prevent.
+  if (typeof value === "string") {
+    return value.trim() === "" ? "—" : trimIsoDate(value);
+  }
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value) ?? String(value);
 }
