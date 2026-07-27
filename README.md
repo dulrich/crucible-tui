@@ -7,13 +7,15 @@ wide tables to the terminal width instead of overflowing or truncating them.
 ## Usage
 
 ```bash
-bun run mdview/src/cli.ts <file.md> [--width N] [--no-pager] [--check] [--help]
+bun run mdview/src/cli.ts <file.md> [--width N] [--no-pager] [--check]
+                                    [--ascii | --unicode] [--help]
 ```
 
 - `--width N` — target render width (default: terminal columns, else 100).
 - `--no-pager` — write plain output to stdout instead of piping to `less -R`.
 - `--check` — render with no pager; exit non-zero if any line exceeds the target
   width. This is the tool's self-smoke gate.
+- `--ascii` / `--unicode` — force the glyph tier (below). Mutually exclusive.
 - `--help` / `-h` — print usage and exit.
 
 When stdout is a TTY and `--no-pager` is absent, output is piped to `less -R`. When
@@ -47,8 +49,28 @@ Editing source without rebuilding leaves `mdview` running the old code.
 - **Prose and lists** wrap to the target width, ANSI-safely — escape sequences are
   never cut, and CJK/emoji are measured by display width.
 - **Fenced code is never rewritten**, so commands stay pasteable; `--check` exempts it.
-- Wiki-links (`[[slug|alias]]`) and Obsidian task states render as styled text/glyphs.
+  Unknown fence languages fall back to `plaintext` instead of writing highlight.js
+  warnings to stderr; `dataviewjs` highlights as JavaScript and `dataview` as SQL.
+- Wiki-links (`[[slug|alias]]`), embeds (`![[target]]`), and Obsidian task states render
+  as styled text and glyphs.
+- **A rule follows the frontmatter block**, drawn exactly like the document's own `---`.
 
-Out of scope by design: images, Obsidian embeds, callouts, raw HTML.
+## Glyph tier
+
+Bullets, rules, table borders, and task glyphs move together as one capability tier:
+
+| | Unicode | ASCII |
+|---|---|---|
+| Bullets (cycling by depth) | `•` `◦` `‣` | `-` |
+| Rules and the frontmatter divider | `─` | `-` |
+| Table borders | box-drawing | `+` `-` `\|` |
+| Task states | `○` / `✓` | `[ ]` / `[x]` |
+
+Detection prefers Unicode when the locale is UTF-8 and `TERM` isn't a known-dumb
+terminal. Override it with `--ascii` / `--unicode`, or set `MDVIEW_GLYPHS=ascii|unicode`
+(flags win). Every Unicode substitute is one column wide, so the tier never changes
+layout.
+
+Out of scope by design: images, callouts, block LaTeX, raw HTML.
 
 See `mdview/AGENTS.md` for stack, layout, gates, and the corpus sweep.
