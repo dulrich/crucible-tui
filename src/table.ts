@@ -1,6 +1,7 @@
 import Table from "cli-table3";
 import type { Token, Tokens } from "marked";
 import stringWidth from "string-width";
+import type { GlyphSet } from "./glyphs";
 
 /**
  * The wide-table allocator — the reason `mdview` exists.
@@ -407,6 +408,7 @@ function buildTable(
   grid: TableGrid,
   natural: number[],
   budget: number,
+  glyphs: GlyphSet,
 ): { text: string; fits: boolean } {
   const { widths, fits } = allocateWidths(natural, budget);
   const layout = (row: string[]): string[] =>
@@ -426,6 +428,11 @@ function buildTable(
     },
     // Cells are pre-wrapped above; cli-table3's own wrapping truncates with "…".
     wordWrap: false,
+    // `undefined` (the Unicode tier) keeps cli-table3's own default box-drawing
+    // charset — today's behaviour, byte-identical. The ASCII tier supplies a `+-|`
+    // override; every substitute is 1 display column, identical to the Unicode
+    // character it replaces, so `chromeWidth()`/`allocateWidths()` need no changes.
+    ...(glyphs.tableChars !== undefined ? { chars: glyphs.tableChars } : {}),
   });
 
   for (const row of grid.rows) table.push(layout(row));
@@ -458,14 +465,14 @@ const MAX_FIT_PASSES = 3;
  * we measure the *finished* table the same way `--check` will and re-allocate against a
  * budget reduced by the observed overage. Found by the vault corpus sweep, 2026-07-27.
  */
-export function renderTable(token: Tokens.Table, targetWidth: number): string {
+export function renderTable(token: Tokens.Table, targetWidth: number, glyphs: GlyphSet): string {
   const grid = tableGrid(token);
   if (grid.columnCount === 0) return "";
 
   const natural = naturalWidths(grid.header, grid.rows);
 
   let budget = targetWidth;
-  let result = buildTable(grid, natural, budget);
+  let result = buildTable(grid, natural, budget, glyphs);
 
   // Only reconcile when the table is supposed to fit; the >= 9-column case overflows
   // by design and shrinking it further would just churn.
@@ -473,7 +480,7 @@ export function renderTable(token: Tokens.Table, targetWidth: number): string {
     const overage = maxRenderedWidth(result.text) - targetWidth;
     if (overage <= 0) break;
 
-    const retry = buildTable(grid, natural, budget - overage);
+    const retry = buildTable(grid, natural, budget - overage, glyphs);
     // If shrinking pushes the table below its own floor, keep the wider-but-structured
     // rendering rather than emitting a collapsed one.
     if (!retry.fits) break;

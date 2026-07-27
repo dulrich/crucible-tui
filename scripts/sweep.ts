@@ -7,12 +7,14 @@
  *
  * Usage: bun run --cwd mdview sweep [--corpus <repo|reports|vault|all>] [--all]
  *                                    [--widths 80,100,160] [--limit N]
+ *                                    [--glyphs unicode|ascii]
  */
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import stringWidth from "string-width";
 import { renderDocumentDetailed } from "../src/render";
+import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 
 export interface CorpusSpec {
   name: string;
@@ -29,6 +31,7 @@ export interface SweepOptions {
   widths: number[];
   limit?: number;
   all: boolean;
+  glyphs: GlyphSet;
 }
 
 export interface OverflowEntry {
@@ -219,6 +222,7 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
   let widths = DEFAULT_WIDTHS;
   let limit: number | undefined;
   let all = false;
+  let glyphs: GlyphSet = UNICODE_GLYPHS;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -257,9 +261,18 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
       index += 1;
       continue;
     }
+    if (arg === "--glyphs") {
+      const value = argv[index + 1];
+      if (value !== "unicode" && value !== "ascii") {
+        throw new Error(`--glyphs must be "unicode" or "ascii", got: ${value}`);
+      }
+      glyphs = value === "ascii" ? ASCII_GLYPHS : UNICODE_GLYPHS;
+      index += 1;
+      continue;
+    }
   }
 
-  return { corpus, options: { widths, limit, all } };
+  return { corpus, options: { widths, limit, all, glyphs } };
 }
 
 export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Promise<CorpusResult> {
@@ -314,7 +327,7 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
     for (const width of options.widths) {
       combos += 1;
       try {
-        const { text, codeRanges } = renderDocumentDetailed(source, width);
+        const { text, codeRanges } = renderDocumentDetailed(source, width, options.glyphs);
         const found = findOverflow(text, width, codeRanges);
         if (found) {
           overflow.push({ path, width: found.width, targetWidth: width, line: found.line });
@@ -362,6 +375,7 @@ async function runCli(): Promise<void> {
     console.error(`unknown corpus: ${corpus} (expected one of: ${CORPORA.map((c) => c.name).join(", ")}, all)`);
     process.exit(1);
   }
+  console.log(`glyphs=${options.glyphs.tier}`);
 
   let anyFailure = false;
   for (const spec of targets) {
