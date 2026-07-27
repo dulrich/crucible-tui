@@ -19,19 +19,36 @@ bun run mdview/src/cli.ts <file.md> [--width N] [--no-pager] [--check] [--help]
 When stdout is a TTY and `--no-pager` is absent, output is piped to `less -R`. When
 `less` is unavailable, or stdout is redirected, output goes to stdout directly.
 
+Once installed on PATH (below), that is simply:
+
+```bash
+mdview plans/mdview.md
+```
+
 ### Installing on PATH
 
-WP-4 owns compiling the tool with `bun run build` (`bun build --compile`) and
-symlinking the resulting `dist/mdview` binary onto `~/.local/bin/mdview`. **The
-compiled binary is a new pattern for this repo** — every other `bun build` here
-produces a bundle, not a standalone executable — so it must be rebuilt after any
-source edit; there is no watch/dev mode wired up yet.
+```bash
+bun run --cwd mdview build                                    # compile dist/mdview
+ln -sfn "$PWD/mdview/dist/mdview" ~/.local/bin/mdview         # from the repo root
+```
 
-## Status
+**The compiled binary is a new pattern for this repo** — every other `bun build` here
+produces a bundle, not a standalone executable. It embeds the Bun runtime (~102 MB),
+is gitignored, and **must be rebuilt after any source edit**; there is no watch mode.
+Editing source without rebuilding leaves `mdview` running the old code.
 
-WP-1 (this scaffold) ships the CLI shell only: argument parsing, width resolution,
-and the pager. Rendering (`src/render.ts`, `src/frontmatter.ts`, `src/table.ts`) is
-implemented in WP-2 and WP-3. Until then, `main()` writes the source file through
-unchanged.
+## What it does
 
-See `mdview/AGENTS.md` for stack, layout, and gates.
+- **Frontmatter** renders as a dimmed, key-aligned metadata block rather than being
+  stripped. Empty values (`[]`, `""`, null) show `—` so they read as empty, not broken.
+- **Wide tables** are the reason the tool exists: columns shrink proportionally to a
+  floor, and tokens too long for their column are hard-split, never ellipsized. 43% of
+  this repo's 4,550 table rows exceed 120 columns.
+- **Prose and lists** wrap to the target width, ANSI-safely — escape sequences are
+  never cut, and CJK/emoji are measured by display width.
+- **Fenced code is never rewritten**, so commands stay pasteable; `--check` exempts it.
+- Wiki-links (`[[slug|alias]]`) and Obsidian task states render as styled text/glyphs.
+
+Out of scope by design: images, Obsidian embeds, callouts, raw HTML.
+
+See `mdview/AGENTS.md` for stack, layout, gates, and the corpus sweep.

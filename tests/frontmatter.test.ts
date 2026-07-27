@@ -43,6 +43,14 @@ describe("formatMetaBlock", () => {
     expect(out).not.toMatch(/pending-plans:\s*$/m);
   });
 
+  // The root INITIATIVE.md writes `tags: ""` rather than `tags: []`; rendering that as
+  // blank made the metadata block look broken. Found by inspecting real output in WP-4.
+  test('an empty string value (tags: "") renders as em dash, not blank', () => {
+    const out = formatMetaBlock('title: Example\ntags: ""\n', 80);
+    expect(out).toContain("—");
+    expect(out).not.toMatch(/tags\s*:\s*$/m);
+  });
+
   test("a created: 2026-07-06 date renders as 2026-07-06, not a full Date string", () => {
     const meta = "created: 2026-07-06\n";
     const out = formatMetaBlock(meta, 80);
