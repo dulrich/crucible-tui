@@ -119,4 +119,24 @@ describe("formatMetaBlock", () => {
     expect(out).toContain("2026-07-06");
     expect(out).not.toContain("12:30:00");
   });
+
+  // `yaml` reports recoverable oddities via `process.emitWarning`, not a return value, so
+  // Node's default handler prints a stack trace to stderr that no try/catch can intercept.
+  // Obsidian templates (`created: {{today}}`) hit this: the placeholder parses as a flow
+  // mapping used as a key. Found only by the FULL vault sweep — the 300-file sample missed
+  // all four template files. Asserting on the hook rather than on stderr because
+  // `emitWarning` is async and would otherwise land after the test ends.
+  test("parses without emitting a process warning on Obsidian template placeholders", () => {
+    const warnings: string[] = [];
+    const original = process.emitWarning;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (process as any).emitWarning = (w: unknown) => void warnings.push(String(w));
+    try {
+      const out = formatMetaBlock(['title: "{{date}}"', "created: {{today}}", "tags:", "  - daily"].join("\n"), 80);
+      expect(out).toContain("today");
+    } finally {
+      process.emitWarning = original;
+    }
+    expect(warnings).toEqual([]);
+  });
 });
