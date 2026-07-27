@@ -393,12 +393,22 @@ export function wrapText(text: string, width: number): string[] {
  * width instead of being truncated or thrown away. `allocateWidths(...).fits` reports
  * that case for callers that need to know.
  */
-export function renderTable(token: Tokens.Table, targetWidth: number): string {
-  const grid = tableGrid(token);
-  if (grid.columnCount === 0) return "";
+/** Widest rendered line, measured with *our* `string-width` — the one `--check` uses. */
+function maxRenderedWidth(text: string): number {
+  let max = 0;
+  for (const line of text.split("\n")) {
+    const width = stringWidth(line);
+    if (width > max) max = width;
+  }
+  return max;
+}
 
-  const natural = naturalWidths(grid.header, grid.rows);
-  const { widths } = allocateWidths(natural, targetWidth);
+function buildTable(
+  grid: TableGrid,
+  natural: number[],
+  budget: number,
+): { text: string; fits: boolean } {
+  const { widths, fits } = allocateWidths(natural, budget);
   const layout = (row: string[]): string[] =>
     row.map((cell, index) => wrapText(cell, widths[index] ?? ABSOLUTE_MIN_COLUMN_WIDTH).join("\n"));
 
@@ -420,5 +430,56 @@ export function renderTable(token: Tokens.Table, targetWidth: number): string {
 
   for (const row of grid.rows) table.push(layout(row));
 
-  return `${table.toString()}\n`;
+  return { text: `${table.toString()}\n`, fits };
+}
+
+/**
+ * How many re-allocation passes to spend reconciling our width measurement with
+ * cli-table3's. One pass fixes every case observed in the corpora; the cap only
+ * exists so a pathological input cannot loop.
+ */
+const MAX_FIT_PASSES = 3;
+
+/**
+ * Render a markdown table to ANSI, guaranteed to fit within `targetWidth`.
+ *
+ * The single sanctioned exception is a table too wide to fit even at the per-column
+ * floor (>= 9 columns at an 80-column target): it is emitted at its minimum feasible
+ * width instead of being truncated or thrown away. `allocateWidths(...).fits` reports
+ * that case for callers that need to know.
+ *
+ * **Why this re-renders.** `cli-table3` pads each cell to its `colWidths` entry using
+ * *its own bundled* `string-width@4`, while this module allocates — and `--check`
+ * verifies — with `string-width@7`. The two disagree on characters whose width data
+ * changed between those majors: U+26A0 (warning sign) measures 1 column under v4 and 2
+ * under v7. cli-table3 therefore pads such a cell one column too wide, and the finished
+ * line overruns the target by one per affected cell, even though the allocation was
+ * correct. Rather than duplicate cli-table3's measurement (a private, versioned detail),
+ * we measure the *finished* table the same way `--check` will and re-allocate against a
+ * budget reduced by the observed overage. Found by the vault corpus sweep, 2026-07-27.
+ */
+export function renderTable(token: Tokens.Table, targetWidth: number): string {
+  const grid = tableGrid(token);
+  if (grid.columnCount === 0) return "";
+
+  const natural = naturalWidths(grid.header, grid.rows);
+
+  let budget = targetWidth;
+  let result = buildTable(grid, natural, budget);
+
+  // Only reconcile when the table is supposed to fit; the >= 9-column case overflows
+  // by design and shrinking it further would just churn.
+  for (let pass = 0; pass < MAX_FIT_PASSES && result.fits; pass += 1) {
+    const overage = maxRenderedWidth(result.text) - targetWidth;
+    if (overage <= 0) break;
+
+    const retry = buildTable(grid, natural, budget - overage);
+    // If shrinking pushes the table below its own floor, keep the wider-but-structured
+    // rendering rather than emitting a collapsed one.
+    if (!retry.fits) break;
+    budget -= overage;
+    result = retry;
+  }
+
+  return result.text;
 }

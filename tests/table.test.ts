@@ -80,6 +80,41 @@ const GATE_COMMAND = "bun run design:verify";
 
 // --- geometry --------------------------------------------------------------
 
+describe("width reconciliation with cli-table3's own measurement", () => {
+  // cli-table3 pads cells using its bundled string-width@4, which measures U+26A0 as 1
+  // column; this module and `--check` use string-width@7, which says 2. Before the
+  // reconciliation pass, a table containing it rendered exactly 1 column over target.
+  // Found in the wild by the vault sweep: "2026-07-15 1v1 Prep.md" line 139 at width 80.
+  const WARNING_SIGN = "⚠";
+
+  test("a table whose cell holds U+26A0 still fits the target", () => {
+    const token = lexTable(
+      `| Risk | Note | Owner |\n| --- | --- | --- |\n| ${WARNING_SIGN} | escalate before Friday | alex |\n`,
+    );
+    for (const target of [40, 60, 80, 100]) {
+      expect(maxWidth(renderTable(token, target))).toBeLessThanOrEqual(target);
+    }
+  });
+
+  test("the glyph itself survives — reconciliation shrinks, it never drops content", () => {
+    const token = lexTable(
+      `| Risk | Note |\n| --- | --- |\n| ${WARNING_SIGN} | escalate |\n`,
+    );
+    const output = renderTable(token, 60);
+    expect(stripAnsi(output)).toContain(WARNING_SIGN);
+    expect(output).not.toContain("…");
+  });
+
+  test("a table with no such glyph is not shrunk by the reconciliation pass", () => {
+    const token = lexTable("| A | B |\n| --- | --- |\n| one | two |\n");
+    const before = renderTable(token, 80);
+    expect(maxWidth(before)).toBeLessThanOrEqual(80);
+    // Plain ASCII content: cli-table3 and string-width@7 agree, so the first build is
+    // already correct and the output must be byte-identical across repeated renders.
+    expect(renderTable(token, 80)).toBe(before);
+  });
+});
+
 describe("chromeWidth", () => {
   test("counts N+1 vertical rules and 2 padding columns per column", () => {
     expect(chromeWidth(1)).toBe(4);
