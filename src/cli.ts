@@ -1,9 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import stringWidth from "string-width";
-
-// WP-1 placeholder — replaced by WP-2's renderDocument
-const renderDocument = (source: string, _targetWidth: number): string => source;
+import { renderDocument } from "./render";
 
 const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--help]
 
