@@ -1,0 +1,46 @@
+# --- lang-bun: Bun/TypeScript workspace ---
+node_modules/
+dist/
+build/
+.vite/
+.svelte-kit/
+coverage/
+
+# generated runtime data (bun:sqlite) — recreate via seed/ingest, never commit
+*.db
+*.db-*
+*.log
+
+# env
+.env
+.env.*
+
+# --- agents: agent-local state, never commit ---
+.claude/
+.codex/
+.gemini/
+.cursor/
+.continue/
+.windsurf/
+.cline/
+.roo/
+.roocode/
+.aider*
+.augment/
+.qwen/
+.kiro/
+.opencode/
+.crush/
+CLAUDE.local.md
+GEMINI.local.md
+
+# --- editors: editor and OS junk ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- project-specific ---
+# dist/ (the bun build --compile output) is covered by the lang-bun block above.
