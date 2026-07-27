@@ -6,7 +6,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint . --max-warnings=0",
     "test": "bun test tests",
-    "build": "bun build --compile --outfile dist/mdview src/cli.ts"
+    "build": "bun build --compile --outfile dist/mdview src/cli.ts",
+    "sweep": "bun run scripts/sweep.ts"
   },
   "dependencies": {
     "cli-table3": "^0.6.5",
