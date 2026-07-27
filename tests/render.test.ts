@@ -389,3 +389,130 @@ describe("renderDocument — fence language normalization silences highlight.js 
     expect(captured.some((message) => message.includes("not-a-real-language-xyz"))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// WP-2 — the loose-list double-wrap defect.
+//
+// Read this before changing anything below. **No width assertion can see this
+// defect**: an orphaned line is *under* the target width, so `--check` and both
+// corpus sweeps are blind to it by construction. That is exactly why it survived
+// every gate. The metric below is therefore the only thing that tests it.
+//
+// An orphan is: a line inside a rendered list item that carries <= 2 words, whose
+// preceding line is nearly full (>= width - 10), and which is *followed by more
+// prose in the same item*. That last clause matters — without it the metric also
+// flags the natural short final line of any wrapped item (a tight item ending
+// "...being fixed."), which is not a defect and is present either way.
+// ---------------------------------------------------------------------------
+
+const LIST_BULLET = /^\s{2,}(?:[•*\-◦‣+]|\d+\.)\s/;
+const isIndentedLine = (line: string): boolean => /^\s{2,}\S/.test(line);
+
+function findListOrphans(rendered: string, width: number): string[] {
+  const lines = rendered.split("\n").map(stripAnsi);
+  const orphans: string[] = [];
+  let inList = false;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] as string;
+
+    // the bullet line itself has to be seen to open the list, so this runs from i = 0
+    if (LIST_BULLET.test(line)) inList = true;
+    else if (line.trim() !== "" && !isIndentedLine(line)) inList = false;
+
+    if (i === 0) continue;
+    if (!inList || line.trim() === "" || !isIndentedLine(line) || LIST_BULLET.test(line)) continue;
+
+    const previous = lines[i - 1] as string;
+    if (previous.trim() === "") continue;
+    if (line.trim().split(/\s+/).filter(Boolean).length > 2) continue;
+    if (stringWidth(previous) < width - 10) continue;
+
+    // must continue into more prose in the same item, not simply end it
+    const next = lines[i + 1];
+    if (next === undefined || next.trim() === "" || !isIndentedLine(next) || LIST_BULLET.test(next)) continue;
+
+    orphans.push(line.trim());
+  }
+  return orphans;
+}
+
+const WP2_WIDTHS = [80, 100, 120, 172];
+const WP2_TIERS = [
+  ["unicode", UNICODE_GLYPHS],
+  ["ascii", ASCII_GLYPHS],
+] as const;
+
+describe("renderDocument — loose-list double-wrap (WP-2)", () => {
+  test("the orphan metric detects a known-bad rendering and clears a known-good one", () => {
+    const bad = ["    • alpha beta gamma delta epsilon zeta eta theta iota kappa", "      lambda", "      mu nu xi"].join(
+      "\n",
+    );
+    expect(findListOrphans(bad, 64)).toEqual(["lambda"]);
+
+    // same text, wrapped in one pass — no orphan
+    const good = ["    • alpha beta gamma delta epsilon zeta eta theta iota kappa", "      lambda mu nu xi"].join("\n");
+    expect(findListOrphans(good, 64)).toEqual([]);
+  });
+
+  test("tight lists, ordered lists, and plain prose emit no orphaned lines", () => {
+    const source = [
+      "- A tight list item written long enough that it wraps at every width under test, which is the point: tight items never reach the paragraph override at all.",
+      "- A second tight item, also long enough to wrap across multiple lines, with no blank line separating it from its neighbour so the lexer leaves the list tight.",
+      "",
+      "1. An ordered tight item long enough to wrap, verifying the ordered marker path behaves the same way the unordered one does at every width under test.",
+      "2. A second ordered item, also long enough to wrap over several lines at the widths under test, closing the ordered control list.",
+      "",
+      "This paragraph is not part of any list and is deliberately long enough to be reflowed by the paragraph renderer at every width under test, so a regression shows up here.",
+    ].join("\n");
+
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        expect(findListOrphans(renderDocument(source, width, glyphs), width)).toEqual([]);
+      }
+    }
+  });
+
+  test("no line of the loose-list fixture exceeds the target width — the defect is invisible to width gates", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        for (const line of renderDocument(source, width, glyphs).split("\n")) {
+          expect(stringWidth(line)).toBeLessThanOrEqual(width);
+        }
+      }
+    }
+  });
+
+  // KNOWN OPEN DEFECT — characterization test, deliberately asserting the *broken*
+  // counts so the suite stays green while the bug is open and turns red the moment
+  // anything changes it. `reflowText: false` was measured NOT to be the fix (it left
+  // these counts identical and regressed non-list prose in 60/300 corpus documents);
+  // see `wrapOverBudgetLines`'s doc comment in src/render.ts and WP-2b in
+  // plans/crucible-tui-launch.md. **When WP-2b lands, these expectations become 0.**
+  test("KNOWN DEFECT: loose list items still emit orphaned lines (WP-2b flips these to 0)", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
+    const expected = new Map<number, number>([
+      [80, 12],
+      [100, 9],
+      [120, 6],
+      [172, 7],
+    ]);
+
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        const orphans = findListOrphans(renderDocument(source, width, glyphs), width);
+        expect(orphans.length).toBe(expected.get(width) ?? -1);
+      }
+    }
+  });
+
+  test("KNOWN DEFECT: every orphan sits under a nearly-full line, confirming a second reflow caused it", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
+    const orphans = findListOrphans(renderDocument(source, 80, UNICODE_GLYPHS), 80);
+    expect(orphans).toContain("several");
+    expect(orphans).toContain("between");
+    // the metric must not assume exactly one word — this one is two
+    expect(orphans).toContain("which the");
+  });
+});

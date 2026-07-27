@@ -462,7 +462,26 @@ function extractCodeRanges(renderedWithSentinels: string): RenderResult {
  *   `--check` uses. This is a safety net over an already-working reflow, not a
  *   replacement for it — confirmed by corpus sweep, this only ever touches a
  *   small residual (worst case 3 lines across the whole corpus at three
- *   widths), not the dominant list-item defect this WP was scoped for.
+ *   widths) *for top-level prose*.
+ *
+ * **Correction (WP-2 investigation, measured — do not trust the last clause of
+ * the paragraph above for list content).** The `paragraph` caller is NOT
+ * confined to top-level prose: a *loose* list item is parsed into a paragraph
+ * token and dispatched through this very override with the list still on the
+ * stack. `listitem`/`checkbox` are dead seams, but `paragraph` is a live one.
+ * So for every loose list item this call wraps the text at the **full**
+ * `targetWidth`, *before* `list` glues on the 2-column bullet and 4-column
+ * indent — putting the text 6 columns over budget — and `rewrapListBody` then
+ * reflows it a second time, shearing the tail word onto its own line. That is
+ * the orphaned-line defect, and **this override is the first of its two wraps.**
+ *
+ * Consequently `reflowText` is NOT the lever for that defect: flipping it to
+ * `false` was measured to leave list rendering byte-identical (orphan count
+ * unchanged, 47 -> 47 over a 300-file corpus sample at width 100) while
+ * regressing 60 of those 300 documents' non-list prose, because without the
+ * library's reflow the source's own line breaks survive and this function only
+ * touches lines that *exceed* `targetWidth`. See `plans/crucible-tui-launch.md`
+ * WP-2b; the fixture is `tests/fixtures/loose-list.md`.
  */
 function wrapOverBudgetLines(rendered: string, targetWidth: number): string {
   return rendered
