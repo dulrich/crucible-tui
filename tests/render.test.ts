@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, mock, test } from "bun:test";
 import stringWidth from "string-width";
 import type { Tokens } from "marked";
+import { highlight as cliHighlight } from "cli-highlight";
+import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
+import { renderWithForcedColor } from "./helpers/color";
 
 const TABLE_MODULE_PATH = `${import.meta.dir}/../src/table.ts`;
 
@@ -213,5 +216,176 @@ describe("renderDocument — frontmatter integration", () => {
   test("a document with no frontmatter renders only the body", () => {
     const output = renderDocument("# Just a body\n", 80);
     expect(stripAnsi(output)).toContain("Just a body");
+  });
+});
+
+describe("renderDocument — frontmatter divider (WP-3)", () => {
+  const withFrontmatter = "---\ntitle: Example\n---\n\nBody text here.\n";
+
+  test("present exactly once after the metadata block when frontmatter exists", () => {
+    const plain = stripAnsi(renderDocument(withFrontmatter, 40));
+    const rule = UNICODE_GLYPHS.rule.repeat(39);
+    expect(plain.split(rule).length - 1).toBe(1);
+  });
+
+  test("absent when frontmatter is absent", () => {
+    const plain = stripAnsi(renderDocument("Body text here.\n", 40));
+    expect(plain).not.toContain(UNICODE_GLYPHS.rule.repeat(39));
+  });
+
+  test("its length is targetWidth - 1 at widths 40, 80, and 160", () => {
+    for (const width of [40, 80, 160]) {
+      const lines = stripAnsi(renderDocument(withFrontmatter, width)).split("\n");
+      expect(lines).toContain(UNICODE_GLYPHS.rule.repeat(width - 1));
+    }
+  });
+
+  test("is byte-identical to the rule the same document's --- produces at the same width and tier", () => {
+    const width = 64;
+    const dividerOutput = renderDocument(withFrontmatter, width);
+    const hrOutput = renderDocument("Body text here.\n\n---\n\nMore text here.\n", width);
+
+    const rule = UNICODE_GLYPHS.rule.repeat(width - 1);
+    const dividerLine = dividerOutput.split("\n").find((line) => line === rule);
+    const hrLine = hrOutput.split("\n").find((line) => line === rule);
+
+    expect(dividerLine).toBeDefined();
+    expect(hrLine).toBeDefined();
+    // Byte-identical (not just equal after stripping ANSI) to the library's own rule.
+    expect(dividerLine).toBe(hrLine);
+  });
+
+  test("uses the tier's own rule glyph: unicode -> ─, ascii -> -", () => {
+    const unicodeLines = stripAnsi(renderDocument(withFrontmatter, 40, UNICODE_GLYPHS)).split("\n");
+    const asciiLines = stripAnsi(renderDocument(withFrontmatter, 40, ASCII_GLYPHS)).split("\n");
+    expect(unicodeLines).toContain("─".repeat(39));
+    expect(asciiLines).toContain("-".repeat(39));
+    expect(unicodeLines).not.toContain("-".repeat(39));
+  });
+});
+
+describe("renderDocument — codeRanges regression: frontmatter + fenced code (WP-3)", () => {
+  test("a code range still lands exactly on the fence's rendered lines when frontmatter is also present", () => {
+    const marker = "echo hello-from-fence-regression";
+    const withMeta = [
+      "---",
+      "title: Example",
+      "---",
+      "",
+      "intro paragraph",
+      "",
+      "```bash",
+      marker,
+      "```",
+      "",
+      "outro paragraph",
+      "",
+    ].join("\n");
+    const withoutMeta = ["intro paragraph", "", "```bash", marker, "```", "", "outro paragraph", ""].join(
+      "\n",
+    );
+
+    const withMetaResult = renderDocumentDetailed(withMeta, 80);
+    const withoutMetaResult = renderDocumentDetailed(withoutMeta, 80);
+
+    expect(withMetaResult.codeRanges.length).toBeGreaterThan(0);
+    expect(withoutMetaResult.codeRanges.length).toBeGreaterThan(0);
+
+    // Assert against the *real* line numbers reported for the frontmatter render,
+    // reading the actual text back out at those line numbers — not an offset computed
+    // by hand from the divider's known length.
+    const lines = withMetaResult.text.split("\n");
+    const [start, end] = withMetaResult.codeRanges[0] ?? [0, 0];
+    const rangeText = lines.slice(start - 1, end).join("\n");
+    expect(rangeText).toContain(marker);
+    expect(withMetaResult.text).not.toContain(String.fromCharCode(0));
+
+    // The divider adds exactly one line ahead of the body relative to a frontmatter-less
+    // render of the identical body — proving the divider is folded into `metaBlock`
+    // (and therefore into `metaLineOffset`) rather than spliced in afterward, which is
+    // exactly the bug this regression exists to catch.
+    const [withoutMetaStart, withoutMetaEnd] = withoutMetaResult.codeRanges[0] ?? [0, 0];
+    const metaLinesAhead = start - withoutMetaStart;
+    expect(metaLinesAhead).toBeGreaterThan(0);
+    // The shift is uniform across the whole range (start and end move by the same
+    // amount), confirming a constant line offset rather than a range that grew or
+    // shrank — i.e. the fence's own content is untouched, only its position moved.
+    expect(end - start).toBe(withoutMetaEnd - withoutMetaStart);
+  });
+});
+
+describe("renderDocument — embeds (WP-3)", () => {
+  test("![[my-note]] renders a labelled embed with the stray ! gone", () => {
+    const plain = stripAnsi(renderDocument("See ![[my-note]] for details.\n", 80));
+    expect(plain).toContain("embed: my-note");
+    expect(plain).not.toContain("!");
+  });
+
+  test("![[folder/pic.png|alt]] renders embed: alt", () => {
+    const plain = stripAnsi(renderDocument("See ![[folder/pic.png|alt]] for details.\n", 80));
+    expect(plain).toContain("embed: alt");
+    expect(plain).not.toContain("folder/pic.png");
+    expect(plain).not.toContain("!");
+  });
+
+  test("[[plain]] is unchanged: no embed: prefix, no stray !", () => {
+    const plain = stripAnsi(renderDocument("See [[plain]] for details.\n", 80));
+    expect(plain).toContain("plain");
+    expect(plain).not.toContain("embed:");
+  });
+
+  test("![[x]] inside a fenced code block stays completely literal", () => {
+    const output = renderDocument("```\nSee ![[x]] for details.\n```\n", 80);
+    expect(output).toContain("![[x]]");
+  });
+});
+
+describe("renderDocument — fence language normalization silences highlight.js diagnostics (WP-3)", () => {
+  test("a dataviewjs fence renders through the forced-color harness with zero captured messages", async () => {
+    const source = ["```dataviewjs", "dv.pages().sort(p => p.file.name)", "```", ""].join("\n");
+    const { text, messages } = await renderWithForcedColor(source, 80);
+    expect(messages).toEqual([]);
+    expect(text.length).toBeGreaterThan(0);
+  });
+
+  test("a dataview fence also renders through the forced-color harness with zero captured messages", async () => {
+    const source = ["```dataview", "TABLE file.name FROM \"notes\"", "```", ""].join("\n");
+    const { messages } = await renderWithForcedColor(source, 80);
+    expect(messages).toEqual([]);
+  });
+
+  test("an ad-note admonition fence (Obsidian, unsupported) also emits nothing", async () => {
+    const source = ["```ad-note", "a note admonition", "```", ""].join("\n");
+    const { messages } = await renderWithForcedColor(source, 80);
+    expect(messages).toEqual([]);
+  });
+
+  // Positive control, so the three tests above cannot pass vacuously: prove the
+  // console.error capture mechanism itself still detects a real highlight.js
+  // "language not found" diagnostic when one is actually emitted. `cli-highlight`'s own
+  // `highlight()` (the function `marked-terminal`'s gated wrapper calls through to) logs
+  // via `console.error` unconditionally on a language `supportsLanguage()` rejects —
+  // it is not reachable from `renderDocumentDetailed` any more after this WP's fix
+  // (every fence language is normalized to something supported before it gets there),
+  // so this exercises the same underlying library entry point directly instead.
+  test("positive control: cli-highlight itself still emits a real console.error for a genuinely unsupported language", () => {
+    const original = console.error;
+    const captured: string[] = [];
+    console.error = (...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+    };
+    try {
+      try {
+        cliHighlight("const x = 1;", { language: "not-a-real-language-xyz" });
+      } catch {
+        // cli-highlight throws in addition to logging for a genuinely unknown
+        // language; the console.error call happens before the throw, which is all
+        // this control needs to prove the capture mechanism works.
+      }
+    } finally {
+      console.error = original;
+    }
+    expect(captured.length).toBeGreaterThan(0);
+    expect(captured.some((message) => message.includes("not-a-real-language-xyz"))).toBe(true);
   });
 });

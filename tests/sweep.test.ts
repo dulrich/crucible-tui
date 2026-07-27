@@ -69,10 +69,21 @@ describe("resolveCorpusFiles", () => {
 describe("renderWithForcedColor", () => {
   const unsupportedLangFence = "```dataviewjs\nconsole.log(1)\n```\n";
 
-  test("captures a real message for an unsupported fence language under forced color", async () => {
+  // DEVIATION, WP-3: this assertion is flipped from WP-1's original. `dataviewjs` used
+  // to leak a highlight.js "language not found" diagnostic even under forced color —
+  // that was the very bug this harness was built to make visible (see the module doc
+  // comment in `tests/helpers/color.ts`). WP-3 fixes it: every fence language is now
+  // normalized to one `cli-highlight` supports before it reaches the gated `highlight()`
+  // path (`src/lang.ts`), so no fence language reaches stderr any more, not even this
+  // one, not even under forced color. Leaving the old assertion in place would mean
+  // this test only passes when the bug it exists to catch is still present — i.e. it
+  // would now fail forever by design, not by defect. A positive control proving the
+  // console.error capture mechanism itself still works when a message *is* genuinely
+  // emitted (calling `cli-highlight` directly, bypassing the now-total normalization)
+  // lives in `tests/render.test.ts`, so this flip cannot pass vacuously.
+  test("a fence language that used to leak a highlight.js diagnostic under forced color now captures nothing (WP-3)", async () => {
     const { messages } = await renderWithForcedColor(unsupportedLangFence, 80);
-    expect(messages.length).toBeGreaterThan(0);
-    expect(messages.join("\n")).toMatch(/dataviewjs/i);
+    expect(messages).toEqual([]);
   });
 
   test("the normal (non-forced) render path captures nothing for the same input", () => {
