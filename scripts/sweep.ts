@@ -1,30 +1,55 @@
 #!/usr/bin/env bun
 /**
- * In-process corpus sweep — replaces the old shell loop (see mdview/CLAUDE.md's
+ * In-process corpus sweep — replaces the old shell loop (see mdview/AGENTS.md's
  * "Corpus sweep" section) which spawned the 102 MB compiled binary once per file
  * (~83ms each). Rendering in-process against `renderDocumentDetailed` directly
  * measured ~13x faster (600 vault files x 3 widths in 23.8s).
  *
- * Usage: bun run --cwd mdview sweep [--corpus <repo|reports|vault|all>] [--all]
+ * Corpus roots are no longer hardcoded here (WP-1) — they are loaded from a
+ * versioned JSON manifest, resolved with this precedence, highest first:
+ *   1. `--manifest <path>` (this CLI flag)
+ *   2. `MDVIEW_CORPUS_MANIFEST` environment variable
+ *   3. config key `corpusManifest` (see `src/config.ts`)
+ *   4. the bundled public-safe default (`corpus/default-manifest.json`)
+ *
+ * The private validation manifest (covering the full example-tracker corpus,
+ * ~45k files) lives in the separate `example-harness/example-corpus/` repo —
+ * see that repo's README for provenance and `measurements/` for recorded runs.
+ *
+ * Usage: bun run --cwd mdview sweep [--corpus <name|all>] [--all]
  *                                    [--widths 80,100,160] [--limit N]
- *                                    [--glyphs unicode|ascii]
+ *                                    [--glyphs unicode|ascii] [--manifest <path>]
  */
 import { readFile, readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import stringWidth from "string-width";
 import { renderDocumentDetailed } from "../src/render";
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
+import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "../src/config";
 
 export interface CorpusSpec {
   name: string;
-  /** Root directory to resolve globs/walk against. */
+  /** Root directory to resolve globs/walk against. Always resolved to absolute. */
   root: string;
   /** Glob-ish relative patterns (only `*` as a single-segment wildcard is supported). */
   globs?: string[];
   /** If true, walk the tree recursively for `**\/*.md`, excluding `exclude` substrings. */
   walkAll?: boolean;
   exclude?: string[];
+  /**
+   * Positive integer — if set, this corpus is stride-sampled to this many files
+   * unless `--all` is passed. `--limit` overrides this value; it has no effect
+   * on a corpus that does not set `sample`. Replaces the old `spec.name ===
+   * "vault"` hardcode (WP-1).
+   */
+  sample?: number;
+}
+
+export interface CorpusManifest {
+  version: number;
+  generated: string;
+  generator: string;
+  corpora: CorpusSpec[];
 }
 
 export interface SweepOptions {
@@ -32,6 +57,8 @@ export interface SweepOptions {
   limit?: number;
   all: boolean;
   glyphs: GlyphSet;
+  /** `--manifest <path>` — outranks the env var, config key, and bundled default. */
+  manifestFlag?: string;
 }
 
 export interface OverflowEntry {
@@ -58,29 +85,119 @@ export interface CorpusResult {
 }
 
 const DEFAULT_WIDTHS = [80, 100, 160];
-const DEFAULT_SAMPLE_SIZE = 300;
 
-// Repo root is two levels up from this script (mdview/scripts/sweep.ts -> repo root).
-const REPO_ROOT = join(import.meta.dir, "..", "..");
+/**
+ * Validate one manifest entry and resolve its `root` to an absolute path.
+ * A relative root resolves against the directory containing the manifest
+ * file, never against the process CWD — this is what lets the bundled
+ * default (relative roots) and a private manifest (absolute roots) share one
+ * format.
+ */
+function validateEntry(entry: unknown, index: number, manifestPath: string): CorpusSpec {
+  const where = `corpus manifest ${manifestPath}`;
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    throw new Error(`${where}: corpora[${index}] is not an object`);
+  }
+  const e = entry as Record<string, unknown>;
 
-export const CORPORA: CorpusSpec[] = [
-  {
-    name: "repo",
-    root: REPO_ROOT,
-    globs: ["plans/*.md", "*/plans/*.md", "INITIATIVE.md", "*/INITIATIVE.md", "runs/dispatch/*.md", "AGENTS.md", "*/AGENTS.md"],
-  },
-  {
-    name: "reports",
-    root: join(homedir(), "code", "example-ingest", "example_reports", "reports"),
-    walkAll: true,
-  },
-  {
-    name: "vault",
-    root: "/home/analyst/code/example-vault/vault",
-    walkAll: true,
-    exclude: ["/.obsidian/", "/.git/", "node_modules"],
-  },
-];
+  if (typeof e.name !== "string" || e.name.length === 0) {
+    throw new Error(`${where}: corpora[${index}] is missing a non-empty string "name"`);
+  }
+  const label = `${where}, corpus "${e.name}"`;
+
+  if (typeof e.root !== "string" || e.root.length === 0) {
+    throw new Error(`${label}: missing a non-empty string "root"`);
+  }
+
+  const hasGlobs = e.globs !== undefined;
+  if (hasGlobs && !(Array.isArray(e.globs) && e.globs.every((g) => typeof g === "string"))) {
+    throw new Error(`${label}: "globs" must be an array of strings`);
+  }
+  const hasWalkAll = e.walkAll === true;
+  if (e.walkAll !== undefined && typeof e.walkAll !== "boolean") {
+    throw new Error(`${label}: "walkAll" must be a boolean`);
+  }
+  if (!hasGlobs && !hasWalkAll) {
+    throw new Error(`${label}: must set either "globs" (non-empty array) or "walkAll: true"`);
+  }
+
+  if (e.exclude !== undefined && !(Array.isArray(e.exclude) && e.exclude.every((x) => typeof x === "string"))) {
+    throw new Error(`${label}: "exclude" must be an array of strings`);
+  }
+
+  if (e.sample !== undefined && (typeof e.sample !== "number" || !Number.isInteger(e.sample) || e.sample <= 0)) {
+    throw new Error(`${label}: "sample" must be a positive integer`);
+  }
+
+  return {
+    name: e.name,
+    root: resolve(dirname(manifestPath), e.root),
+    globs: hasGlobs ? (e.globs as string[]) : undefined,
+    walkAll: hasWalkAll,
+    exclude: e.exclude as string[] | undefined,
+    sample: e.sample as number | undefined,
+  };
+}
+
+/**
+ * Parse and validate a manifest already read from disk. Exported for tests.
+ * Throws on any malformed or wrong-version manifest — this is developer-facing
+ * infrastructure, not user config, and a silently-empty corpus is exactly the
+ * failure mode this repo has been bitten by before.
+ */
+export function parseManifest(raw: string, manifestPath: string): CorpusManifest {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`corpus manifest ${manifestPath} is not valid JSON: ${message}`);
+  }
+
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new Error(`corpus manifest ${manifestPath} must be a JSON object`);
+  }
+  const obj = data as Record<string, unknown>;
+
+  if (obj.version !== 1) {
+    throw new Error(
+      `corpus manifest ${manifestPath} has unsupported "version" ${JSON.stringify(obj.version)} (expected 1)`,
+    );
+  }
+  if (!Array.isArray(obj.corpora) || obj.corpora.length === 0) {
+    throw new Error(`corpus manifest ${manifestPath} must have a non-empty "corpora" array`);
+  }
+
+  const corpora = obj.corpora.map((entry, index) => validateEntry(entry, index, manifestPath));
+
+  return {
+    version: 1,
+    generated: typeof obj.generated === "string" ? obj.generated : "",
+    generator: typeof obj.generator === "string" ? obj.generator : "",
+    corpora,
+  };
+}
+
+/** Read and parse the manifest at `manifestPath`. Fails loudly — see `parseManifest`. */
+export async function loadManifest(manifestPath: string): Promise<CorpusManifest> {
+  let raw: string;
+  try {
+    raw = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot read corpus manifest at ${manifestPath}: ${reason}`);
+  }
+  return parseManifest(raw, manifestPath);
+}
+
+/** Resolve which manifest path to load and why, given the `--manifest` flag (if any). */
+export async function resolveManifestSource(
+  manifestFlag: string | undefined,
+): Promise<{ path: string; source: "flag" | ManifestSource }> {
+  if (manifestFlag) return { path: manifestFlag, source: "flag" };
+  const config = await loadConfig();
+  return resolveCorpusManifestPath(config);
+}
 
 /**
  * Deterministic, whole-list-spanning sample: sort paths, then pick exactly
@@ -223,6 +340,7 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
   let limit: number | undefined;
   let all = false;
   let glyphs: GlyphSet = UNICODE_GLYPHS;
+  let manifestFlag: string | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -270,9 +388,16 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
       index += 1;
       continue;
     }
+    if (arg === "--manifest") {
+      const value = argv[index + 1];
+      if (!value) throw new Error("missing value for --manifest");
+      manifestFlag = value;
+      index += 1;
+      continue;
+    }
   }
 
-  return { corpus, options: { widths, limit, all, glyphs } };
+  return { corpus, options: { widths, limit, all, glyphs, manifestFlag } };
 }
 
 export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Promise<CorpusResult> {
@@ -307,10 +432,14 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
     };
   }
 
-  const selected =
-    spec.name === "vault" && !options.all
-      ? strideSample(files, options.limit ?? DEFAULT_SAMPLE_SIZE)
-      : files;
+  // `sample` (manifest-driven) replaces the old `spec.name === "vault"` hardcode:
+  // a corpus is only ever sampled if its spec sets `sample`. `--all` always
+  // disables sampling; `--limit` overrides the manifest's `sample` value, but
+  // (matching the old vault-only behavior exactly, just generalized past one
+  // hardcoded name) only has an effect on a corpus that declares one.
+  const samplingApplies = spec.sample !== undefined && !options.all;
+  const effectiveSampleSize = samplingApplies ? (options.limit ?? spec.sample) : undefined;
+  const selected = effectiveSampleSize !== undefined ? strideSample(files, effectiveSampleSize) : files;
 
   const overflow: OverflowEntry[] = [];
   const errors: ErrorEntry[] = [];
@@ -362,20 +491,44 @@ function printResult(result: CorpusResult): void {
       `overflow=${result.overflow.length} errors=${result.errors.length} ` +
       `elapsed=${result.elapsedSeconds.toFixed(1)}s`,
   );
-  const offending = [...result.overflow.map((entry) => `overflow width=${entry.width}>${entry.targetWidth} line=${entry.line} ${relative(REPO_ROOT, entry.path)}`),
-    ...result.errors.map((entry) => `error ${relative(REPO_ROOT, entry.path)}: ${entry.message}`)]
-    .slice(0, 10);
+  // Absolute paths: corpus roots can live anywhere on the filesystem (a private
+  // manifest routinely points outside this repo entirely), so a single
+  // "relative to one repo root" display no longer means anything consistent.
+  const offending = [
+    ...result.overflow.map(
+      (entry) => `overflow width=${entry.width}>${entry.targetWidth} line=${entry.line} ${entry.path}`,
+    ),
+    ...result.errors.map((entry) => `error ${entry.path}: ${entry.message}`),
+  ].slice(0, 10);
   for (const line of offending) console.log(`  ${line}`);
 }
 
 async function runCli(): Promise<void> {
   const { corpus, options } = parseArgs(process.argv.slice(2));
-  const targets = corpus === "all" ? CORPORA : CORPORA.filter((spec) => spec.name === corpus);
-  if (targets.length === 0) {
-    console.error(`unknown corpus: ${corpus} (expected one of: ${CORPORA.map((c) => c.name).join(", ")}, all)`);
+
+  const { path: manifestPath, source: manifestSource } = await resolveManifestSource(options.manifestFlag);
+  console.log(`corpus manifest: ${manifestPath} (${manifestSource})`);
+  if (manifestSource === "bundled") {
+    console.log("NOTE: bundled sample manifest — this is NOT the validation corpus");
+  }
+
+  let manifest: CorpusManifest;
+  try {
+    manifest = await loadManifest(manifestPath);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
+
   console.log(`glyphs=${options.glyphs.tier}`);
+
+  const targets = corpus === "all" ? manifest.corpora : manifest.corpora.filter((spec) => spec.name === corpus);
+  if (targets.length === 0) {
+    console.error(
+      `unknown corpus: ${corpus} (expected one of: ${manifest.corpora.map((c) => c.name).join(", ")}, all)`,
+    );
+    process.exit(1);
+  }
 
   let anyFailure = false;
   for (const spec of targets) {

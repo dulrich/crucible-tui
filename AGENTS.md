@@ -30,6 +30,8 @@ src/table.ts        the wide-table allocator — the reason the tool exists
 src/wrap.ts         ANSI-safe prose wrapping for what marked-terminal won't
 src/glyphs.ts       Unicode/ASCII capability tier — the only module that reads env
 src/lang.ts         fence-language alias map + supportsLanguage() fallback
+src/config.ts       XDG config load + corpus-manifest path resolution
+corpus/             the bundled public-safe default manifest
 scripts/sweep.ts    multi-corpus width sweep (see "Corpus sweep" below)
 tests/              unit tests + markdown fixtures
 dist/mdview         compiled binary (gitignored; see PATH install below)
@@ -132,19 +134,36 @@ and must exit 0.
 
 `scripts/sweep.ts` renders whole corpora in one process at 80/100/160 columns, honoring
 `codeRanges`. It replaced a shell loop that spawned the 102 MB binary per file, and is
-~13× faster. Three corpora:
+~13× faster.
 
-| Corpus | Root | Note |
-|---|---|---|
-| `repo` | this repository | plans, briefs, `AGENTS.md`, `INITIATIVE.md` |
-| `reports` | `~/code/example-ingest/example_reports/reports` | table-dense |
-| `vault` | `/home/analyst/code/example-vault/vault` | 42.8k files — **stride-sampled to 300** unless `--all` |
+**Corpus roots are not hardcoded — they load from a versioned JSON manifest** (WP-1).
+This is what lets this tool live in a public repo with zero knowledge of any local path:
+the manifest is the only thing that knows where a corpus actually lives, and the
+bundled one that ships with the source knows nothing private at all.
+
+Manifest resolution, highest precedence first:
+
+1. `--manifest <path>` (a sweep-only CLI flag)
+2. `MDVIEW_CORPUS_MANIFEST` environment variable
+3. config key `corpusManifest` (`src/config.ts`, XDG config path)
+4. the bundled default at `corpus/default-manifest.json` — **public-safe, relative
+   roots only, covers this repo's own docs and `tests/fixtures/`**
+
+The sweep always prints which manifest it resolved and why, before any corpus output.
+**When the resolved manifest is the bundled default, it prints an unmissable notice on
+its own line** — a green run against the bundled default proves almost nothing (it's
+~5 files); do not mistake it for a validation run.
 
 ```bash
-bun run --cwd mdview sweep                                   # unicode tier
+bun run --cwd mdview sweep                                   # unicode tier, resolved manifest
 bun run --cwd mdview sweep -- --glyphs ascii                 # ascii tier
-bun run --cwd mdview sweep -- --corpus vault --all           # full vault, slow
+bun run --cwd mdview sweep -- --corpus <name> --all          # one corpus, full (no sampling)
+bun run --cwd mdview sweep -- --manifest path/to/manifest.json  # override resolution
 ```
+
+Each corpus in a manifest may set a `sample` (positive integer): if set, that corpus is
+stride-sampled to that many files unless `--all` is passed; `--limit` overrides the
+manifest's value. A corpus with no `sample` always sweeps every file it resolves.
 
 Expected: `overflow=0 errors=0` on every corpus, **both tiers**. The sweep is what caught
 the list-item reflow defect the fixture gate missed — `wide-table.md` has no long
@@ -152,23 +171,17 @@ bullets, so it stayed green while 250 of 256 real files overflowed.
 
 **The corpora are the user's real data. Open them read-only; never write to them.**
 
-#### The default vault run is a 0.7% sample
+#### The real validation corpus is private, and lives in `example-harness`
 
-`vault` is stride-sampled to **300 of ~42,957 files** unless you pass `--all`. The gate
-runs the sample; that is a deliberate speed trade, but it means **a green gate is not a
-green corpus**. Measured directly: the sample was clean while the full corpus was not.
-
-Last full verification — **`--all`, both tiers, byte-identical results**:
-
-| Corpus | Files | Combos | Overflow | Errors | Elapsed |
-|---|---|---|---|---|---|
-| repo | 281 | 843 | 0 | 0 | ~6s |
-| reports | 24 | 72 | 0 | 0 | ~1s |
-| vault (`--all`) | 42,957 | 128,871 | **4** (3 files) | 0 | 425s |
-
-*As of 2026-07-27. The vault is live and grows daily — re-run `--all` before trusting
-this row, and update it with the date and commit when you do.* The 4 remaining overflows
-are the many-column table limit documented under "Rendering policy" below.
+The manifest that actually exercises this tool against ~44.5k real files — an Obsidian
+vault, research reports, every tracked initiative's docs — is generated and committed in
+the separate `example-harness` repo's `example-corpus/` directory: `README.md`
+(provenance), `scripts/gen-manifest.ts` (the generator, re-runnable against the
+initiative tracker), `manifest.json` (its output), `measurements/` (dated full-corpus
+runs), and `validity-memo.md` (what a green sweep does and does not prove). Point
+`MDVIEW_CORPUS_MANIFEST` at that repo's `manifest.json` to reproduce those runs; see that
+repo for every measured file count, date, and commit — none of that belongs here, since
+this file ships to a public clone with none of it.
 
 #### ⚠ The sweep proves width, and only width
 
@@ -218,7 +231,7 @@ bun run mdview/src/cli.ts some/plan.md
   PATH install (already in place; `~/.local/bin` precedes `/usr/local/bin` on PATH):
 
   ```bash
-  ln -sfn /home/analyst/code/example-monorepo/mdview/dist/mdview ~/.local/bin/mdview
+  ln -sfn "$PWD/mdview/dist/mdview" ~/.local/bin/mdview         # from the repo root
   ```
 
   The symlink points at the build output, so a rebuild takes effect immediately — but
@@ -252,7 +265,7 @@ bun run mdview/src/cli.ts some/plan.md
   `logLevel: "error"` — **not `"silent"`**, which also suppresses errors and would let
   `title: [unterminated` come back silently guessed as `["unterminated"]` instead of
   throwing and being shown raw. Verified value-neutral over 43,047 frontmatter blocks
-  across all three corpora: identical parse result or identical throw, every one.
+  across every corpus: identical parse result or identical throw, every one.
 - **Obsidian embeds** (`![[target]]`) render as `embed: target`. Previously the `!`
   leaked through as literal text next to the link (1,350 occurrences in the vault).
 - **Frontmatter is followed by a rule** at the tier's rule character, matching the
@@ -278,10 +291,11 @@ bun run mdview/src/cli.ts some/plan.md
   **This is arithmetic, not a bug to be fixed in the allocator** — a 19-column table
   cannot be rendered in 100 columns. Any "fix" is a choice of *degradation* (drop cell
   padding, transpose to a record-per-row layout, or overflow deliberately), and each
-  trades away something the tool currently guarantees. Incidence is 4 combos across 3
-  files in 128,871 full-corpus combos (0.003%), all in imported ML-paper notes, so
-  the choice has been deferred rather than made. If you do fix it, note that dropping
-  padding only buys 2 columns each and does not rescue the 19-column case.
+  trades away something the tool currently guarantees. Incidence is a few thousandths of
+  a percent of full-corpus combos — the dated counts live in the private archive's
+  `measurements/`, not here — so the choice has been deferred rather than made. If you do
+  fix it, note that dropping padding only buys 2 columns each and does not rescue the
+  19-column case.
 - `.gitignore` is assembled from the chunk files in
   `skills/project-setup/references/gitignore/`; repo-local entries go under the
   `# --- project-specific ---` marker. `bun.lock` is **ignored**, matching every other
