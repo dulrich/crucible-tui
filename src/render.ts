@@ -6,12 +6,15 @@ import { renderTable } from "./table";
 import { formatMetaBlock, splitFrontmatter } from "./frontmatter";
 import { wrapAnsi } from "./wrap";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
+import { resolveFenceLanguage } from "./lang";
 
 // Obsidian wiki-links aren't markdown; style them before parsing so they render as
 // recognizable links-to-nowhere instead of literal brackets. Adapted from
 // example_tracker/apps/web/src/markdown.ts:7 (WIKI_LINK) — same regex, ANSI output
-// instead of an HTML <span>.
-const WIKI_LINK = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
+// instead of an HTML <span>, plus a leading optional `!` group this tool adds itself
+// (see `styleWikiLink`'s call site in `preprocessBody`) to catch Obsidian's `![[embed]]`
+// syntax, which the adapted-from regex does not recognize at all.
+const WIKI_LINK = /(!)?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
 
 // Obsidian's custom checkbox states aren't GFM tasklist syntax — marked's tasklist
 // extension only recognizes " ", "x", "X". Adapted from
@@ -192,7 +195,14 @@ function preprocessBody(body: string, glyphs: GlyphSet): string {
       const withTaskState = rewriteTaskState(line, glyphs);
       return withTaskState.replace(
         WIKI_LINK,
-        (_match, slug: string, alias?: string) => styleWikiLink(alias ?? slug),
+        (_match, bang: string | undefined, slug: string, alias?: string) => {
+          const label = styleWikiLink(alias ?? slug);
+          // `![[target]]` is Obsidian's embed syntax; render it as a labelled embed
+          // reference rather than dropping the `!` on the floor (the plain-link case,
+          // `bang === undefined`, is unchanged — no glyph either way, since this must
+          // read identically under both glyph tiers and needs no capability detection).
+          return bang ? `embed: ${label}` : label;
+        },
       );
     })
     .join("\n");
@@ -377,6 +387,20 @@ function wrapCode(rendered: string): string {
   return `${SENTINEL}${trimmed}${SENTINEL}${trailing}`;
 }
 
+// Shared by the `hr` override and the frontmatter divider (WP-3): the text of a
+// horizontal rule at `targetWidth`, in the given glyph tier. `marked-terminal`'s own
+// `hr()` helper (`index.js:612`) is `new Array(length).join(ch)`, which yields
+// `length - 1` characters, not `length` — an off-by-one baked into the library that
+// both call sites must reproduce exactly, since "the divider matches the document's
+// own rule" means matching that rule as the library actually renders it, not redoing
+// the arithmetic from scratch. Kept as the *only* place that computes this string so
+// the `hr` override (which post-processes marked-terminal's own dash run — there is
+// library output to rewrite) and the divider (which has no library output to
+// post-process and must construct the rule from nothing) can never drift apart.
+function renderRule(glyphs: GlyphSet, targetWidth: number): string {
+  return glyphs.rule.repeat(Math.max(0, targetWidth - 1));
+}
+
 export interface RenderResult {
   text: string;
   /** 1-based, inclusive [start, end] line ranges that `--check` must not flag. */
@@ -481,7 +505,15 @@ export function renderDocumentDetailed(
   glyphs: GlyphSet = UNICODE_GLYPHS,
 ): RenderResult {
   const { meta, body } = splitFrontmatter(source);
-  const metaBlock = meta !== null ? `${formatMetaBlock(meta, targetWidth)}\n\n` : "";
+  // The divider is appended *into* `metaBlock` itself, before `metaLineOffset` below is
+  // computed from it — not emitted separately into the final concatenation. Emitting it
+  // anywhere else would silently shift every code range by the divider's line count,
+  // since `metaLineOffset` is derived purely from `metaBlock`'s own newline count.
+  // Matches the same rule text a `---` in the body would produce at this width/tier
+  // (`renderRule`, shared with the `hr` override below) — present only when frontmatter
+  // is present, so a document with none renders byte-identical to before this WP.
+  const metaBlock =
+    meta !== null ? `${formatMetaBlock(meta, targetWidth)}\n${renderRule(glyphs, targetWidth)}\n\n` : "";
 
   const processedBody = preprocessBody(body, glyphs);
 
@@ -533,14 +565,21 @@ export function renderDocumentDetailed(
         if (result === false || glyphs.rule === "-") return result;
         const dashes = "-".repeat(Math.max(0, targetWidth - 1));
         if (dashes === "") return result;
-        return result.split(dashes).join(glyphs.rule.repeat(dashes.length));
+        return result.split(dashes).join(renderRule(glyphs, targetWidth));
       };
     }
 
     const originalCode = renderer.code;
     if (originalCode) {
       renderer.code = function wrappedCode(token: Tokens.Code) {
-        const result = originalCode.call(this, token);
+        // Normalize the declared language before it reaches marked-terminal's own
+        // `highlight()`, which does not throw on an unknown language (its
+        // `try`/`catch` never fires) — it logs via `console.error` unconditionally.
+        // Never mutate `token`, which `marked` owns; pass a shallow copy carrying the
+        // rewritten `lang` instead.
+        const normalizedLang = resolveFenceLanguage(token.lang);
+        const normalizedToken = normalizedLang === token.lang ? token : { ...token, lang: normalizedLang };
+        const result = originalCode.call(this, normalizedToken);
         return result === false ? false : wrapCode(result);
       };
     }
