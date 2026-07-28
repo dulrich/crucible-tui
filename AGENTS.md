@@ -179,8 +179,7 @@ Four things that must not be simplified away:
   uses — `code`'s override resolves depth-first, so every fence in the body is already
   bracketed by the time `list` composes it. A line that starts inside a fence, or that
   carries a sentinel of its own, is left alone *and* is not allowed to move the item
-  stack. `rewrapListBody` still is **not** sentinel-aware; that is a separate, filed
-  defect and not this pass's.
+  stack. `rewrapListBody` honours the same walk as of WP-2f — see below.
 - **A de-indented line may not become a marker.** Landing on the four-column grid with a
   leading `*` or `12.` is all `isPointedLine` asks for. Unordered text columns are never
   on the grid (`4d + 2`); a ten-item ordered list's are (`4d + 4`), so the case is live
@@ -190,6 +189,72 @@ The stack model — "which item does this rendered line belong to" — is
 `trackListLine` in `src/detectors.ts`, shared with `findContinuationOverIndent`
 deliberately: a detector and the fix it grades must not be able to disagree about where
 an item's text column is. The fixture is `tests/fixtures/nested-list.md`.
+
+#### `rewrapListBody` rewrites neither a fence nor a marker
+
+The last pass over a composed list body re-wraps the lines still over budget at that
+level. Two things it must never do, **both invisible to all seven gates**, and both of
+which it did until WP-2f.
+
+**It must never rewrite a line that belongs to a fenced block.** The rendering policy
+below is unqualified — fenced code is never rewritten, because the corpus's fences are
+gate commands meant to be pasted and a wrapped command is a wrong command. This pass had
+no `SENTINEL` walk and split fence content mid-command like any other long line, and no
+gate could see it: `--check` and both sweeps exempt recorded `codeRanges` from width
+checking, so *corrupting* a line inside one cannot make a width gate fail. Measured over
+a 1,000-file corpus sample of fence-carrying files at 80 and 116: **185 of 37,246 fenced
+source lines did not survive verbatim on the parent commit; 0 do not now**, with no line
+newly broken.
+
+- **The sentinel walk here is the stricter of the two in this file, and the one-line
+  fence decides it.** `substituteBullets` may bail on "this line *started* inside a
+  fence" alone, because it only rewrites a *leading* marker and a fence's opening
+  physical line begins with the sentinel character itself. This pass rewrites the whole
+  line, and `wrapCode` emits `SENTINEL` immediately followed by the block's first content
+  line — so the opening line already carries real code, and a **one-line** block carries
+  all of its content on a line that both opens and closes the pair, where "started inside
+  a fence" is false. So a line that starts inside a fence *or merely carries a sentinel*
+  is returned untouched, as in `realignNestedContinuations`. Nothing but `wrapCode` emits
+  a sentinel, so the stricter form can only ever spare a genuine fence line.
+- **An over-budget fence line inside a list item overflows.** That is what fenced code
+  does everywhere else here, and it is self-consistent rather than a new exemption: those
+  lines land inside a recorded `codeRange` and stay exempt from `--check` and from both
+  sweeps. Verified, not assumed — `tests/fixtures/fenced-list.md` asserts that *every*
+  over-width line it renders is inside a recorded range, at six widths and both tiers.
+  The visible consequence is real: `tests/fixtures/nested-list.md` now emits an 81-column
+  line at width 80, and the WP-2e assertion that no line of it exceeds the width had to
+  start exempting code ranges — **it had been passing for the wrong reason**, because the
+  fence was being wrongly re-wrapped.
+
+**It must never break a line so that a continuation starts `*` or `N.`.** The pass
+chooses where lines break, so it chooses whether `isPointedLine` claims one of them —
+and then `numberedLine` renumbers, or `substituteBullets` turns the author's `*` into a
+bullet glyph. Both wrapping overrides guard this via `MARKER_SHAPED_LINE`; this one did
+not.
+
+- **Copying those overrides' guard verbatim makes this pass cause the collision it is
+  meant to prevent.** They wrap text starting at column 0, which is *on* the four-column
+  grid, so one leading space always takes a marker-shaped line off it. Here the
+  continuation prefix is the line's own — `"    1. "` is **7** columns, already off the
+  grid and already safe — and adding a space moves it *onto* the grid. Reproduced at
+  width 55 on `fenced-list.md`: with the unconditional guard the author's bare `*` was
+  still rewritten, and only because the guard had shifted the line from column 7 to 8.
+  **The guard therefore fires only when the composed continuation would land on the
+  grid**, and then does what the overrides do: re-wrap one column narrower, add one
+  leading space.
+- **`substituteBullets` had to be tightened to the same grid**, or the guard cannot
+  reach it. Its regex was `/^(\s*)\*(\s)/` — a leading `*` at *any* indent — on the
+  reasoning that a `*` at the start of a rendered line is always a marker. That reasoning
+  predates this pass, which can put an author's bare `*` at the start of a continuation
+  line. Every genuine marker is on the grid because `indentLines` only ever adds four
+  columns at a time: measured over a 1,000-file sample at five widths, **79,410
+  substitutions, 0 of them off-grid**. Measured on `fenced-list.md` at every width in
+  40-360, both tiers: the parent commit rewrites the author's `*` at widths 54, 55, 100
+  and 101; this one at none.
+
+The fixture is `tests/fixtures/fenced-list.md` — fences in loose, tight and nested items,
+a one-line fence, marker-shaped fence content as decoys, and the bare-`*` continuation.
+A green sweep is not evidence for any of it; the source-anchored count above is.
 
 #### Dead seams — do not try to use these
 
@@ -244,7 +309,10 @@ depth from indentation. This is not a style choice: `marked-terminal`'s `fixNest
 and `\d+\.`, so the literal `*` must survive until ancestors resolve. Substituting
 per-level collapses two levels onto one line. The pass skips any line that *starts*
 inside a `SENTINEL` region — fenced code is never rewritten, including a fence nested in
-a list item.
+a list item. It also matches the marker **only on the four-column grid** (WP-2f): a
+leading `*` at an arbitrary indent is not necessarily a marker, because `rewrapListBody`
+runs before this pass and can put an author's own bare `*` at the start of a continuation
+line. See "`rewrapListBody` rewrites neither a fence nor a marker" above.
 
 ## Run
 
@@ -459,6 +527,15 @@ bun run mdview/src/cli.ts some/plan.md
   fences are gate commands meant to be pasted, and a wrapped command is a wrong
   command. The trade is that `--check` guarantees "no non-code line exceeds the
   width", not "no line at all".
+
+  **"Never" is unqualified, and a fence nested in a list item is the case that keeps
+  testing it** — WP-2 rewrote one there, and WP-2f found a second pass doing the same
+  (both shipped fully green, because the exemption that makes fences safe from width
+  gates also makes them invisible to width gates). Such a line **overflows** rather than
+  wrapping, exactly like a fence anywhere else; it stays inside a recorded `codeRange`
+  and therefore stays exempt. Any pass that rewrites a composed list body needs the
+  `SENTINEL` walk before it touches a line — there are three of them now, and the
+  strictness each one needs is not the same. See the list-override section above.
 - **Nothing is ever ellipsized.** Long tokens are hard-split at grapheme boundaries and
   rejoin losslessly. If a change can emit `…`, it is wrong.
 - **Unknown fence languages degrade silently.** `src/lang.ts` maps aliases
