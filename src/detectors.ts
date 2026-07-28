@@ -215,6 +215,78 @@ export function findContinuationOverIndent(rendered: string, options: DetectorOp
 }
 
 /**
+ * A rendered list marker sitting at **column 0** — the same marker shapes `LIST_BULLET`
+ * recognizes, both glyph tiers, but with no indent in front of them at all.
+ */
+export const COLUMN_ZERO_MARKER = /^(?:[•*\-◦‣+]|\d+\.)\s/;
+
+export interface ColumnZeroMarker {
+  /** 1-based line number in the rendered output. */
+  line: number;
+  /** Trimmed text of the offending line, for a repro to be recognisable by. */
+  text: string;
+}
+
+/**
+ * List markers that escaped the block they belong to — WP-2g's instrument, and the only
+ * one that can see that defect class at all.
+ *
+ * **A rendered list marker at column 0 is never correct output.** `marked-terminal`'s
+ * `list` blanket-indents its whole composed body by `tab` before returning it, so the
+ * shallowest marker this tool can emit sits at column 4, and one inside a blockquote at
+ * column 8. A marker at column 0 therefore means some later pass moved the line left —
+ * which is exactly what `wrapOverBudgetLines` did to every over-budget line of a
+ * blockquote until WP-2g, re-wrapping it with no indent at all and putting the quoted
+ * list's bullets outside the quote.
+ *
+ * **The two existing detectors are structurally blind to it.** `findListOrphans` and
+ * `findContinuationOverIndent` both require `isIndentedLine`, so a line that collapsed
+ * to column 0 is skipped by each of them — the fast tier cannot grade this class, and
+ * removing the collapse makes previously invisible lines *newly* measurable, which reads
+ * as an increase. Measured over the 95 corpus files that put a list inside a blockquote,
+ * at widths 40/80/116/346: **471 hits across 62 files before, 4 across 1 after** — and
+ * on the tier-pure sub-count (a `•`/`◦`/`‣` glyph, which only `substituteBullets` can
+ * emit), **406 before and 0 after**.
+ *
+ * **The adjacency clause is what makes this countable rather than noise, and it is not
+ * a free zero.** Authored prose legitimately starts a line with `-` or `1.` at column 0
+ * — a numbered paragraph, a wrapped sentence beginning `2025.` — so the shape alone
+ * reports 30 hits over 599 blockquote-free corpus files. Requiring the nearest non-blank
+ * neighbour above or below (outside `codeRanges`, when those are supplied) to be
+ * *indented* — i.e. the marker sits against content it has fallen out of — takes that to
+ * 2, both of them the same authored numbered paragraph following a real list. **Pass
+ * `codeRanges`**: without them an indented fenced block under an authored `1.` paragraph
+ * reads as adjacency, which is the whole of the residual 4 above.
+ */
+export function findColumnZeroMarkers(rendered: string, options: DetectorOptions = {}): ColumnZeroMarker[] {
+  const lines = rendered.split("\n").map(stripAnsi);
+  const found: ColumnZeroMarker[] = [];
+
+  const neighbour = (from: number, step: number): string | undefined => {
+    for (let i = from + step; i >= 0 && i < lines.length; i += step) {
+      if (isExempt(i + 1, options.codeRanges)) continue;
+      const line = lines[i] as string;
+      if (line.trim() !== "") return line;
+    }
+    return undefined;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    if (isExempt(i + 1, options.codeRanges)) continue;
+    const line = lines[i] as string;
+    if (!COLUMN_ZERO_MARKER.test(line)) continue;
+
+    const before = neighbour(i, -1);
+    const after = neighbour(i, 1);
+    if (!(before !== undefined && isIndentedLine(before)) && !(after !== undefined && isIndentedLine(after))) continue;
+
+    found.push({ line: i + 1, text: line.trim() });
+  }
+
+  return found;
+}
+
+/**
  * Does this rendered line belong to a table?
  *
  * Used to split width overflow into "the accepted-by-design many-column table case"

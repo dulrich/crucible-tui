@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  findColumnZeroMarkers,
   findContinuationOverIndent,
   findListOrphans,
   isTableLine,
@@ -148,6 +149,38 @@ describe("isTableLine — the accepted-by-design overflow class", () => {
   test("does not claim ordinary prose or a single pipe", () => {
     expect(isTableLine("a long paragraph of ordinary prose")).toBe(false);
     expect(isTableLine("    • an item mentioning a | pipe")).toBe(false);
+  });
+});
+
+// WP-2g's instrument. The two detectors above cannot see this class at all — both
+// require `isIndentedLine`, so a line that collapsed to column 0 is skipped by each.
+describe("findColumnZeroMarkers", () => {
+  test("reports a marker that escaped the indented block it belongs to", () => {
+    const rendered = ["    • an item whose continuation was pushed over budget", "• a second item", "      its own continuation"].join(
+      "\n",
+    );
+    expect(findColumnZeroMarkers(rendered).map((hit) => hit.line)).toEqual([2]);
+  });
+
+  test("ignores authored prose that merely starts like a marker", () => {
+    const rendered = ["a paragraph of prose", "1. an authored numbered paragraph", "more prose at column zero"].join("\n");
+    expect(findColumnZeroMarkers(rendered)).toEqual([]);
+  });
+
+  test("honours codeRanges on both the candidate line and its adjacency evidence", () => {
+    const rendered = ["1. an authored numbered paragraph", "    indented fenced content"].join("\n");
+    // without the ranges the indented fence reads as adjacency
+    expect(findColumnZeroMarkers(rendered)).toHaveLength(1);
+    expect(findColumnZeroMarkers(rendered, { codeRanges: [[2, 2]] })).toEqual([]);
+    // and a marker *inside* a fence is never ours to judge
+    expect(findColumnZeroMarkers(["    • an item", "• looks like a marker"].join("\n"), { codeRanges: [[2, 2]] })).toEqual([]);
+  });
+
+  test("recognizes both glyph tiers' bullets and ordered markers", () => {
+    for (const marker of ["•", "◦", "‣", "-", "*", "+", "12."]) {
+      const rendered = ["    • an item", `${marker} escaped`].join("\n");
+      expect(`${marker}: ${findColumnZeroMarkers(rendered).length}`).toBe(`${marker}: 1`);
+    }
   });
 });
 

@@ -10,7 +10,14 @@ import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
 // change no count: 58 aggregate metrics (4 fixtures x 6 widths x 2 tiers, plus a
 // 1,000-file corpus sample at 5 widths) and all 17 per-file corpus entries were
 // byte-identical before and after. **Do not reimplement any of them here.**
-import { LIST_BULLET, findContinuationOverIndent, findListOrphans, isIndentedLine, stripAnsi } from "../src/detectors";
+import {
+  LIST_BULLET,
+  findColumnZeroMarkers,
+  findContinuationOverIndent,
+  findListOrphans,
+  isIndentedLine,
+  stripAnsi,
+} from "../src/detectors";
 import { renderWithForcedColor } from "./helpers/color";
 
 const TABLE_MODULE_PATH = `${import.meta.dir}/../src/table.ts`;
@@ -1191,6 +1198,200 @@ describe("renderDocument — fenced code inside list items (WP-2f)", () => {
       expect(`w${width}: ${rendered.split("\n").some((line) => stripAnsi(line).trim() === command)}`).toBe(
         `w${width}: true`,
       );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-2g — lists inside blockquotes, and the indent-destroying re-wrap.
+//
+// **The gate is a new invariant, because neither existing detector can see this class.**
+// `findListOrphans` and `findContinuationOverIndent` both require `isIndentedLine`, so a
+// line that collapsed to column 0 is skipped by each of them — no number either of them
+// produces is evidence here, in either direction. `findColumnZeroMarkers` is WP-2g's own
+// instrument and goes to zero on this fixture.
+//
+// Two independent mechanisms, and the severe one was ours: `wrapOverBudgetLines` re-wrapped
+// any over-budget line with `wrapAnsi(line, targetWidth)`, which starts each emitted line
+// at a *word* and so discards the line's leading indent even when the line does not have
+// to be split at all — and the `blockquote` caller is the one whose lines are all
+// indented. The milder one is the library's: `indentify(this.tab, quote.trim())`
+// (`index.js:106`) costs the body's first line its own indent, leaving a quoted list's
+// first marker four columns left of its siblings at any width where nothing wraps.
+//
+// Measured over the 95 corpus files that put a list inside a blockquote, at widths
+// 40/80/116/346: **column-0 markers 471 -> 4** (the residual 4 are one authored numbered
+// paragraph in one file, present identically on the parent), and on the tier-pure
+// sub-count of substituted bullet glyphs, **406 -> 0**.
+// ---------------------------------------------------------------------------
+
+describe("renderDocument — lists inside blockquotes (WP-2g)", () => {
+  const fixture = (): Promise<string> => readFile(`${import.meta.dir}/fixtures/blockquote-list.md`, "utf8");
+
+  // 40 is the narrowest realistic tiled pane and the width at which this fixture's quoted
+  // items wrap hardest; 55 is where the WP-2f marker guard fires on its sibling fixture.
+  const WP2G_WIDTHS = [40, 55, ...WP2_WIDTHS];
+
+  test("the fixture actually contains every direction of the case", async () => {
+    const source = await fixture();
+    // a list inside a blockquote, unordered and ordered, plus a nested level
+    expect(/^> - /m.test(source)).toBe(true);
+    expect(/^> 1\. /m.test(source)).toBe(true);
+    expect(/^>\s+- /m.test(source)).toBe(true);
+    // a blockquote inside a blockquote, and a blockquote inside a *list item*
+    expect(/^> > - /m.test(source)).toBe(true);
+    expect(/^ {2}> /m.test(source)).toBe(true);
+    // fenced code inside a blockquote, including the one-line shape
+    expect(/^> ```/m.test(source)).toBe(true);
+  });
+
+  test("no rendered list marker sits at column 0, at every width and both tiers", async () => {
+    const source = await fixture();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (let width = 40; width <= 360; width += 1) {
+        const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        const found = findColumnZeroMarkers(text, { codeRanges });
+        expect(`${tier} w${width}: ${found.map((hit) => `${hit.line}:${hit.text.slice(0, 24)}`).join(" | ")}`).toBe(
+          `${tier} w${width}: `,
+        );
+      }
+    }
+  });
+
+  // The stronger form of the same invariant, and the one that cannot be argued with: a
+  // bullet *glyph* is written only by `substituteBullets`, which matches its marker on the
+  // four-column grid, so one at column 0 can only have got there by a later pass moving
+  // the line left. No adjacency heuristic, no authored-prose ambiguity.
+  test("no substituted bullet glyph ever appears at column 0", async () => {
+    const source = await fixture();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (let width = 40; width <= 360; width += 1) {
+        const offenders = renderDocument(source, width, glyphs)
+          .split("\n")
+          .map((line) => stripAnsi(line))
+          .filter((line) => [...UNICODE_GLYPHS.bullets, ...ASCII_GLYPHS.bullets].some((b) => line.startsWith(`${b} `)));
+        expect(`${tier} w${width}: ${offenders.join(" | ")}`).toBe(`${tier} w${width}: `);
+      }
+    }
+  });
+
+  // The library's `quote.trim()`, and the *only* symptom it has on its own: at a width
+  // where nothing wraps, a quoted list's first item is four columns left of its siblings.
+  // Asserted as "every marker of one list is at one column" rather than as a literal
+  // column, so it stays true if the blockquote's own indent ever changes.
+  test("a quoted list's items are siblings at one column, at a width where nothing wraps", async () => {
+    const source = await fixture();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      const lines = renderDocument(source, 400, glyphs)
+        .split("\n")
+        .map((line) => stripAnsi(line));
+      const start = lines.findIndex((line) => line.includes("A list item inside a blockquote"));
+      const second = lines.findIndex((line) => line.includes("A second item, also long enough"));
+      expect(`${tier}: ${start >= 0 && second >= 0}`).toBe(`${tier}: true`);
+      const columnOf = (line: string): number => line.length - line.trimStart().length;
+      expect(`${tier}: ${columnOf(lines[start] as string)}`).toBe(`${tier}: ${columnOf(lines[second] as string)}`);
+      // and it is the blockquote's indent on top of the list's, not either one alone
+      expect(`${tier}: ${columnOf(lines[start] as string)}`).toBe(`${tier}: 8`);
+    }
+  });
+
+  // A blockquote *inside* a list item is legitimately indented past its item's text
+  // column by its own renderer — WP-2e's non-negotiable, restated here because this WP
+  // touches the other side of the same relationship. The quote must be deeper than the
+  // item's text column, and the item's own trailing prose must come back to it.
+  test("a blockquote inside a list item stays legitimately deeper, and its item's prose returns", async () => {
+    const source = await fixture();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of WP2G_WIDTHS) {
+        const lines = renderDocument(source, width, glyphs)
+          .split("\n")
+          .map((line) => stripAnsi(line));
+        const columnOf = (needle: string): number => {
+          const line = lines.find((candidate) => candidate.includes(needle));
+          return line === undefined ? -1 : line.length - line.trimStart().length;
+        };
+        const item = columnOf("A list item that");
+        const quoted = columnOf("Quoted prose inside");
+        const trailing = columnOf("Trailing prose belonging");
+        // the marker line's *text* column is the marker column plus the marker's width
+        expect(`${tier} w${width}: ${quoted > item && trailing > item && quoted > trailing}`).toBe(
+          `${tier} w${width}: true`,
+        );
+      }
+    }
+  });
+
+  // `wrapOverBudgetLines` had no `SENTINEL` walk either, and a fence inside a blockquote
+  // reaches it already bracketed. Both fence shapes are in the fixture, including the
+  // one-line block whose whole content sits on a line that both opens and closes the
+  // pair — the shape that forces the stricter of the two walks in this file.
+  test("every fenced source line inside a blockquote survives verbatim on one line", async () => {
+    const source = await fixture();
+    const fenced: string[] = [];
+    let open = false;
+    for (const raw of source.split("\n")) {
+      const line = raw.replace(/^(\s*>)+\s?/, "");
+      if (/^\s*```/.test(line)) {
+        open = !open;
+        continue;
+      }
+      if (open && line.trim() !== "") fenced.push(line.trim());
+    }
+    expect(fenced.length).toBe(3);
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of WP2G_WIDTHS) {
+        const rendered = renderDocument(source, width, glyphs)
+          .split("\n")
+          .map((line) => stripAnsi(line).trim());
+        for (const line of fenced) {
+          expect(`${tier} w${width}: ${rendered.includes(line)}`).toBe(`${tier} w${width}: true`);
+        }
+      }
+    }
+  });
+
+  // Same decision as WP-2f, one seam over: an over-budget fence line inside a blockquote
+  // overflows rather than wrapping, and that is only self-consistent because it stays
+  // inside a recorded range. Asserted, not assumed.
+  test("every over-width line lands inside a recorded code range", async () => {
+    const source = await fixture();
+    let sawOverflow = false;
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of WP2G_WIDTHS) {
+        const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        for (const [index, line] of text.split("\n").entries()) {
+          if (stringWidth(stripAnsi(line)) <= width) continue;
+          sawOverflow = true;
+          const exempt = codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end);
+          expect(`${tier} w${width} line ${index + 1} exempt: ${exempt}`).toBe(
+            `${tier} w${width} line ${index + 1} exempt: true`,
+          );
+        }
+      }
+    }
+    expect(sawOverflow).toBe(true);
+  });
+
+  // Quoted content is wrapped at the quote's own budget, not at the full width — the
+  // `paragraph` override's gate had to move from "are we in a list" to "does anything
+  // still owe columns" once the safety net stopped hiding the overflow by deleting the
+  // indent. Without that, every wrapped line of quoted prose is 4 columns over and the
+  // net shears a word off each of them.
+  test("no continuation inside a blockquote is indented past its own item, and none is orphaned", async () => {
+    const source = await fixture();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of WP2G_WIDTHS) {
+        const lines = renderDocument(source, width, glyphs).split("\n");
+        // Scoped to the fixture's *quoted-list* half, which ends at "The other
+        // direction": everything after it is the legitimately-deeper cases (a quote
+        // inside a list item) and the fences, and `findContinuationOverIndent` reports
+        // the legitimate class identically to the defect — it is not a to-do list.
+        // That half carries no fence, so no code ranges are in play.
+        const cut = lines.findIndex((line) => stripAnsi(line).includes("The other direction"));
+        expect(`${tier} w${width}: ${cut > 0}`).toBe(`${tier} w${width}: true`);
+        const over = findContinuationOverIndent(lines.slice(0, cut).join("\n"));
+        expect(`${tier} w${width}: ${over.map((hit) => hit.text.slice(0, 30)).join(" | ")}`).toBe(`${tier} w${width}: `);
+      }
     }
   });
 });
