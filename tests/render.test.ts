@@ -10,7 +10,7 @@ import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
 // change no count: 58 aggregate metrics (4 fixtures x 6 widths x 2 tiers, plus a
 // 1,000-file corpus sample at 5 widths) and all 17 per-file corpus entries were
 // byte-identical before and after. **Do not reimplement any of them here.**
-import { LIST_BULLET, findListOrphans, isIndentedLine, stripAnsi } from "../src/detectors";
+import { LIST_BULLET, findContinuationOverIndent, findListOrphans, isIndentedLine, stripAnsi } from "../src/detectors";
 import { renderWithForcedColor } from "./helpers/color";
 
 const TABLE_MODULE_PATH = `${import.meta.dir}/../src/table.ts`;
@@ -806,6 +806,212 @@ describe("renderDocument — tight-list authored soft breaks (WP-2c)", () => {
       // and neither sentinel ever reaches the output
       expect(ascii).not.toContain(String.fromCharCode(1));
       expect(ascii).not.toContain(String.fromCharCode(0));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-2e — the nested-list continuation over-indent.
+//
+// A continuation line inside a *nested* item was indented past its own item's first
+// line, one marker width per ancestor level, because `marked-terminal`'s
+// `bulletPointLines` / `numberedLines` pad every line their `isPointedLine` does not
+// recognize — which is every continuation of an inner list that already rendered, but
+// none of that inner list's marker lines. See `realignNestedContinuations` in
+// `src/render.ts` for the mechanism, and for why the fix subtracts the drift instead of
+// snapping lines to a column.
+//
+// **It is not a cosmetic defect and it is not a second metric.** A continuation shifted
+// right is a continuation over budget, so the shallower `rewrapListBody` sheared its
+// tail word onto a line of its own — the same orphan WP-2/2b/2c chased, from a source
+// none of them had isolated. Measured on this fixture at 80/100/116/120/172/346, both
+// glyph tiers, on the parent commit: **36/25/21/19/10/3 over-indents and 8/6/4/3/1/0
+// orphans**, against 0 and 0 after. The orphans go away *with* the indent, and nothing
+// in the orphan path was touched to make that happen — which is the whole claim.
+//
+// Both detectors are `src/detectors.ts`'s, unchanged; this block passes `codeRanges`
+// because fenced code is never rewritten and its shape is not ours to guarantee.
+// ---------------------------------------------------------------------------
+
+describe("renderDocument — nested-list continuation over-indent (WP-2e)", () => {
+  const fixture = (): Promise<string> => readFile(`${import.meta.dir}/fixtures/nested-list.md`, "utf8");
+  const at = (source: string, width: number, glyphs = UNICODE_GLYPHS): string[] =>
+    renderDocument(source, width, glyphs).split("\n").map(stripAnsi);
+
+  test("no continuation of the nested-list fixture is indented past its own item, at every width and both tiers", async () => {
+    const source = await fixture();
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        expect(findContinuationOverIndent(text, { codeRanges })).toEqual([]);
+      }
+    }
+  });
+
+  // The causal claim, on the same fixture and in the same shape as WP-2b's and WP-2c's
+  // assertions: fixing the indent is what removes these, not a separate wrap change.
+  test("the nested-list fixture emits no orphaned lines, at every width and both tiers", async () => {
+    const source = await fixture();
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        expect(findListOrphans(text, width, { codeRanges })).toEqual([]);
+      }
+    }
+  });
+
+  test("no line of the nested-list fixture exceeds the target width", async () => {
+    const source = await fixture();
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        for (const line of renderDocument(source, width, glyphs).split("\n")) {
+          expect(stringWidth(line)).toBeLessThanOrEqual(width);
+        }
+      }
+    }
+  });
+
+  // A count going to zero proves nothing if the fixture stopped containing the case, so
+  // the words this defect used to shear are named individually, as WP-2c does. **Not**
+  // "reunited with the word that followed them", which is WP-2c's form and is wrong here:
+  // this fix moves the whole item two to four columns left, so the item reflows and the
+  // neighbour a word lands beside legitimately changes. What must hold is that none of
+  // them is stranded on a line of its own any more, and that none of them went missing.
+  // Every entry below was alone on a line on the parent commit, at that width.
+  test("the words the defect used to shear are no longer alone on a line", async () => {
+    const source = await fixture();
+    for (const [width, sheared] of [
+      [80, ["once", "drifted", "more", "pass", "lines", "multiple", "bullet"]],
+      [100, ["to.", "that", "full", "them", "against"]],
+      [116, ["as", "one", "bullet"]],
+      [120, ["from", "columns"]],
+      [172, ["and"]],
+    ] as const) {
+      const lines = at(source, width);
+      for (const word of sheared) {
+        expect(`w${width} "${word}" alone: ${lines.some((line) => line.trim() === word)}`).toBe(
+          `w${width} "${word}" alone: false`,
+        );
+        expect(`w${width} "${word}" present: ${lines.some((line) => line.includes(word))}`).toBe(
+          `w${width} "${word}" present: true`,
+        );
+      }
+    }
+  });
+
+  // The columns themselves, at the widths these fixtures wrap at, read straight off the
+  // output rather than through a detector — the pass and `findContinuationOverIndent`
+  // now share a stack model, so one flat reading of the rendered text is the independent
+  // check on both.
+  test("each nested item's continuations sit at exactly its own marker's text column", async () => {
+    const source = await fixture();
+    for (const width of WP2_WRAPPING_WIDTHS) {
+      const { text, codeRanges } = renderDocumentDetailed(source, width);
+      const lines = text.split("\n").map(stripAnsi);
+      const inFence = (index: number): boolean =>
+        codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end);
+      let expected: number | null = null;
+      let sawNested = false;
+      for (const [index, line] of lines.entries()) {
+        if (line.trim() === "") continue;
+        // fenced content keeps whatever indent the library gave it — never rewritten
+        if (inFence(index)) continue;
+        const marker = /^(\s{2,}(?:[•◦‣]|\d+\.)\s+)/.exec(line);
+        if (marker) {
+          const prefix = marker[1] as string;
+          expected = prefix.length;
+          if (prefix.length - prefix.trimStart().length > 4) sawNested = true;
+          continue;
+        }
+        if (!isIndentedLine(line) || expected === null) {
+          expected = null;
+          continue;
+        }
+        expect(`${line.trim().slice(0, 24)} @ ${line.length - line.trimStart().length}`).toBe(
+          `${line.trim().slice(0, 24)} @ ${expected}`,
+        );
+      }
+      expect(sawNested).toBe(true);
+    }
+  });
+
+  // The landmine this pass walks past on every line it looks at: `substituteBullets`
+  // honours `SENTINEL`, `rewrapListBody` does not (WP-2f), and adding a second offender
+  // would have been invisible to all seven gates, since code ranges are exempt from
+  // width checking. The decoys are the two marker shapes on the fence's first line.
+  test("a fence nested inside a nested list item keeps its own content", async () => {
+    const source = await fixture();
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        const rendered = at(source, width, glyphs).map((line) => line.trim());
+        expect(rendered).toContain("# * not a bullet, and 1. not a marker");
+        expect(rendered).toContain("bun run --cwd mdview sweep");
+      }
+    }
+  });
+
+  // **The reason the pass subtracts a drift instead of snapping to a column.** A
+  // blockquote inside a list item is indented past its item's text column by its own
+  // renderer, legitimately, and `findContinuationOverIndent` reports it all the same.
+  // Snapping every reported line to `item.textColumn` would flatten the quote into the
+  // prose around it; subtracting only what the list level added preserves the offset —
+  // at every depth, which is what the second assertion is for.
+  test("a blockquote inside a list item keeps its own indent relative to that item", () => {
+    const source = [
+      "- An outer item long enough to wrap at every width under test, so that its own continuation lines exist and can be told apart from the quoted block that follows them.",
+      "",
+      "  > A quoted block inside that item, also long enough to wrap, whose lines belong four columns to the right of the item's own text and must stay there.",
+      "",
+      "  - A nested item long enough to wrap at every width under test, carrying a quote of its own so the same offset is checked one level down as well.",
+      "",
+      "    > A quoted block inside the nested item, long enough to wrap, four columns right of that item's text column and not of its parent's.",
+      "",
+    ].join("\n");
+
+    for (const width of WP2_WRAPPING_WIDTHS) {
+      const lines = at(source, width);
+      const columnOf = (needle: string): number => {
+        const line = lines.find((candidate) => candidate.includes(needle));
+        expect(line === undefined ? `${needle}: missing` : `${needle}: present`).toBe(`${needle}: present`);
+        return (line as string).length - (line as string).trimStart().length;
+      };
+      // outer item's text column is 6 (4 of indent + 2 of bullet); its quote sits at 10
+      expect(columnOf("A quoted block inside that item")).toBe(10);
+      // nested item's text column is 10; its quote sits at 14, not at the outer quote's 10
+      expect(columnOf("A quoted block inside the nested item")).toBe(14);
+    }
+  });
+
+  // Nothing is ever ellipsized, and a token too long for its own budget is hard-split and
+  // rejoins losslessly — including inside a nested item, where this pass changes the
+  // column the split happens at and therefore where in the token it happens.
+  test("a long token inside a nested item is hard-split losslessly, never ellipsized", async () => {
+    const source = await fixture();
+    const token =
+      "https://example.invalid/a/second/deliberately/long/url/inside/a/nested/list/item/which/must/also/survive/verbatim/ok";
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        const rendered = at(source, width, glyphs).join("\n");
+        expect(rendered).not.toContain("…");
+        expect(rendered.replace(/\n\s*/g, "")).toContain(token);
+      }
+    }
+  });
+
+  // WP-2b's and WP-2c's fixtures are the direct control for this change: it is the first
+  // one to rewrite an already-composed list body rather than to decide where text wraps,
+  // so it is the first that could move them without touching either wrapping override.
+  test("the loose-list and tight-list fixtures are untouched — no orphans, no over-indents, no overflow", async () => {
+    for (const name of ["loose-list", "tight-list"]) {
+      const source = await readFile(`${import.meta.dir}/fixtures/${name}.md`, "utf8");
+      for (const [, glyphs] of WP2_TIERS) {
+        for (const width of WP2_WIDTHS) {
+          const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+          expect(`${name}: ${findListOrphans(text, width).join(",")}`).toBe(`${name}: `);
+          expect(findContinuationOverIndent(text, { codeRanges })).toEqual([]);
+          for (const line of text.split("\n")) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+        }
+      }
     }
   });
 });
