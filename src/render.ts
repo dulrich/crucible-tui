@@ -431,6 +431,81 @@ function substituteBullets(body: string, glyphs: GlyphSet): string {
 }
 
 /**
+ * `marked-terminal`'s `HARD_RETURN` (`index.js:26`), the marker `Renderer.prototype.br`
+ * (`index.js:291-293`) emits in place of a hard break when `reflowText` is on.
+ *
+ * **It never reaches a tight list item** — measured, see `coalesceTightItemLines` — but
+ * a coalescing pass must refuse to join across one if it ever does, so it is named here
+ * rather than assumed absent.
+ */
+const HARD_RETURN = "\r";
+
+/**
+ * An authored hard line break, as it actually survives into a *tight* list item's text.
+ *
+ * **Not `HARD_RETURN`.** `marked-terminal`'s `Renderer.prototype.text` (`index.js:84-89`)
+ * renders a block text token from its raw `token.text` field and never dispatches
+ * `token.tokens`, so for a tight item no inline token is ever rendered — `br` does not
+ * fire, no `HARD_RETURN` is produced, and the item's *markdown source syntax* arrives
+ * verbatim instead. (This is the same library behaviour that makes `**bold**` render as
+ * literal asterisks inside a tight item.) A hard break is therefore still visible, as
+ * the source spelling that created it, immediately before the `\n`:
+ *
+ * - two or more trailing spaces,
+ * - a trailing backslash,
+ * - a literal `<br>` / `<br/>` / `<br />`.
+ *
+ * Measured over 600 corpus files: 11,675 soft breaks inside tight items, **1** hard
+ * break (trailing spaces), **0** `HARD_RETURN`, **0** `SENTINEL`. Rare is not never —
+ * the one instance must survive, which is why this is a boundary and not a heuristic.
+ */
+const HARD_BREAK_TAIL = /(?: {2,}|\\|<br\s*\/?>)$/i;
+
+/** True when the break between two authored lines must be preserved, not coalesced. */
+function isHardBoundary(before: string, after: string): boolean {
+  if (before.trim() === "" || after.trim() === "") return true;
+  if (before.includes(HARD_RETURN) || after.includes(HARD_RETURN)) return true;
+  return HARD_BREAK_TAIL.test(before);
+}
+
+/**
+ * Join a tight list item's authored soft-wrapped lines back into one logical line per
+ * hard-break-delimited segment.
+ *
+ * **Why this is safe here and was not safe in WP-2b.** WP-2b could not coalesce because
+ * by the time it saw a *loose* item's text, `reflowText` had already rendered its own
+ * wraps and the author's hard break as the same bare `\n`, and had hard-split any word
+ * longer than the width with no marker — so rejoining destroyed authored breaks and
+ * corrupted long URLs and paths. **Nothing reflows a tight item** (`AGENTS.md`: "list
+ * items are never reflowed"), so every `\n` here is one the author typed, no word has
+ * been split, and markdown's own rule — a single newline inside a paragraph is a *soft*
+ * break, semantically one space — makes joining with a single space exactly lossless.
+ * Verified against the corpus, not assumed: see `HARD_BREAK_TAIL`.
+ */
+function coalesceTightItemLines(text: string): { segments: string[]; coalesced: boolean } {
+  const lines = text.split("\n");
+  const segments: string[] = [];
+  let current = lines[0] ?? "";
+  let coalesced = false;
+
+  for (let i = 1; i < lines.length; i += 1) {
+    const before = lines[i - 1] as string;
+    const after = lines[i] as string;
+    if (isHardBoundary(before, after)) {
+      segments.push(current);
+      current = after;
+      continue;
+    }
+    const left = current.replace(/\s+$/, "");
+    const right = after.replace(/^\s+/, "");
+    current = left === "" ? right : right === "" ? left : `${left} ${right}`;
+    coalesced = true;
+  }
+  segments.push(current);
+  return { segments, coalesced };
+}
+
+/**
  * Re-wrap only the lines of a rendered list body that are still over budget at this
  * nesting level. Lines already within budget are left untouched — that is what makes
  * this idempotent and safe to run on a body that already contains a correctly
@@ -663,6 +738,14 @@ export function renderDocumentDetailed(
     const pendingPrefixWidth = (): number => pendingPrefix.reduce((sum, entry) => sum + entry.columns, 0);
     const listDepth = (): number => pendingPrefix.reduce((count, entry) => count + (entry.list ? 1 : 0), 0);
 
+    // Non-zero while a renderer that dispatches *inline* tokens is on the stack. Only
+    // `paragraph` and `heading` do so anywhere a list can reach (`table` is replaced
+    // wholesale by `renderTable`, which never calls `parseInline`; `blockquote`'s
+    // children are blocks). This is one of the three conditions that tell a *tight list
+    // item's own block text token* apart from an ordinary inline text token — see the
+    // `text` override below.
+    let inlineDepth = 0;
+
     const originalList = renderer.list;
     if (originalList) {
       renderer.list = function wrappedList(token: Tokens.List) {
@@ -684,6 +767,70 @@ export function renderDocumentDetailed(
         } finally {
           pendingPrefix.pop();
         }
+      };
+    }
+
+    // **Inside a tight list item, `text` is where that item's text gets wrapped**
+    // (WP-2c). `marked`'s lexer only wraps an item in a paragraph token when the list is
+    // *loose*; a **tight** item's tokens go straight to `Parser.parse(item.tokens,
+    // false)`, whose block `text` case dispatches here. `marked-terminal`'s own `text`
+    // (`index.js:84-89`) returns the raw `token.text`, so the author's own line breaks
+    // arrive verbatim — nothing has reflowed them — and `rewrapListBody` then splits
+    // each authored line that the 6 columns of marker and indent push over the target,
+    // shearing its tail word onto a line of its own. That tail is the orphan: 1,823 of
+    // them across 250 files at width 100 in a 1,744-file corpus sample.
+    //
+    // Three independent conditions identify a tight item's own text, and any one of
+    // them failing means we leave the result exactly as the library produced it:
+    //
+    // 1. `listDepth() > 0` — we are inside a list;
+    // 2. `inlineDepth === 0` — we are not inside something that dispatches inline
+    //    tokens, so this is a *block* position;
+    // 3. the token carries `tokens` — block text tokens do, inline ones do not.
+    //
+    // Condition 3 is load-bearing, not decorative: over 600 corpus files this seam saw
+    // 11,443 tight-item block text tokens **and 413 inline text tokens inside lists, 242
+    // of them multi-line** (a loose item's source lines, before `reflowText` runs). The
+    // multi-line inline ones are exactly WP-2b's forbidden case — coalescing them is the
+    // thing that corrupts URLs — and only `tokens` separates them from ours.
+    //
+    // Fenced code, tables and nested lists are safe **by construction, not by
+    // inspection**: each is its own token type and never reaches a `text` call. Measured
+    // to confirm: 0 of those 11,443 tokens contained a `SENTINEL`.
+    const originalText = renderer.text;
+    if (originalText) {
+      renderer.text = function wrappedText(token: Tokens.Text | Tokens.Escape | Tokens.Tag) {
+        const result = originalText.call(this, token);
+        if (result === false || typeof result !== "string") return result;
+        if (listDepth() === 0 || inlineDepth > 0) return result;
+        if (!Array.isArray((token as { tokens?: Token[] }).tokens)) return result;
+        // Belt and braces on the "fences never reach here" measurement above: a body
+        // carrying a code sentinel is returned untouched rather than reasoned about.
+        if (!result.includes("\n") || result.includes(SENTINEL)) return result;
+
+        const { segments, coalesced } = coalesceTightItemLines(result);
+        // Nothing was joined — the item is a single line, or every break in it is a
+        // genuine hard break. Leave it on the pre-WP-2c path rather than re-wrapping
+        // text this WP has no reason to touch.
+        if (!coalesced) return result;
+
+        const budget = Math.max(1, targetWidth - pendingPrefixWidth());
+        const wrapAt = (width: number): string =>
+          segments.map((segment) => wrapAnsi(segment, Math.max(1, width)).join("\n")).join("\n");
+
+        const wrapped = wrapAt(budget);
+        // Same landmine, same guard as `wrappedParagraph` — see `MARKER_SHAPED_LINE`.
+        // Every line after the first is still at column 0 when `bulletPointLines` /
+        // `numberedLines` run, so one that *starts* `*` or `12.` is taken for a marker
+        // line and, in an ordered list, is handed that item's number and rewritten.
+        const collides = (text: string): boolean =>
+          text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
+        if (!collides(wrapped)) return wrapped;
+
+        return wrapAt(budget - 1)
+          .split("\n")
+          .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
+          .join("\n");
       };
     }
 
@@ -772,41 +919,57 @@ export function renderDocumentDetailed(
     const originalParagraph = renderer.paragraph;
     if (originalParagraph) {
       renderer.paragraph = function wrappedParagraph(token: Tokens.Paragraph) {
-        if (listDepth() === 0) {
-          const result = originalParagraph.call(this, token);
-          return result === false ? false : wrapOverBudgetLines(result, targetWidth);
+        // A paragraph dispatches inline tokens, so anything reaching the `text`
+        // override from inside this call is an *inline* text token, never a tight list
+        // item's own body — see that override's three conditions.
+        inlineDepth += 1;
+        try {
+          if (listDepth() === 0) {
+            const result = originalParagraph.call(this, token);
+            return result === false ? false : wrapOverBudgetLines(result, targetWidth);
+          }
+
+          const budget = Math.max(1, targetWidth - pendingPrefixWidth());
+          // The library reflows by `.length`, so the safety net still applies — just at
+          // the list's budget rather than the full width.
+          const renderAt = (width: number): string | false => {
+            const render = paragraphRendererAt(width) ?? originalParagraph;
+            const rendered = render.call(this, token);
+            return rendered === false ? false : wrapOverBudgetLines(rendered, width);
+          };
+
+          const result = renderAt(budget);
+          if (result === false) return false;
+          const collides = (text: string): boolean =>
+            text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
+          if (!collides(result)) return result;
+
+          // See `MARKER_SHAPED_LINE`: re-wrap a column narrower to make room, then give
+          // each colliding continuation line the guard space.
+          const guarded = renderAt(Math.max(1, budget - 1));
+          if (guarded === false) return result;
+          return guarded
+            .split("\n")
+            .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
+            .join("\n");
+        } finally {
+          inlineDepth -= 1;
         }
-
-        const budget = Math.max(1, targetWidth - pendingPrefixWidth());
-        // The library reflows by `.length`, so the safety net still applies — just at
-        // the list's budget rather than the full width.
-        const renderAt = (width: number): string | false => {
-          const render = paragraphRendererAt(width) ?? originalParagraph;
-          const rendered = render.call(this, token);
-          return rendered === false ? false : wrapOverBudgetLines(rendered, width);
-        };
-
-        const result = renderAt(budget);
-        if (result === false) return false;
-        const collides = (text: string): boolean =>
-          text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
-        if (!collides(result)) return result;
-
-        // See `MARKER_SHAPED_LINE`: re-wrap a column narrower to make room, then give
-        // each colliding continuation line the guard space.
-        const guarded = renderAt(Math.max(1, budget - 1));
-        if (guarded === false) return result;
-        return guarded
-          .split("\n")
-          .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
-          .join("\n");
       };
     }
 
     const originalHeading = renderer.heading;
     if (originalHeading) {
       renderer.heading = function wrappedHeading(token: Tokens.Heading) {
-        const result = originalHeading.call(this, token);
+        // Like `paragraph`, a heading dispatches inline tokens — see the `text`
+        // override. A heading is reachable inside a list item.
+        inlineDepth += 1;
+        let result: string | false;
+        try {
+          result = originalHeading.call(this, token);
+        } finally {
+          inlineDepth -= 1;
+        }
         return result === false ? false : wrapOverBudgetLines(result, targetWidth);
       };
     }

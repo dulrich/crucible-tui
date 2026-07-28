@@ -446,7 +446,21 @@ function findListOrphans(rendered: string, width: number): string[] {
   return orphans;
 }
 
-const WP2_WIDTHS = [80, 100, 120, 172];
+// **116, 172 and 346 are the user's three real terminal widths** (the three tiled
+// layouts); 116 and 346 were added in WP-2c, which found the orphan defect had until
+// then been measured only at 80/100/120/172 — one real width out of four. 80/100/120
+// stay: they are the WP-2b baseline and 80 is the narrowest case the wrap has to
+// survive.
+const WP2_WIDTHS = [80, 100, 116, 120, 172, 346];
+
+// The subset at which these fixtures actually wrap. A handful of assertions below are
+// *structural* — "this item spans more than one line", "the nested block fills its
+// budget to within 4 columns" — and at 346 columns the fixture text simply fits on one
+// line, which would make them assert nothing (or fail) for a reason that has nothing to
+// do with the behaviour under test. Orphan counts and width bounds are checked at every
+// width in `WP2_WIDTHS`, including 346; only shape assertions use this narrower set.
+const WP2_WRAPPING_WIDTHS = WP2_WIDTHS.filter((width) => width <= 172);
+
 const WP2_TIERS = [
   ["unicode", UNICODE_GLYPHS],
   ["ascii", ASCII_GLYPHS],
@@ -529,7 +543,7 @@ describe("renderDocument — loose-list double-wrap (WP-2)", () => {
   // width 100 and 1 at width 172 in this fixture's ordered section.
   test("a loose ordered list wide enough to reach a two-digit marker wraps to the marker's real width", async () => {
     const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
-    for (const width of WP2_WIDTHS) {
+    for (const width of WP2_WRAPPING_WIDTHS) {
       const lines = renderDocument(source, width, UNICODE_GLYPHS).split("\n").map(stripAnsi);
       const tenth = lines.findIndex((line) => line.trimStart().startsWith("10. "));
       expect(tenth).toBeGreaterThan(-1);
@@ -639,13 +653,198 @@ describe("renderDocument — loose-list double-wrap (WP-2)", () => {
   // fills to 79 of 80; a depth-3 budget would cap it around 73.
   test("a nested loose list is wrapped at its own depth's budget, not its parent's", async () => {
     const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
-    for (const width of WP2_WIDTHS) {
+    for (const width of WP2_WRAPPING_WIDTHS) {
       const lines = renderDocument(source, width, UNICODE_GLYPHS).split("\n").map(stripAnsi);
       const nested = lines.filter((line) => /^\s{8}/.test(line) && line.trim() !== "");
       expect(nested.length).toBeGreaterThan(3);
       const widest = Math.max(...nested.map((line) => stringWidth(line)));
       expect(widest).toBeLessThanOrEqual(width);
       expect(widest).toBeGreaterThanOrEqual(width - 4);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-2c — the same visual defect, in *tight* lists, by a different mechanism.
+//
+// A tight item is not a paragraph token, so `marked-terminal` never reflows it and the
+// author's own line breaks reach `rewrapListBody` verbatim. Adding the six columns of
+// marker and indent pushes each authored line over the target and `rewrapListBody`
+// splits it *per line*, shearing the tail word onto a line of its own.
+//
+// **The load-bearing premise is that a hard break is still distinguishable here.** It is
+// — but not as `marked-terminal`'s `HARD_RETURN`. Its `br` renderer never fires for a
+// tight item (`Renderer.prototype.text`, `index.js:84-89`, renders a block text token
+// from raw `token.text` and never dispatches `token.tokens`), so the *markdown source
+// spelling* of the break arrives instead. The first test below is that premise, asserted
+// directly rather than assumed; if it ever stops holding, safe coalescing is impossible
+// and the rest of this block is unsound.
+//
+// The metric is `findListOrphans`, unchanged and shared with WP-2b above.
+// ---------------------------------------------------------------------------
+
+describe("renderDocument — tight-list authored soft breaks (WP-2c)", () => {
+  const at = (source: string, width: number, glyphs = UNICODE_GLYPHS): string[] =>
+    renderDocument(source, width, glyphs).split("\n").map(stripAnsi);
+
+  // The premise. A soft break is a space; a hard break is a line. Both are authored, and
+  // only the source spelling tells them apart at this seam.
+  test("a soft break in a tight item is joined and each authored hard break is kept", () => {
+    const tail = "and this trailing text is here purely so that the item is long enough to be interesting.";
+    const cases = [
+      ["soft", `- A first line with no break marker at its end\n  ${tail}\n`, true],
+      ["two trailing spaces", `- A first line ending in two spaces  \n  ${tail}\n`, false],
+      ["trailing backslash", `- A first line ending in a backslash\\\n  ${tail}\n`, false],
+      ["<br />", `- A first line ending in a break tag.<br />\n  ${tail}\n`, false],
+      ["<br>", `- A first line ending in a bare break tag.<br>\n  ${tail}\n`, false],
+    ] as const;
+
+    for (const [name, source, shouldJoin] of cases) {
+      // 200 columns: the whole item fits on one rendered line, so the *only* thing that
+      // can put the tail on a line of its own is the break itself, never the wrap.
+      const lines = at(source, 200).filter((line) => line.trim() !== "");
+      expect(`${name} -> ${lines.length} line(s)`).toBe(`${name} -> ${shouldJoin ? 1 : 2} line(s)`);
+      // whichever way it went, the text itself is intact and in order
+      expect(lines.join(" ").replace(/\s+/g, " ")).toContain(tail);
+    }
+  });
+
+  test("tight list items emit no orphaned lines, at every width and both glyph tiers", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/tight-list.md`, "utf8");
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        expect(findListOrphans(renderDocument(source, width, glyphs), width)).toEqual([]);
+      }
+    }
+  });
+
+  test("no line of the tight-list fixture exceeds the target width", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/tight-list.md`, "utf8");
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        for (const line of renderDocument(source, width, glyphs).split("\n")) {
+          expect(stringWidth(line)).toBeLessThanOrEqual(width);
+        }
+      }
+    }
+  });
+
+  // A count going to zero proves nothing if the fixture stopped containing the case, so
+  // the words this defect used to shear off are named individually. Counterfactual,
+  // measured on the parent commit with this fixture: 2/12/3/3/1/0 orphans at
+  // 80/100/116/120/172/346.
+  test("the words the defect used to shear are back on the line they belong to", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/tight-list.md`, "utf8");
+    for (const [width, orphan, follows] of [
+      [100, "previous pass", "has already written out"],
+      [116, "middling", "terminal looks like"],
+      [172, "and which", "therefore only shears"],
+    ] as const) {
+      const lines = at(source, width);
+      expect(lines.some((line) => line.trim() === orphan)).toBe(false);
+      expect(lines.some((line) => line.includes(`${orphan} ${follows}`))).toBe(true);
+    }
+  });
+
+  // The two ways this change can silently destroy content, neither of which any width
+  // gate can see. A long token is never joined *into* — it was never split, because
+  // nothing reflowed the item — and a fence is never reached at all, because it is a
+  // `code` token and this pass only ever sees `text` tokens.
+  test("a long URL and a long path survive a coalescing pass intact", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/tight-list.md`, "utf8");
+    const url = "https://example.invalid/a/deliberately/long/url/that/must/never/be/split/or/joined/mid-token/ok";
+    const path = "/home/example/some/deliberately/long/filesystem/path/that/must/also/survive/a/join/verbatim.md";
+    for (const width of WP2_WIDTHS) {
+      const rendered = at(source, width).join("\n");
+      for (const token of [url, path]) {
+        if (width - 6 >= token.length) {
+          // fits: it must appear whole, on one line, with nothing inserted into it
+          expect(rendered).toContain(token);
+        } else {
+          // does not fit: `wrapAnsi` hard-splits it (never ellipsizes), and the pieces
+          // must still rejoin to the original token, in order, losslessly
+          expect(rendered.replace(/\n\s*/g, "")).toContain(token);
+        }
+      }
+    }
+  });
+
+  test("fenced content inside a tight list item is byte-identical to its source", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/tight-list.md`, "utf8");
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        const rendered = at(source, width, glyphs).map((line) => line.trim());
+        // the three fence lines, including the `*`/`N.` decoys and the double space
+        expect(rendered).toContain("# * not a bullet, and 1. not a marker");
+        expect(rendered).toContain("bun run --cwd mdview sweep");
+        expect(rendered).toContain('echo "two  spaces above are not a break"');
+      }
+    }
+  });
+
+  test("coalescing never crosses an item or a nested-list boundary", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/tight-list.md`, "utf8");
+    for (const width of WP2_WIDTHS) {
+      const rendered = at(source, width).join("\n");
+      // one item's tail never lands on the same line as the next item's head
+      expect(rendered).not.toContain("at any width at all. A third item");
+      expect(rendered).not.toContain("would then skip. An item authored");
+      // the outer item's tail never lands on the nested item's head, or vice versa
+      expect(rendered).not.toContain("reached at all. A nested item");
+      expect(rendered).not.toContain("of its own too. A closing outer item");
+    }
+  });
+
+  // The guard against joining across a *blank* line is what keeps this out of the loose
+  // path entirely, but the loose fixture is the direct control: WP-2b closed it and this
+  // WP must not move it. Its tight sections are each authored on a single source line, so
+  // they carry no soft break for this pass to act on either.
+  test("the loose-list fixture is untouched — no orphans, no overflow, at every width", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        const rendered = renderDocument(source, width, glyphs);
+        expect(findListOrphans(rendered, width)).toEqual([]);
+        for (const line of rendered.split("\n")) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  // The pass is gated on being inside a list, in a block position, on a token that
+  // carries inline `tokens`. Prose authored wrapped exactly like the items is the control
+  // for the first condition: it is reflowed by the paragraph renderer, never by this.
+  test("authored line breaks in non-list prose are not this pass's business", () => {
+    const source =
+      "A paragraph authored wrapped at a narrow column,\nwith a second source line,\nand a third one after that.\n";
+    const whole = "A paragraph authored wrapped at a narrow column, with a second source line, and a third one after that.";
+    for (const width of WP2_WIDTHS) {
+      const lines = at(source, width).filter((line) => line.trim() !== "");
+      // The paragraph renderer reflows it: the authored breaks are gone and the text is
+      // laid out to the *full* target width, not to any list budget. It is one line at
+      // every width here except 80, where the library's own wrap splits it.
+      expect(lines.join(" ")).toBe(whole);
+      // and it was laid out to the *full* target width, not to any list budget: the
+      // authored breaks are gone, so no rendered line ends where a source line did
+      expect(lines.some((line) => line.endsWith("narrow column,") || line.endsWith("source line,"))).toBe(false);
+      for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  // `- [x] ` items carry `TASK_STATE_SENTINEL` between the bracket and the state char,
+  // and coalescing runs over the text that holds it. It must arrive at the strip pass
+  // intact — a lost sentinel means `[X]  done` (rebuilt by the dead `checkbox` seam)
+  // instead of the literal source text.
+  test("task states survive coalescing in both glyph tiers", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/tight-list.md`, "utf8");
+    for (const width of WP2_WIDTHS) {
+      expect(at(source, width, UNICODE_GLYPHS).join("\n")).toContain("✓ A completed task");
+      expect(at(source, width, UNICODE_GLYPHS).join("\n")).toContain("◐ An in-progress task");
+      const ascii = at(source, width, ASCII_GLYPHS).join("\n");
+      expect(ascii).toContain("[x] A completed task");
+      expect(ascii).toContain("[/] An in-progress task");
+      // and neither sentinel ever reaches the output
+      expect(ascii).not.toContain(String.fromCharCode(1));
+      expect(ascii).not.toContain(String.fromCharCode(0));
     }
   });
 });
