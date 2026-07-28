@@ -250,16 +250,22 @@ function currentListBudget(depth: number, targetWidth: number): number {
 const LIST_LINE_PREFIX = /^(\s*)((?:\*|\d+\.)\s)?/;
 
 // Matches an unordered item's leading marker exactly as `marked-terminal` emits it:
-// leading whitespace (the not-yet-applied ancestor blankets aside, this level's own
-// indent is already present), then a literal `*` immediately followed by the one
-// space `listitem` always inserts after it. Anchored to the start of the line, so it
-// only ever matches an actual marker position — never a `*` that merely appears
-// inside wrapped body text (marked-terminal converts markdown `*emphasis*` to ANSI
-// escapes before this string is built, so a literal `*` followed by a space at column
-// 0 of a rendered line is, in practice, always the marker this override exists to
-// replace). Ordered markers (`\d+\.`) never match `\*`, so numeric markers are never
-// touched by this substitution.
-const UNORDERED_MARKER_LINE = /^(\s*)\*(\s)/;
+// this level's own indent (already applied by the time `substituteBullets` runs), then a
+// literal `*` immediately followed by the one space `listitem` always inserts after it.
+// Ordered markers (`\d+\.`) never match `\*`, so numeric markers are never touched.
+//
+// **The indent is the four-column grid, not `\s*` — this was `/^(\s*)\*(\s)/` and that
+// was too loose (WP-2f).** The old comment reasoned that a literal `*` at the start of a
+// rendered line "is, in practice, always the marker", but this pass runs *after*
+// `rewrapListBody`, which chooses where lines break and can therefore put an author's
+// own bare `*` at the start of a continuation line. `\s*` then claimed it and rewrote the
+// author's text into a bullet glyph — and no width gate can see a substitution. The
+// one-space guard both wrapping overrides use is sized for `isPointedLine`'s
+// exact-multiple-of-four indent (`LIBRARY_POINTED_LINE`), so a looser regex here is a
+// consumer that guard cannot defeat. Every genuine marker line is on that grid because
+// `indentLines` only ever adds `LIST_INDENT_PER_LEVEL` at a time: measured over a
+// 1,000-file corpus sample at five widths, **79,410 substitutions, 0 of them off-grid**.
+const UNORDERED_MARKER_LINE = /^((?: {4})+)\*(\s)/;
 
 // `marked-terminal`'s own blanket indent is `this.tab` (4) columns per nesting level,
 // applied even at the outermost level — see the brief's worked example (`"    * alpha"`
@@ -622,12 +628,71 @@ function realignNestedContinuations(body: string): string {
  * (tighter-budgeted) wrapped nested sublist: nested content was wrapped against a
  * strictly smaller budget (deeper depth), so it always already fits the shallower
  * budget here and this pass never touches it.
+ *
+ * **Fenced code is never rewritten, including a fence nested in a list item (WP-2f).**
+ * This pass shipped without the `SENTINEL` walk `substituteBullets` and
+ * `realignNestedContinuations` both use, and split fence content mid-command like any
+ * other over-budget line. **No gate could see it**: `--check` and both sweeps exempt
+ * recorded `codeRanges` from width checking, so corrupting a line *inside* one can never
+ * make a width gate fail. Same mechanism as the other two passes — `code`'s override
+ * (`wrapCode`) resolves depth-first, so every fence in this body is already bracketed in
+ * `SENTINEL` pairs by the time `list` composes it.
+ *
+ * **The strictness here is the stricter of the two forms already in this file, and the
+ * one-line fence is what decides it.** `substituteBullets` may bail on `startedInsideCode`
+ * alone because it only ever rewrites a line's *leading* marker, and a fence's opening
+ * physical line begins with the sentinel character itself, so its marker regex cannot
+ * match there. This pass rewrites the *whole* line, and `wrapCode` emits
+ * `SENTINEL + firstContentLine` — the opening physical line already carries real code,
+ * and a one-line fenced block carries its entire content on a line that both opens and
+ * closes the pair, where `startedInsideCode` is `false`. Bailing only on lines that
+ * *start* inside a fence would therefore still split exactly the content this WP exists
+ * to protect. So, as in `realignNestedContinuations`: a line that starts inside a fence
+ * **or** merely carries a sentinel is returned untouched. Nothing but `wrapCode` ever
+ * emits a sentinel, so the stricter form can only ever spare a genuine fence line.
+ *
+ * **An over-budget fence line therefore overflows**, exactly as fenced code does
+ * everywhere else in this tool — the rendering policy is unqualified, and the width gates
+ * already exempt these lines by construction, so the overflow is self-consistent rather
+ * than a new exemption. Verified rather than assumed: such lines land inside a recorded
+ * `codeRange` and stay exempt from `--check` and the sweep.
+ *
+ * **A continuation line this pass creates may not start `*` or `N.`.** It chooses where
+ * lines break, so it chooses whether `isPointedLine` claims one of them — and in an
+ * ordered list `numberedLine` then hands that line the item's number and renumbers every
+ * later item, while `substituteBullets` (which runs after this pass, over the same body)
+ * rewrites a leading `*` into a bullet glyph. Both wrapping overrides guard this via
+ * `MARKER_SHAPED_LINE`; this pass shipped without it. Same remedy — re-wrap one column
+ * narrower, then give the colliding continuation line one leading guard space, which the
+ * exact-multiple-of-four indent group cannot match.
+ *
+ * **But the trigger is not the overrides' trigger, and copying it verbatim makes this
+ * pass *cause* the collision.** Those overrides wrap text that starts at column 0, which
+ * is on the four-column grid, so a marker-shaped continuation there is always claimable
+ * and one space always takes it off the grid. Here the continuation prefix is whatever
+ * the line's own prefix measured — `"    1. "` is **7** columns, already off the grid and
+ * already safe — and adding a space to it moves the line *onto* the grid, manufacturing
+ * exactly the claimable line the guard exists to prevent. Reproduced on
+ * `tests/fixtures/fenced-list.md` at width 55: with the unconditional guard the author's
+ * bare `*` was still rewritten to a bullet glyph, and only because the guard had shifted
+ * the line from column 7 to column 8. So the guard fires only when the composed
+ * continuation would land on the grid.
  */
 function rewrapListBody(body: string, depth: number, targetWidth: number): string {
   const budget = currentListBudget(depth, targetWidth);
+  let insideCode = false;
   return body
     .split("\n")
     .map((line) => {
+      const startedInsideCode = insideCode;
+      let carriesSentinel = false;
+      for (const ch of line) {
+        if (ch === SENTINEL) {
+          insideCode = !insideCode;
+          carriesSentinel = true;
+        }
+      }
+      if (startedInsideCode || carriesSentinel) return line;
       if (stringWidth(line) <= budget) return line;
 
       const match = LIST_LINE_PREFIX.exec(line);
@@ -636,9 +701,20 @@ function rewrapListBody(body: string, depth: number, targetWidth: number): strin
       const rest = line.slice(prefix.length);
       const continuationPrefix = " ".repeat(prefixWidth);
 
-      const wrapped = wrapAnsi(rest, Math.max(1, budget - prefixWidth));
+      const wrapAt = (width: number): string[] => wrapAnsi(rest, Math.max(1, width));
+      const onGrid = prefixWidth % LIST_INDENT_PER_LEVEL === 0;
+      const collides = (lines: string[]): boolean => onGrid && lines.slice(1).some((l) => MARKER_SHAPED_LINE.test(l));
+
+      let wrapped = wrapAt(budget - prefixWidth);
+      const guarded = collides(wrapped);
+      if (guarded) wrapped = wrapAt(budget - prefixWidth - 1);
+
       return wrapped
-        .map((wrappedLine, index) => (index === 0 ? `${prefix}${wrappedLine}` : `${continuationPrefix}${wrappedLine}`))
+        .map((wrappedLine, index) => {
+          if (index === 0) return `${prefix}${wrappedLine}`;
+          const space = guarded && MARKER_SHAPED_LINE.test(wrappedLine) ? " " : "";
+          return `${continuationPrefix}${space}${wrappedLine}`;
+        })
         .join("\n");
     })
     .join("\n");

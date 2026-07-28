@@ -860,11 +860,19 @@ describe("renderDocument — nested-list continuation over-indent (WP-2e)", () =
     }
   });
 
-  test("no line of the nested-list fixture exceeds the target width", async () => {
+  // **Code ranges are exempt here, and were not before WP-2f — this assertion used to
+  // pass for the wrong reason.** The tool's guarantee is "no *non-code* line exceeds the
+  // width" (`AGENTS.md`, rendering policy; `--check` and both sweeps skip code ranges).
+  // Until WP-2f this fixture's fenced content happened to fit anyway, because
+  // `rewrapListBody` was splitting it — the very invariant violation WP-2f closed. With
+  // the fence left alone, its longest content line is 81 columns at width 80, exempt.
+  test("no line of the nested-list fixture exceeds the target width, outside its fences", async () => {
     const source = await fixture();
     for (const [, glyphs] of WP2_TIERS) {
       for (const width of WP2_WIDTHS) {
-        for (const line of renderDocument(source, width, glyphs).split("\n")) {
+        const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        for (const [index, line] of text.split("\n").entries()) {
+          if (codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end)) continue;
           expect(stringWidth(line)).toBeLessThanOrEqual(width);
         }
       }
@@ -946,6 +954,10 @@ describe("renderDocument — nested-list continuation over-indent (WP-2e)", () =
         const rendered = at(source, width, glyphs).map((line) => line.trim());
         expect(rendered).toContain("# * not a bullet, and 1. not a marker");
         expect(rendered).toContain("bun run --cwd mdview sweep");
+        // WP-2f: `rewrapListBody` split this line in two on the parent commit at width
+        // 80 — the same fixture, the same fence, a different pass. It is 81 columns and
+        // now overflows instead, which is what fenced code does everywhere else.
+        expect(rendered).toContain('echo "these four leading spaces are content, not indentation"');
       }
     }
   });
@@ -1012,6 +1024,173 @@ describe("renderDocument — nested-list continuation over-indent (WP-2e)", () =
           for (const line of text.split("\n")) expect(stringWidth(line)).toBeLessThanOrEqual(width);
         }
       }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-2f — fenced code inside a list item, and the marker-shaped continuation.
+//
+// **Both invariants here are invisible to all seven gates, for the same structural
+// reason.** `--check` and both sweeps exempt recorded `codeRanges` from width checking,
+// so a pass that *corrupts* a line inside one cannot make a width gate fail — and a
+// continuation line that starts `*` is under the width by definition. `rewrapListBody`
+// shipped from WP-2 with neither the `SENTINEL` walk `substituteBullets` and
+// `realignNestedContinuations` both have, nor the `MARKER_SHAPED_LINE` guard both
+// wrapping overrides have.
+//
+// Measured on the parent commit over a 1,000-file corpus sample of fence-carrying files
+// at 80 and 116: **154 of 37,246 fenced source lines did not survive verbatim; 0 after**
+// (the 19 that remain either side are the same lines, and are the metric's own fence
+// parity disagreeing with marked's lexer on nested fences — not a rendering change).
+// This fixture is the public-safe frozen version of that case.
+//
+// The one assertion deliberately **not** made here is the orphan count: the fixture puts
+// short prose lines immediately in front of fences on purpose, and a text token's natural
+// short last line before a fence is a block boundary, not a shear — one of the two
+// documented blind spots in `findListOrphans`. `loose-list`, `tight-list` and
+// `nested-list` remain the orphan gates; this fixture is the fence-integrity gate.
+// ---------------------------------------------------------------------------
+
+describe("renderDocument — fenced code inside list items (WP-2f)", () => {
+  const fixture = (): Promise<string> => readFile(`${import.meta.dir}/fixtures/fenced-list.md`, "utf8");
+
+  // 54/55 and 101 are the other widths at which the marker guard fires on this fixture;
+  // 100 is already in `WP2_WIDTHS`. Named rather than swept so a change that moves the
+  // break points shows up as a failure here instead of silently rendering the case inert.
+  const WP2F_WIDTHS = [...WP2_WIDTHS, 54, 55, 101];
+
+  /** Every non-blank content line of every fenced block in the fixture's source. */
+  const fencedSourceLines = (source: string): string[] => {
+    const out: string[] = [];
+    let open = false;
+    for (const line of source.split("\n")) {
+      if (/^\s*```/.test(line)) {
+        open = !open;
+        continue;
+      }
+      if (open && line.trim() !== "") out.push(line.trim());
+    }
+    return out;
+  };
+
+  test("the fixture actually contains the case — fences in loose, tight and nested items", async () => {
+    const lines = fencedSourceLines(await fixture());
+    expect(lines.length).toBe(5);
+    // the one-line block: its opening and closing markers land on the same physical
+    // rendered line, so it never *starts* inside a fence — the case that decides how
+    // strict the sentinel walk has to be.
+    expect(lines.some((line) => line.startsWith("printf"))).toBe(true);
+    // the decoys: fence content that both marker-shaped passes would otherwise claim
+    expect(lines.some((line) => line.startsWith("* not a bullet, and 1. not a marker"))).toBe(true);
+  });
+
+  test("every fenced source line survives verbatim, on one rendered line, at every width and both tiers", async () => {
+    const source = await fixture();
+    const fenced = fencedSourceLines(source);
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of WP2F_WIDTHS) {
+        const rendered = renderDocument(source, width, glyphs)
+          .split("\n")
+          .map((line) => stripAnsi(line).trim());
+        for (const line of fenced) {
+          expect(`${tier} w${width}: ${rendered.includes(line)}`).toBe(`${tier} w${width}: true`);
+        }
+      }
+    }
+  });
+
+  // The decision this WP had to make and record: an over-budget fence line inside a list
+  // item **overflows**, exactly as fenced code does everywhere else. That is only
+  // self-consistent if the resulting long lines are actually exempt — so this asserts the
+  // exemption rather than assuming it. A failure here means the tool is now emitting
+  // overflow that `--check` and the sweep would have to be widened to tolerate, which is
+  // the one outcome this WP is not allowed to produce.
+  test("every over-width line lands inside a recorded code range, and nothing else exceeds the width", async () => {
+    const source = await fixture();
+    let sawOverflow = false;
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of WP2F_WIDTHS) {
+        const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        const inFence = (index: number): boolean =>
+          codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end);
+        for (const [index, line] of text.split("\n").entries()) {
+          if (stringWidth(stripAnsi(line)) <= width) continue;
+          sawOverflow = true;
+          expect(`${tier} w${width} line ${index + 1} exempt: ${inFence(index)}`).toBe(
+            `${tier} w${width} line ${index + 1} exempt: true`,
+          );
+        }
+      }
+    }
+    // the fixture is only evidence if some line really does overflow
+    expect(sawOverflow).toBe(true);
+  });
+
+  // The marker-shaped-continuation case, demonstrated rather than asserted in the
+  // abstract. This pass breaks the last item's line so that a continuation begins with
+  // the author's bare `*`, and `substituteBullets` — which runs after it, over the same
+  // body — used to match a leading `*` at *any* indent and rewrote it into the depth's
+  // bullet glyph. Measured over every width in 40-360, both tiers: **the parent commit
+  // corrupts it at 54, 55, 100 and 101; this one at none of them.**
+  //
+  // In an ordered list `numberedLine` is the second consumer of the same shape, so the
+  // numbers are checked too. Widths 54/55/101 are named in `WP2F_WIDTHS` for exactly
+  // this reason — the case is inert at most widths and 100 is the only one of the four
+  // that the standard set covers.
+  test("a continuation line never starts with the author's own `*`, and no list is renumbered", async () => {
+    const source = await fixture();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of WP2F_WIDTHS) {
+        const lines = renderDocument(source, width, glyphs)
+          .split("\n")
+          .map((line) => stripAnsi(line));
+        const rendered = lines.join("\n");
+        // the author's glob survives as a glob — measured across the soft wrap, since at
+        // some widths the break falls between the `*` and the word after it
+        const flowed = rendered.replace(/\s+/g, " ");
+        expect(`${tier} w${width}: ${flowed.includes("* zero or more")}`).toBe(`${tier} w${width}: true`);
+        for (const bullet of [...UNICODE_GLYPHS.bullets, ...ASCII_GLYPHS.bullets]) {
+          expect(`${tier} w${width}: ${rendered.includes(`${bullet} zero or more`)}`).toBe(`${tier} w${width}: false`);
+        }
+        // and no line *inside a list body* is claimable by `isPointedLine`: a non-zero
+        // exact multiple of four spaces, then a literal marker. Fence lines keep whatever
+        // the library gave them and are not this pass's to shape; a column-zero paragraph
+        // is not in a list body at all, and the library never scans it.
+        const { codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        for (const [index, line] of lines.entries()) {
+          if (codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end)) continue;
+          if (!/^(?: {4})+\*/.test(line)) continue;
+          expect(`${tier} w${width} line ${index + 1}: ${line.trim().slice(0, 32)}`).toBe(
+            `${tier} w${width} line ${index + 1}: <no marker-shaped continuation>`,
+          );
+        }
+        // both ordered lists keep their own numbering: two items, then three. A
+        // renumbering would show up as an extra number in this sequence, which is what
+        // happens when `numberedLine` claims a line that only *looks* like a marker.
+        const numbers = lines
+          .filter((line, index) => !codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end))
+          .map((line) => /^ {4,}(\d+)\.\s/.exec(line))
+          .filter((match): match is RegExpExecArray => match !== null)
+          .map((match) => Number(match[1]));
+        expect(`${tier} w${width}: ${numbers.join(",")}`).toBe(`${tier} w${width}: 1,2,1,2,3`);
+      }
+    }
+  });
+
+  // Nothing is ever ellipsized, and the fence's content is not merely present but
+  // uncut: the longest command in the fixture is 106 columns and must appear whole even
+  // at width 40, where every other line has been wrapped four times over.
+  test("the longest fenced command is never split or ellipsized, at any width in 40-360", async () => {
+    const source = await fixture();
+    const command =
+      'echo "a deliberately very long command line that must never be rewrapped or reindented at all, at any width"';
+    for (let width = 40; width <= 360; width += 20) {
+      const rendered = renderDocument(source, width);
+      expect(`w${width}: ${rendered.includes("…")}`).toBe(`w${width}: false`);
+      expect(`w${width}: ${rendered.split("\n").some((line) => stripAnsi(line).trim() === command)}`).toBe(
+        `w${width}: true`,
+      );
     }
   });
 });
