@@ -31,6 +31,7 @@ src/wrap.ts         ANSI-safe prose wrapping for what marked-terminal won't
 src/glyphs.ts       Unicode/ASCII capability tier — the only module that reads env
 src/lang.ts         fence-language alias map + supportsLanguage() fallback
 src/config.ts       XDG config load + corpus-manifest path resolution
+src/detectors.ts    orphan / continuation-over-indent detectors (see below)
 corpus/             the bundled public-safe default manifest
 scripts/sweep.ts    multi-corpus width sweep (see "Corpus sweep" below)
 tests/              unit tests + markdown fixtures
@@ -285,6 +286,64 @@ This is the fourth time a gate here passed for a narrower reason than it appeare
 fixture had no long bullets; the highlight path is dead under tests because
 `marked-terminal` skips highlighting when stdout isn't a TTY; tier purity was unmeasured;
 code ranges are exempt). **When a gate passes, check that it passes for the right reason.**
+
+#### Defect detectors — the gates that can see *under* the width
+
+`src/detectors.ts` (WP-2d) is the answer to the section above. Every list-wrap defect this
+tool has shipped was **under** the target width, and `--check` and both sweeps only test
+for *exceeding* it, so no green sweep in this repo's history has ever been evidence about
+that class. Two detectors, both width-blind by design where the width is not the point:
+
+| Detector | Finds |
+|---|---|
+| `findListOrphans(rendered, width)` | a line in a list item with <= 2 words, after a nearly-full line, followed by more prose in the same item |
+| `findContinuationOverIndent(rendered)` | a continuation line indented past **its own item's** text column |
+
+Three things about this module are load-bearing:
+
+- **`findListOrphans` is history.** It is the metric every number WP-2, WP-2b and WP-2c
+  recorded was measured with, moved here from `tests/render.test.ts` unchanged. Editing
+  its body silently invalidates every dated figure in the private archive's
+  `measurements/`, and since the numbers only go down, a drift **looks exactly like a
+  fix**. Add a detector; do not loosen this one. The move was verified against 58
+  aggregate metrics and every per-file corpus count, byte-identical either side.
+- **The fenced-code exemption is opt-in.** Both detectors take an optional `codeRanges`
+  and honour it, because fences are never rewritten and their shape is not ours to
+  guarantee — the same reason the width gates exempt them. It defaults to *off* because
+  turning it on changes `findListOrphans`' historical counts. New callers pass it.
+- **`--detect` is off by default and that is not timidity.** The two bundled sweeps'
+  contract is `overflow=0 errors=0`; the detectors measure a class that is still open
+  (WP-2e, WP-2f), so switching them on by default would turn both gates red for known,
+  tracked reasons and destroy their value as a signal.
+
+##### The fast tier: few notes, every width
+
+The full sweep is many files × five widths. The fast tier inverts both axes — a frozen set
+of ~50 real notes that have actually failed, rendered at **every** width in a range:
+
+```bash
+MDVIEW_CORPUS_MANIFEST=<regressions manifest> \
+  bun run --cwd mdview sweep -- --corpus regressions --widths 40-360 --detect
+```
+
+`--widths` accepts an inclusive range (`40-360`), the existing comma list, or a mix
+(`40-80,116,346`). The range form exists because **orphan defects are sharply
+width-sensitive**: an orphan only exists when an authored line plus its marker and indent
+straddles the target, so a note fails at some widths and is clean at others. A three-width
+gate samples that essentially at random — the old 80/100/160 set was telling us about
+80/100/160 and nothing else. The floor of 40 is the narrowest realistic tiled pane
+(user-confirmed); 360 clears the widest real layout, 346.
+
+**Measured: 50 notes × 321 widths = 16,050 renders in ~9 s**, both glyph tiers, against
+the ~8 min the full sweep takes. The two tiers are complementary — many files × few widths
+for breadth, few files × every width for depth.
+
+`--max-orphans N` / `--max-over-indent N` make it exit non-zero above a threshold. They
+are a **ratchet, not a target**: the regression corpus is a set of notes that are
+*currently known-broken*, so its expected count is not zero, and pinning it to zero would
+just mean never running it. What must not happen is the number going up. The set itself,
+its index, and the current threshold values live in the private `example-harness` archive —
+a public clone has no regression corpus and no thresholds to pin.
 
 Run verification from `mdview/`, **not the repo root** — the root resolves a different
 `string-width` and gives false readings.

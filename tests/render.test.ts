@@ -5,6 +5,12 @@ import stringWidth from "string-width";
 import type { Tokens } from "marked";
 import { highlight as cliHighlight } from "cli-highlight";
 import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
+// WP-2d moved these out of this file and into `src/detectors.ts` so the corpus sweep
+// measures with the same implementation the test suite does. The move was verified to
+// change no count: 58 aggregate metrics (4 fixtures x 6 widths x 2 tiers, plus a
+// 1,000-file corpus sample at 5 widths) and all 17 per-file corpus entries were
+// byte-identical before and after. **Do not reimplement any of them here.**
+import { LIST_BULLET, findListOrphans, isIndentedLine, stripAnsi } from "../src/detectors";
 import { renderWithForcedColor } from "./helpers/color";
 
 const TABLE_MODULE_PATH = `${import.meta.dir}/../src/table.ts`;
@@ -26,11 +32,6 @@ if (!existsSync(TABLE_MODULE_PATH)) {
 }
 
 const { renderDocument, renderDocumentDetailed } = await import("../src/render");
-
-// Deliberately matching the ESC control character to strip ANSI SGR codes so
-// assertions can check plain rendered text.
-// eslint-disable-next-line no-control-regex
-const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
 
 describe("renderDocument — wiki-links", () => {
   test("[[slug]] renders the slug, styled", () => {
@@ -397,54 +398,14 @@ describe("renderDocument — fence language normalization silences highlight.js 
 // Read this before changing anything below. **No width assertion can see this
 // defect**: an orphaned line is *under* the target width, so `--check` and both
 // corpus sweeps are blind to it by construction. That is exactly why it survived
-// every gate. The metric below is therefore the only thing that tests it.
+// every gate. `findListOrphans` is therefore the only thing that tests it.
 //
-// An orphan is: a line inside a rendered list item that carries <= 2 words, whose
-// preceding line is nearly full (>= width - 10), and which is *followed by more
-// prose in the same item*. That last clause matters — without it the metric also
-// flags the natural short final line of any wrapped item (a tight item ending
-// "...being fixed."), which is not a defect and is present either way.
-//
-// **Known blind spot, do not "fix" it by loosening the metric.** `marked-terminal`
-// drops the blank line between two paragraphs of the same loose item
-// (`bulletPointLines`' `.filter(identity)`), so in rendered text a paragraph
-// boundary and a shear are the same shape and the first paragraph's short last line
-// reads as an orphan. No line-based metric can separate them; the multi-paragraph
-// case is therefore asserted structurally, on its own inline source, rather than
-// being added to `loose-list.md`.
+// The metric itself — definition, its one known blind spot, and why neither may be
+// loosened — now lives in `src/detectors.ts`, imported above. It moved there in
+// WP-2d so `scripts/sweep.ts` measures with this exact implementation rather than a
+// second copy that drifts from it. Read that module's doc comment before touching
+// any orphan assertion here.
 // ---------------------------------------------------------------------------
-
-const LIST_BULLET = /^\s{2,}(?:[•*\-◦‣+]|\d+\.)\s/;
-const isIndentedLine = (line: string): boolean => /^\s{2,}\S/.test(line);
-
-function findListOrphans(rendered: string, width: number): string[] {
-  const lines = rendered.split("\n").map(stripAnsi);
-  const orphans: string[] = [];
-  let inList = false;
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] as string;
-
-    // the bullet line itself has to be seen to open the list, so this runs from i = 0
-    if (LIST_BULLET.test(line)) inList = true;
-    else if (line.trim() !== "" && !isIndentedLine(line)) inList = false;
-
-    if (i === 0) continue;
-    if (!inList || line.trim() === "" || !isIndentedLine(line) || LIST_BULLET.test(line)) continue;
-
-    const previous = lines[i - 1] as string;
-    if (previous.trim() === "") continue;
-    if (line.trim().split(/\s+/).filter(Boolean).length > 2) continue;
-    if (stringWidth(previous) < width - 10) continue;
-
-    // must continue into more prose in the same item, not simply end it
-    const next = lines[i + 1];
-    if (next === undefined || next.trim() === "" || !isIndentedLine(next) || LIST_BULLET.test(next)) continue;
-
-    orphans.push(line.trim());
-  }
-  return orphans;
-}
 
 // **116, 172 and 346 are the user's three real terminal widths** (the three tiled
 // layouts); 116 and 346 were added in WP-2c, which found the orphan defect had until
