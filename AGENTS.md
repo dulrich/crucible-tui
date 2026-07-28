@@ -50,6 +50,46 @@ reason — do not remove one without re-running the corpus sweep:
 | `hr` | The library hardcodes its rule character; the glyph tier has to reach it, and the rule must match the frontmatter divider exactly |
 | `code` | Brackets fenced output so `--check` can exempt it, and normalizes `token.lang` through `src/lang.ts` before highlighting |
 | `html`, and a safety net on `paragraph`/`heading`/`blockquote` | A block-level tag (e.g. a line starting `<script>`) swallows a paragraph and is returned unreflowed; the library's own reflow also measures with `.length` rather than `string-width`, undercounting a few Unicode marks |
+| `paragraph`, inside a list | Every item of a **loose** list is a paragraph token dispatched through this override, so it — not `list` — is where that item's text gets wrapped. See below |
+
+#### Loose list items are wrapped by `paragraph`, at the item's own budget
+
+`marked`'s lexer stamps `loose = true` on a whole list if any item ends with a blank
+line, and each loose item is then parsed into a paragraph token. So a loose item's text
+is wrapped by the `paragraph` override, **before** `list` glues on the item's marker and
+its blanket indent. Wrapping it at the full target width there is what produced the
+orphaned-line defect: the text came back 6+ columns over budget and `rewrapListBody`
+reflowed it a second time, shearing the tail word onto a line of its own.
+
+The rule, therefore: **inside a list, `paragraph` wraps at the width the item will
+actually occupy**, not at the target width. `src/render.ts` keeps a stack of the columns
+each enclosing block renderer still owes (a list level's marker plus its 4-column indent;
+a blockquote's indent) and renders the item through a `marked-terminal` renderer built at
+`targetWidth` minus that sum. `rewrapListBody` then finds every line already in budget
+and its pass is the no-op it documents itself as.
+
+Three things that must not be simplified away:
+
+- **The marker width is derived, never hardcoded.** `"* "` is 2 columns but `"10. "` is
+  4, and the library's renumbering counter also runs over nested lists' marker lines, so
+  the widest marker a level can emit is computed from its whole subtree.
+- **Do not "coalesce and re-wrap" the paragraph result instead.** By then `reflowText`
+  has rendered its own wraps and an author's hard break as the same bare `\n`, and has
+  hard-split any word longer than the width with no marker — so rejoining lines destroys
+  authored breaks and corrupts long URLs and paths.
+- **A continuation line may not be allowed to start with `*` or `N.`.** The library's
+  `isPointedLine` takes any such line for a marker line — an item's continuation lines
+  are still at column 0 when it runs — and in an *ordered* list `numberedLine` then
+  hands it that item's number and rewrites the first `"* "` anywhere in it. The item's
+  text is corrupted and every later item is renumbered. Since this override chooses
+  where lines break, it also chooses whether that fires, so a colliding continuation
+  line is re-wrapped a column narrower and given one leading space, which the library's
+  four-space indent group cannot match. Measured: one occurrence in a 1,000-file corpus
+  sample before the guard, none after.
+
+No width gate can see this class of defect: an orphaned line is *under* the target width.
+It is covered by the orphan metric in `tests/render.test.ts` against
+`tests/fixtures/loose-list.md`, and by nothing else.
 
 #### Dead seams — do not try to use these
 
