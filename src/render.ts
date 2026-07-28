@@ -238,8 +238,18 @@ function preprocessBody(body: string, glyphs: GlyphSet): string {
 // direct nested lists, …), the number of ancestors still to apply their blanket
 // after this frame returns is `depth - 1`, so the *current* line, right now, must
 // already fit within `targetWidth - 4 * (depth - 1)`.
-function currentListBudget(depth: number, targetWidth: number): number {
-  return Math.max(1, targetWidth - 4 * (depth - 1));
+//
+// **A list is not the only thing that can still owe a blanket indent** (WP-2g).
+// `blockquote` applies `indentify(this.tab, …)` to its whole rendered body for exactly
+// the same reason and at exactly the same moment — after its children have returned —
+// so a list inside a blockquote is `BLOCKQUOTE_INDENT_PER_LEVEL` columns wider than
+// this arithmetic believed, at every level. `outerColumns` is those still-pending
+// non-list columns, read off the same `pendingPrefix` stack the `paragraph`/`text`
+// overrides already subtract in full: without it the two disagree about the same item,
+// `paragraph` wrapping the text narrow enough and this pass then re-splitting the
+// composed line against a budget four columns too generous.
+function currentListBudget(depth: number, targetWidth: number, outerColumns: number): number {
+  return Math.max(1, targetWidth - 4 * (depth - 1) - outerColumns);
 }
 
 // Matches a rendered list line's own leading prefix: `marked-terminal`'s blanket
@@ -274,8 +284,10 @@ const UNORDERED_MARKER_LINE = /^((?: {4})+)\*(\s)/;
 // matters), its nesting depth can be read straight back out of its own indentation.
 const LIST_INDENT_PER_LEVEL = 4;
 
-// `Renderer.prototype.blockquote` (`index.js:110`) indents its whole rendered body by
-// `this.tab` — the same 4 columns — once its children have already rendered.
+// `Renderer.prototype.blockquote` (`index.js:106`) indents its whole rendered body by
+// `this.tab` — the same 4 columns — once its children have already rendered. It also
+// `trim()`s that body first, which costs the first line its own indent — see
+// `firstLineIndentTrimmedAway` (WP-2g).
 const BLOCKQUOTE_INDENT_PER_LEVEL = 4;
 
 // `"* "`, the literal `marked-terminal` emits for every unordered item
@@ -678,8 +690,8 @@ function realignNestedContinuations(body: string): string {
  * the line from column 7 to column 8. So the guard fires only when the composed
  * continuation would land on the grid.
  */
-function rewrapListBody(body: string, depth: number, targetWidth: number): string {
-  const budget = currentListBudget(depth, targetWidth);
+function rewrapListBody(body: string, depth: number, targetWidth: number, outerColumns: number): string {
+  const budget = currentListBudget(depth, targetWidth, outerColumns);
   let insideCode = false;
   return body
     .split("\n")
@@ -788,6 +800,50 @@ function extractCodeRanges(renderedWithSentinels: string): RenderResult {
 }
 
 /**
+ * How many columns `Renderer.prototype.blockquote`'s `quote.trim()` is about to strip
+ * off the **first content line** of an already-rendered blockquote body — the second,
+ * milder half of WP-2g.
+ *
+ * `blockquote` is `section(this.o.blockquote(indentify(this.tab, quote.trim())))`
+ * (`index.js:106`; `indentify` is `index.js:505`). `indentify` then adds `tab` to
+ * *every* line equally, so the trim is the only asymmetry — and it is a real one
+ * whenever the body's first line is indented, which is exactly when the first child is
+ * a list (`indentLines` has added 4) or a nested blockquote. The rendered list's first
+ * item then sits four columns left of its own siblings: visible at any width, and the
+ * whole defect at widths where nothing wraps.
+ *
+ * Only a run of literal spaces counts. `trimStart` also eats tabs and newlines, and a
+ * leading blank line is genuinely nothing to restore — the columns to give back are the
+ * ones on the *last* line of what the trim removes.
+ */
+function firstLineIndentTrimmedAway(body: string): number {
+  const removed = body.slice(0, body.length - body.trimStart().length);
+  const lastLine = removed.slice(removed.lastIndexOf("\n") + 1);
+  return /^ *$/.test(lastLine) ? lastLine.length : 0;
+}
+
+/**
+ * Give those columns back, on the rendered result rather than the input, because the
+ * library trims what it is handed and there is no spelling of a leading indent that
+ * `String.prototype.trim` will not eat.
+ *
+ * The spaces go at the very start of the line, *outside* any ANSI the blockquote style
+ * opened it with. That is deliberate and it is safe: the default `o.blockquote` is a
+ * foreground+italic chalk style, so unstyled leading spaces are indistinguishable from
+ * styled ones, and every gate, sweep and detector in this tool measures ANSI-stripped
+ * text where the two are literally the same string. Inserting *inside* the escape run
+ * would mean parsing it, for no observable difference.
+ */
+function restoreFirstLineIndent(rendered: string, columns: number): string {
+  if (columns <= 0) return rendered;
+  const lines = rendered.split("\n");
+  const index = lines.findIndex((line) => stripAnsi(line).trim() !== "");
+  if (index === -1) return rendered;
+  lines[index] = `${" ".repeat(columns)}${lines[index] as string}`;
+  return lines.join("\n");
+}
+
+/**
  * Re-wrap only the lines of already-rendered output that are still over budget.
  * Idempotent and safe on already-correct input: a line within `targetWidth` is
  * returned untouched, so calling this on output that was already reflowed
@@ -850,11 +906,79 @@ function extractCodeRanges(renderedWithSentinels: string): RenderResult {
  * See `plans/crucible-tui-launch.md` WP-2/WP-2b; the fixture is
  * `tests/fixtures/loose-list.md` and the metric lives in `tests/render.test.ts`
  * (no width gate can see this defect — an orphan is *under* the width).
+ *
+ * **It re-wraps under the line's own prefix, and until WP-2g it did not** — it was
+ * `wrapAnsi(line, targetWidth)`, which discards a line's leading indent outright.
+ * `src/wrap.ts` tokenizes into words and inter-word spaces and starts each emitted line
+ * at a word, so the indent is dropped whether or not the line actually has to be split:
+ * an 81-column indented line at width 80 comes back as **one** line at **column 0**.
+ * For `paragraph` and `heading` that is harmless — their text starts at column 0 anyway — but the
+ * **`blockquote`** caller passes a body `indentify` has already indented, so every
+ * over-budget line of a blockquote escaped the blockquote entirely. With a list inside
+ * it, the escapee is a *marker* line: the rendered list's bullet at column 0, its
+ * siblings still at 8. Measured over the 95 corpus files that put a list inside a
+ * blockquote, at widths 80 and 116: **235 column-0 marker lines across 56 files**.
+ *
+ * The remedy is the shape `rewrapListBody` already uses — `LIST_LINE_PREFIX`, the
+ * prefix's width, a continuation prefix of that many spaces — and it is applied here,
+ * in the shared helper, rather than on the `blockquote` path alone: dropping a line's
+ * indent is never the correct thing to do, so the caller is not what makes it wrong.
+ * **`paragraph`/`heading` stay byte-identical by construction, not by measurement**:
+ * the new path is entered only for a line with leading whitespace, and both of those
+ * callers hand this function text that starts at column 0. Verified anyway — 1,181
+ * corpus files at two widths, zero differing lines outside blockquote-carrying files.
+ *
+ * **No marker-shaped-line guard here, deliberately** (contrast `rewrapListBody`). The
+ * callers that need one already have it — `wrappedParagraph` tests its own result — and
+ * preserving the prefix strictly *reduces* the exposure this function creates, because
+ * column 0 is itself on `isPointedLine`'s four-column grid and a preserved list prefix
+ * (`"    • "`, 6) usually is not. Adding one would change `paragraph`/`heading` bytes to
+ * defuse a collision this change does not introduce.
+ *
+ * **Fenced code is never rewritten, and this pass had no `SENTINEL` walk either
+ * (WP-2g).** A fence inside a blockquote reaches here already bracketed — `wrapCode`
+ * resolves depth-first — and an over-budget command line was being split mid-command,
+ * invisibly, exactly as `rewrapListBody` split them until WP-2f. The strictness is that
+ * pass's stricter form for that pass's reason: this function rewrites the *whole* line,
+ * and a one-line fenced block carries all of its content on a line that both opens and
+ * closes the sentinel pair, where "started inside a fence" is false. Reproduced on both
+ * shapes before the walk went in; both are covered by `tests/fixtures/blockquote-list.md`.
  */
 function wrapOverBudgetLines(rendered: string, targetWidth: number): string {
+  let insideCode = false;
   return rendered
     .split("\n")
-    .map((line) => (stringWidth(line) <= targetWidth ? line : wrapAnsi(line, targetWidth).join("\n")))
+    .map((line) => {
+      const startedInsideCode = insideCode;
+      let carriesSentinel = false;
+      for (const ch of line) {
+        if (ch === SENTINEL) {
+          insideCode = !insideCode;
+          carriesSentinel = true;
+        }
+      }
+      if (startedInsideCode || carriesSentinel) return line;
+      if (stringWidth(line) <= targetWidth) return line;
+
+      const match = LIST_LINE_PREFIX.exec(line);
+      const indent = match?.[1] ?? "";
+      const prefix = `${indent}${match?.[2] ?? ""}`;
+      const rest = line.slice(prefix.length);
+      // Two fall-throughs to the pre-WP-2g behaviour, both load-bearing. A line with no
+      // leading whitespace is what `paragraph`/`heading` always hand us, and taking the
+      // old path for it makes those two callers byte-identical rather than merely
+      // measured-equal — note `LIST_LINE_PREFIX` would otherwise claim a *paragraph*
+      // opening `"1. "` as a marker. And a line that is nothing but indent has no text
+      // to hang a continuation under, so preserving its prefix would just leave the
+      // whitespace over budget where the old path collapsed it away.
+      if (indent === "" || rest === "") return wrapAnsi(line, targetWidth).join("\n");
+
+      const prefixWidth = stringWidth(prefix);
+      const continuationPrefix = " ".repeat(prefixWidth);
+      return wrapAnsi(rest, Math.max(1, targetWidth - prefixWidth))
+        .map((wrapped, index) => (index === 0 ? `${prefix}${wrapped}` : `${continuationPrefix}${wrapped}`))
+        .join("\n");
+    })
     .join("\n");
 }
 
@@ -923,6 +1047,11 @@ export function renderDocumentDetailed(
     const pendingPrefix: Array<{ columns: number; list: boolean }> = [];
     const pendingPrefixWidth = (): number => pendingPrefix.reduce((sum, entry) => sum + entry.columns, 0);
     const listDepth = (): number => pendingPrefix.reduce((count, entry) => count + (entry.list ? 1 : 0), 0);
+    // The still-pending columns that are *not* a list's own — today, an enclosing
+    // blockquote's `indentify`. `currentListBudget` counts list levels itself (from
+    // `depth`), so double-counting them here would narrow every nested list twice.
+    const outerColumns = (): number =>
+      pendingPrefix.reduce((sum, entry) => sum + (entry.list ? 0 : entry.columns), 0);
 
     // Non-zero while a renderer that dispatches *inline* tokens is on the stack. Only
     // `paragraph` and `heading` do so anywhere a list can reach (`table` is replaced
@@ -937,6 +1066,7 @@ export function renderDocumentDetailed(
       renderer.list = function wrappedList(token: Tokens.List) {
         pendingPrefix.push({ columns: LIST_INDENT_PER_LEVEL + listMarkerWidth(token), list: true });
         const depth = listDepth();
+        const outer = outerColumns();
         try {
           // `this` is contextually `_Renderer` here (the target this function is
           // assigned to declares `this: _Renderer`); forwarding it is what keeps
@@ -961,7 +1091,7 @@ export function renderDocumentDetailed(
           // no longer over budget, so there is nothing left to shear — the orphan goes
           // away as a consequence of the indent being right, not as a second fix.
           const realigned = realignNestedContinuations(result);
-          const rewrapped = rewrapListBody(realigned, depth, targetWidth);
+          const rewrapped = rewrapListBody(realigned, depth, targetWidth, outer);
           // Bullet substitution only runs once this is the outermost call for this
           // top-level list (`depth === 1`) — see `substituteBullets`'s doc comment
           // for why running it at every recursion level corrupts `marked-terminal`'s
@@ -1127,7 +1257,19 @@ export function renderDocumentDetailed(
         // item's own body — see that override's three conditions.
         inlineDepth += 1;
         try {
-          if (listDepth() === 0) {
+          // **The condition is "does anything still owe columns", not "are we in a
+          // list"** (WP-2g). It read `listDepth() === 0` until then, on the WP-2b
+          // reasoning that a top-level blockquote's own rendering was a separate
+          // change — and that was true only while `wrapOverBudgetLines` was quietly
+          // *deleting* the blockquote's indent instead of honouring it. A blockquote
+          // reflows its children at the full `targetWidth` and then indents the result
+          // by 4, so every wrapped line of blockquoted prose is 4 columns over budget;
+          // once the safety net stopped discarding the indent to hide that, the net
+          // started shearing a word off each of those lines instead — one-word
+          // continuations through every quoted paragraph in the corpus. Same defect,
+          // same remedy, same seam as a loose list item: render it at the width it
+          // will actually occupy and the net goes back to being a no-op.
+          if (pendingPrefixWidth() === 0) {
             const result = originalParagraph.call(this, token);
             return result === false ? false : wrapOverBudgetLines(result, targetWidth);
           }
@@ -1161,38 +1303,66 @@ export function renderDocumentDetailed(
       };
     }
 
+    // The same lazy per-budget cache as `budgetedParagraphs`, for the same reason: a
+    // heading inside a blockquote or a list item is reflowed by the library at the full
+    // `targetWidth` and *then* indented, so every wrapped line of it is over budget and
+    // the safety net shears a word off each one. Re-wrapping the result is not an option
+    // here either — `reflowText` has already rendered its own breaks and an author's
+    // hard break as the same bare `\n`.
+    const budgetedHeadings = new Map<number, NonNullable<typeof renderer.heading>>();
+    const headingRendererAt = (budget: number): typeof renderer.heading => {
+      const cached = budgetedHeadings.get(budget);
+      if (cached) return cached;
+      const heading = markedTerminal({ width: budget, reflowText: true }).renderer?.heading;
+      if (heading) budgetedHeadings.set(budget, heading);
+      return heading;
+    };
+
     const originalHeading = renderer.heading;
     if (originalHeading) {
       renderer.heading = function wrappedHeading(token: Tokens.Heading) {
         // Like `paragraph`, a heading dispatches inline tokens — see the `text`
-        // override. A heading is reachable inside a list item.
+        // override. A heading is reachable inside a list item and inside a blockquote.
         inlineDepth += 1;
+        const budget = Math.max(1, targetWidth - pendingPrefixWidth());
         let result: string | false;
         try {
-          result = originalHeading.call(this, token);
+          const render = (budget === targetWidth ? originalHeading : headingRendererAt(budget)) ?? originalHeading;
+          result = render.call(this, token);
         } finally {
           inlineDepth -= 1;
         }
-        return result === false ? false : wrapOverBudgetLines(result, targetWidth);
+        return result === false ? false : wrapOverBudgetLines(result, budget);
       };
     }
 
     const originalBlockquote = renderer.blockquote;
     if (originalBlockquote) {
+      // `Renderer.prototype.blockquote` accepts either the token or an already-rendered
+      // body string (`index.js:103-105` — it only calls the parser when handed an
+      // object). Parsing the children here and handing the string on is what makes the
+      // body observable to `firstLineIndentTrimmedAway` below; it is the same single
+      // parse the library would have done, not a second render.
+      const renderBlockquoteBody = originalBlockquote as unknown as (this: unknown, quote: string) => string | false;
       renderer.blockquote = function wrappedBlockquote(token: Tokens.Blockquote) {
         // A blockquote indents its rendered body by `tab` *after* its children have
-        // rendered (`indentify`, `index.js:110`), so anything rendered inside it owes
+        // rendered (`indentify`, `index.js:106`), so anything rendered inside it owes
         // those columns too. Only the list path reads this — a top-level blockquote's
         // own rendering is unchanged, by design: widening its blast radius is a
         // separate change from closing the loose-list defect.
         pendingPrefix.push({ columns: BLOCKQUOTE_INDENT_PER_LEVEL, list: false });
-        let result: string | false;
+        let body: string;
         try {
-          result = originalBlockquote.call(this, token);
+          body = typeof token === "string" ? token : this.parser.parse(token.tokens);
         } finally {
           pendingPrefix.pop();
         }
-        return result === false ? false : wrapOverBudgetLines(result, targetWidth);
+        const lost = firstLineIndentTrimmedAway(body);
+        const result = renderBlockquoteBody.call(this, body);
+        if (result === false) return false;
+        // Restore *before* the width pass, so a first line that the restored columns
+        // push over budget is re-wrapped like any other rather than left overflowing.
+        return wrapOverBudgetLines(restoreFirstLineIndent(result, lost), targetWidth);
       };
     }
   }

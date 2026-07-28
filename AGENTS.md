@@ -51,8 +51,9 @@ reason — do not remove one without re-running the corpus sweep:
 | `hr` | The library hardcodes its rule character; the glyph tier has to reach it, and the rule must match the frontmatter divider exactly |
 | `code` | Brackets fenced output so `--check` can exempt it, and normalizes `token.lang` through `src/lang.ts` before highlighting |
 | `html`, and a safety net on `paragraph`/`heading`/`blockquote` | A block-level tag (e.g. a line starting `<script>`) swallows a paragraph and is returned unreflowed; the library's own reflow also measures with `.length` rather than `string-width`, undercounting a few Unicode marks |
-| `paragraph`, inside a list | Every item of a **loose** list is a paragraph token dispatched through this override, so it — not `list` — is where that item's text gets wrapped. See below |
+| `paragraph`, inside a list **or a blockquote** | Every item of a **loose** list is a paragraph token dispatched through this override, so it — not `list` — is where that item's text gets wrapped. A blockquote's own prose reaches it the same way and owes the same columns. See below |
 | `text`, inside a list | Every item of a **tight** list arrives here instead, as a raw block text token still carrying the author's own line breaks. See below |
+| `blockquote` | Parses its children itself so the body is observable, then gives back the first line's indent that the library's `quote.trim()` strips. See below |
 
 #### Loose list items are wrapped by `paragraph`, at the item's own budget
 
@@ -63,12 +64,16 @@ its blanket indent. Wrapping it at the full target width there is what produced 
 orphaned-line defect: the text came back 6+ columns over budget and `rewrapListBody`
 reflowed it a second time, shearing the tail word onto a line of its own.
 
-The rule, therefore: **inside a list, `paragraph` wraps at the width the item will
-actually occupy**, not at the target width. `src/render.ts` keeps a stack of the columns
-each enclosing block renderer still owes (a list level's marker plus its 4-column indent;
-a blockquote's indent) and renders the item through a `marked-terminal` renderer built at
+The rule, therefore: **`paragraph` wraps at the width its text will actually occupy**,
+not at the target width. `src/render.ts` keeps a stack of the columns each enclosing block
+renderer still owes (a list level's marker plus its 4-column indent; a blockquote's
+indent) and renders the paragraph through a `marked-terminal` renderer built at
 `targetWidth` minus that sum. `rewrapListBody` then finds every line already in budget
 and its pass is the no-op it documents itself as.
+
+**The gate is that stack's total, not "are we inside a list"** — it read `listDepth()`
+until WP-2g, which left quoted prose four columns over budget at every width. See "A
+blockquote owes columns exactly like a list" below for why that only ever looked fine.
 
 Three things that must not be simplified away:
 
@@ -256,6 +261,95 @@ The fixture is `tests/fixtures/fenced-list.md` — fences in loose, tight and ne
 a one-line fence, marker-shaped fence content as decoys, and the bare-`*` continuation.
 A green sweep is not evidence for any of it; the source-anchored count above is.
 
+#### A blockquote owes columns exactly like a list, and half the defect was ours
+
+The fourth defect in this family, and the only one whose symptom is *outside* the block
+it belongs to: **a list inside a blockquote rendered its markers at column 0**, out of
+the quote entirely, while its siblings stayed at column 8.
+
+**A rendered list marker at column 0 is never correct output.** `list` blanket-indents
+its whole composed body before returning it, so the shallowest marker this tool can emit
+is at column 4, and one inside a quote at 8. That invariant is the *only* instrument that
+can grade this case, and `src/detectors.ts`'s `findColumnZeroMarkers` is it — see the
+detector section below for why the other two are structurally blind to it.
+
+Two independent mechanisms, and **the severe one was this tool's own code, not the
+library's**:
+
+- **`wrapOverBudgetLines` preserved no indentation.** It re-wrapped an over-budget line
+  as `wrapAnsi(line, targetWidth)`, and `src/wrap.ts` starts every emitted line at a
+  *word* — so the line's leading indent was discarded whether or not it even had to be
+  split, and an 81-column indented line at width 80 came back as one line at column 0.
+  Harmless for `paragraph` and `heading`, whose text starts at column 0 anyway;
+  destructive for `blockquote`, which hands it a body `indentify` has already indented.
+- **`Renderer.prototype.blockquote` is `section(this.o.blockquote(indentify(this.tab,
+  quote.trim())))`** (`index.js:106`; `indentify` at `index.js:505`). The `trim()` strips
+  the rendered body's indent from its **first line only**, so a quoted list's first item
+  sits four columns left of its own siblings. Real, but the mild one — visible only at
+  widths where nothing wraps.
+
+Four things that must not be simplified away:
+
+- **The indent-preserving re-wrap belongs in the shared helper, not on the `blockquote`
+  path.** Dropping a line's own indent is never right, so the caller is not what makes it
+  wrong. `paragraph`/`heading` stay byte-identical **by construction**, not by
+  measurement: the preserving path is entered only for a line that *has* leading
+  whitespace, and both of those callers hand the helper text starting at column 0 — which
+  also stops `LIST_LINE_PREFIX` from claiming a paragraph that opens `"1. "` as a marker
+  line. Verified anyway over 1,181 corpus files at four widths: **every differing render
+  is a blockquote-carrying file, 0 otherwise**.
+- **The first line's indent is restored on the rendered result, not on the input.** There
+  is no spelling of a leading indent that `String.prototype.trim` will not eat, so the
+  override parses the children itself (`this.parser.parse(token.tokens)` — the same
+  single parse the library would have done, since its `blockquote` accepts a
+  pre-rendered string), measures what the trim is about to take, and puts it back in
+  front of the first content line. The spaces sit *outside* the blockquote style's escape
+  run, which is invisible for a foreground-only style and identical in the ANSI-stripped
+  text every gate measures. Restore **before** the width pass, or a first line the
+  restored columns push over budget is left overflowing.
+- **`currentListBudget` had to learn that a list is not the only thing that still owes an
+  indent.** A blockquote applies its `indentify` for the same reason and at the same
+  moment, so `rewrapListBody` was re-splitting quoted list lines against a budget four
+  columns too generous while `paragraph`/`text` were already subtracting the quote in
+  full — the two disagreeing about the same item. It now subtracts the non-list columns
+  pending on the same stack.
+- **`wrapOverBudgetLines` had no `SENTINEL` walk either.** A fence inside a blockquote
+  reaches it already bracketed and was being split mid-command, invisibly, exactly as
+  `rewrapListBody` split them until WP-2f — and it needs that pass's *stricter* walk for
+  that pass's reason: it rewrites the whole line, and a one-line fenced block carries all
+  of its content on a line that both opens and closes the pair. An over-budget fence line
+  inside a quote now **overflows**, stays inside a recorded range, and stays exempt.
+
+**The `paragraph` override's gate moved from "are we in a list" to "does anything still
+owe columns", and that was forced rather than chosen.** A blockquote reflows its children
+at the full `targetWidth` and then indents the result by four, so every wrapped line of
+quoted prose is four columns over budget — which only ever looked fine because the safety
+net was *deleting* the indent instead of honouring it. The moment it stopped, the net
+started shearing a word off each of those lines instead. Same defect, same remedy and
+same seam as a loose list item: render it at the width it will actually occupy and the
+net goes back to being the no-op it documents itself as. **`heading` needed the same
+treatment for the same reason** — it is reachable inside both a blockquote and a list
+item, and it had no budgeted-renderer path at all. Measured over 599 blockquote-free
+corpus files at four widths, that change is byte-identical: nothing outside a quote in
+that sample has a heading that wraps.
+
+**There is no marker-shaped-line guard in `wrapOverBudgetLines`, deliberately** — the
+opposite call from `rewrapListBody`. The caller that needs one already has it
+(`wrappedParagraph` tests its own result), and preserving the prefix strictly *reduces*
+the exposure, because column 0 is itself on `isPointedLine`'s four-column grid and a
+preserved list prefix usually is not. Adding one would change `paragraph`/`heading` bytes
+to defuse a collision the change does not create.
+
+The fixture is `tests/fixtures/blockquote-list.md` — unordered, ordered and nested lists
+inside quotes, a quote inside a quote, fences (including the one-line shape) inside a
+quote, plain quoted prose as the control, and **a blockquote inside a list item**, which
+is *legitimately* indented past its item's text column and which nothing here may flatten
+back. Measured over the 95 corpus files that put a list inside a blockquote, at widths
+40/80/116/346: **column-0 markers 471 -> 4** — the residual four are one authored numbered
+paragraph in one file, present identically on the parent — and on the tier-pure sub-count
+of substituted bullet glyphs, **406 -> 0**. Fenced source lines surviving verbatim over
+the same sample: **7,974 -> 7,996 of 8,020, 0 newly broken**.
+
 #### Dead seams — do not try to use these
 
 `marked-terminal` calls `renderer.list()` but **never** `renderer.listitem()`.
@@ -418,42 +512,50 @@ code ranges are exempt). **When a gate passes, check that it passes for the righ
 `src/detectors.ts` (WP-2d) is the answer to the section above. Every list-wrap defect this
 tool has shipped was **under** the target width, and `--check` and both sweeps only test
 for *exceeding* it, so no green sweep in this repo's history has ever been evidence about
-that class. Two detectors, both width-blind by design where the width is not the point:
+that class. Three detectors, all width-blind by design where the width is not the point:
 
 | Detector | Finds |
 |---|---|
 | `findListOrphans(rendered, width)` | a line in a list item with <= 2 words, after a nearly-full line, followed by more prose in the same item |
 | `findContinuationOverIndent(rendered)` | a continuation line indented past **its own item's** text column |
+| `findColumnZeroMarkers(rendered)` | a rendered list marker at **column 0** — outside the block it belongs to (WP-2g) |
 
-Four things about this module are load-bearing:
+Five things about this module are load-bearing:
 
+- **The first two detectors are structurally blind to the column-0 class, and that is
+  why the third exists.** Both require `isIndentedLine`, so a line that collapsed to
+  column 0 is skipped by each of them — no count either of them produces is evidence
+  about WP-2g's defect, in either direction. The corollary bit twice: fixing the collapse
+  makes previously invisible lines *newly* measurable, so the fast tier's orphan count
+  goes **up** where the rendering got better. `findColumnZeroMarkers` is the instrument
+  that can actually see it, and its adjacency clause is not a free zero — authored prose
+  legitimately opens a line with `-` or `1.` at column 0, so the marker shape alone
+  reports 30 hits over 599 blockquote-free corpus files and requiring the nearest
+  non-blank neighbour to be *indented* takes that to 2. **Pass `codeRanges`**, or an
+  indented fence under an authored `1.` paragraph reads as adjacency.
 - **`findContinuationOverIndent` reports two classes it cannot tell apart, and its
   residual is not a to-do list.** It compares a line's column against its own item's
   text column, so a block that is *legitimately* indented past that column reads as a
   hit: a blockquote or a fence inside a list item, indented by its own renderer's
   `this.tab`. Those are correct renderings and the re-alignment pass deliberately leaves
-  them alone. A second, genuine class also survives it — a list nested inside a
-  **blockquote**, where `Renderer.prototype.blockquote`'s `indentify(this.tab,
-  quote.trim())` strips the rendered list's indent from only its *first* line and then
-  re-adds four columns to every line, leaving the first item's marker four columns left
-  of where its own continuations land. Different mechanism, different fix, and not the
-  list override's to make. **Read a non-zero count here before assuming a regression.**
+  them alone. **Read a non-zero count here before assuming a regression.** The *second*
+  class it used to carry — a list nested inside a blockquote — was closed in WP-2g; see
+  "A blockquote owes columns exactly like a list" above.
 - **`findListOrphans` is history.** It is the metric every number WP-2, WP-2b and WP-2c
   recorded was measured with, moved here from `tests/render.test.ts` unchanged. Editing
   its body silently invalidates every dated figure in the private archive's
   `measurements/`, and since the numbers only go down, a drift **looks exactly like a
   fix**. Add a detector; do not loosen this one. The move was verified against 58
   aggregate metrics and every per-file corpus count, byte-identical either side.
-- **The fenced-code exemption is opt-in.** Both detectors take an optional `codeRanges`
-  and honour it, because fences are never rewritten and their shape is not ours to
-  guarantee — the same reason the width gates exempt them. It defaults to *off* because
-  turning it on changes `findListOrphans`' historical counts. New callers pass it.
+- **The fenced-code exemption is opt-in.** All three detectors take an optional
+  `codeRanges` and honour it, because fences are never rewritten and their shape is not
+  ours to guarantee — the same reason the width gates exempt them. It defaults to *off*
+  because turning it on changes `findListOrphans`' historical counts. New callers pass it.
 - **`--detect` is off by default and that is not timidity.** The two bundled sweeps'
   contract is `overflow=0 errors=0`; the detectors measure a class that is still partly
-  open — `rewrapListBody`'s missing sentinel-awareness, the blockquote case above, and
-  the two metric blind spots the orphan detector documents — so switching them on by
-  default would turn both gates red for known, tracked reasons and destroy their value
-  as a signal.
+  open — the two metric blind spots the orphan detector documents, and the legitimate
+  over-indent class above — so switching them on by default would turn both gates red for
+  known, tracked reasons and destroy their value as a signal.
 
 ##### The fast tier: few notes, every width
 
@@ -528,13 +630,14 @@ bun run mdview/src/cli.ts some/plan.md
   command. The trade is that `--check` guarantees "no non-code line exceeds the
   width", not "no line at all".
 
-  **"Never" is unqualified, and a fence nested in a list item is the case that keeps
-  testing it** — WP-2 rewrote one there, and WP-2f found a second pass doing the same
-  (both shipped fully green, because the exemption that makes fences safe from width
-  gates also makes them invisible to width gates). Such a line **overflows** rather than
-  wrapping, exactly like a fence anywhere else; it stays inside a recorded `codeRange`
-  and therefore stays exempt. Any pass that rewrites a composed list body needs the
-  `SENTINEL` walk before it touches a line — there are three of them now, and the
+  **"Never" is unqualified, and a fence nested inside another block is the case that
+  keeps testing it** — WP-2 rewrote one inside a list item, WP-2f found a second pass
+  doing the same, and WP-2g a third doing it to a fence inside a *blockquote* (all three
+  shipped fully green, because the exemption that makes fences safe from width gates also
+  makes them invisible to width gates). Such a line **overflows** rather than wrapping,
+  exactly like a fence anywhere else; it stays inside a recorded `codeRange` and
+  therefore stays exempt. Any pass that rewrites already-rendered output needs the
+  `SENTINEL` walk before it touches a line — there are **four** of them now, and the
   strictness each one needs is not the same. See the list-override section above.
 - **Nothing is ever ellipsized.** Long tokens are hard-split at grapheme boundaries and
   rejoin losslessly. If a change can emit `…`, it is wrong.
