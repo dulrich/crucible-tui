@@ -329,10 +329,10 @@ describe("renderDocument — embeds (WP-3)", () => {
     expect(plain).not.toContain("!");
   });
 
-  test("![[folder/pic.png|alt]] renders embed: alt", () => {
-    const plain = stripAnsi(renderDocument("See ![[folder/pic.png|alt]] for details.\n", 80));
+  test("![[example/pic.png|alt]] renders embed: alt", () => {
+    const plain = stripAnsi(renderDocument("See ![[example/pic.png|alt]] for details.\n", 80));
     expect(plain).toContain("embed: alt");
-    expect(plain).not.toContain("folder/pic.png");
+    expect(plain).not.toContain("example/pic.png");
     expect(plain).not.toContain("!");
   });
 

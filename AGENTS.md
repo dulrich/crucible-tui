@@ -12,13 +12,13 @@ of overflowing or truncating them.
   terminal width to tables and drops `token.align` entirely.
 - `yaml` for frontmatter parsing, `cli-table3` for table layout, `string-width` for
   CJK/emoji-correct column measurement.
-- **Bun/TypeScript over the `project-setup` skill's Rust default (Gate 2)** — recorded
-  per that gate's "record every choice" rule. Justification: `marked@^14` is already
-  pinned fleet-wide (`example_tracker/apps/web`); the wiki-link and task-state
-  markdown logic this tool needs already exists in TypeScript
-  (`example_tracker/apps/web/src/markdown.ts`); `example_home` — the only other
-  CLI-only tool in this repo — is TypeScript; and a working prototype in this stack
-  was measured against the corpus before the plan was written.
+- **Bun/TypeScript over the Rust default the in-house scaffolding skill prescribes
+  (its Gate 2)** — recorded per that gate's "record every choice" rule. Justification:
+  `marked@^14` was already pinned across the sibling tools this tool was written beside;
+  the wiki-link and task-state markdown logic it needs already existed in TypeScript in
+  an in-house web renderer working over the same corpus; the only other CLI-only tool in
+  that family is TypeScript; and a working prototype in this stack was measured against
+  the corpus before the plan was written.
 
 ## Layout
 
@@ -35,6 +35,7 @@ src/detectors.ts    orphan / continuation-over-indent detectors (see below)
 corpus/             the bundled public-safe default manifest
 scripts/sweep.ts    multi-corpus width sweep (see "Corpus sweep" below)
 tests/              unit tests + markdown fixtures
+tests/helpers/containment.ts  the publication guard's rules (see "Containment" below)
 dist/mdview         compiled binary (gitignored; see PATH install below)
 ```
 
@@ -424,9 +425,9 @@ bun run --cwd mdview sweep -- --glyphs ascii
 
 **Flag order matters.** `bun run --cwd <dir> <script>` works; `bun --cwd <dir> run
 <script>` does **not** — on Bun 1.3.11 it prints `bun run`'s help text and **exits 0**,
-i.e. it silently passes without executing the script. Verified reproducible against
-`example_radar` too, so it is a Bun CLI behavior, not a quirk of this package. Never
-write the second form into a gate: it is a gate that can never fail.
+i.e. it silently passes without executing the script. Verified reproducible in a second,
+unrelated package, so it is a Bun CLI behavior, not a quirk of this one. Never write the
+second form into a gate: it is a gate that can never fail.
 
 The `--check` gate is the CLI's own self-smoke: it renders with no pager and exits
 non-zero if any output line exceeds the target width. All **seven** gates are binding
@@ -464,7 +465,7 @@ its own line** — a green run against the bundled default proves almost nothing
 bun run --cwd mdview sweep                                   # unicode tier, resolved manifest
 bun run --cwd mdview sweep -- --glyphs ascii                 # ascii tier
 bun run --cwd mdview sweep -- --corpus <name> --all          # one corpus, full (no sampling)
-bun run --cwd mdview sweep -- --manifest path/to/manifest.json  # override resolution
+bun run --cwd mdview sweep -- --manifest example/manifest.json  # override resolution
 ```
 
 Each corpus in a manifest may set a `sample` (positive integer): if set, that corpus is
@@ -477,17 +478,21 @@ bullets, so it stayed green while 250 of 256 real files overflowed.
 
 **The corpora are the user's real data. Open them read-only; never write to them.**
 
-#### The real validation corpus is private, and lives in `example-harness`
+#### The real validation corpus is private, and this repo does not know where it is
 
 The manifest that actually exercises this tool against ~44.5k real files — an Obsidian
 vault, research reports, every tracked initiative's docs — is generated and committed in
-the separate `example-harness` repo's `example-corpus/` directory: `README.md`
-(provenance), `scripts/gen-manifest.ts` (the generator, re-runnable against the
-initiative tracker), `manifest.json` (its output), `measurements/` (dated full-corpus
-runs), and `validity-memo.md` (what a green sweep does and does not prove). Point
-`MDVIEW_CORPUS_MANIFEST` at that repo's `manifest.json` to reproduce those runs; see that
-repo for every measured file count, date, and commit — none of that belongs here, since
-this file ships to a public clone with none of it.
+a **separate private archive repo**, which this file deliberately neither names nor
+locates. That archive holds its own `README.md` (provenance), the manifest generator, the
+generated manifest, `measurements/` (dated full-corpus runs), and a validity memo (what a
+green sweep does and does not prove). Point `MDVIEW_CORPUS_MANIFEST` at a manifest to
+reproduce those runs; every measured file count, date and commit lives in the archive,
+because none of it belongs in a repo that ships publicly.
+
+**Describing the archive by role rather than by path is the rule, not an accident here.**
+This file, `src/render.ts` and `scripts/sweep.ts` all previously cited private repos by
+name — one of them by file *and line number* — and the containment guard below is what
+now holds the line. Keep the reasoning; drop the coordinates.
 
 #### ⚠ The sweep proves width, and only width
 
@@ -583,26 +588,106 @@ for breadth, few files × every width for depth.
 are a **ratchet, not a target**: the regression corpus is a set of notes that are
 *currently known-broken*, so its expected count is not zero, and pinning it to zero would
 just mean never running it. What must not happen is the number going up. The set itself,
-its index, and the current threshold values live in the private `example-harness` archive —
-a public clone has no regression corpus and no thresholds to pin.
+its index, and the current threshold values live in the private archive — a public clone
+has no regression corpus and no thresholds to pin.
 
 Run verification from `mdview/`, **not the repo root** — the root resolves a different
 `string-width` and gives false readings.
 
+### Containment — this repo is published, and it grew up next to private ones
+
+`tests/helpers/containment.ts` holds the rules; `tests/sweep.test.ts` runs them over
+every file here, **itself included**. They are part of `bun test`, so they are covered by
+the seven gates and need no separate command.
+
+**It used to be a denylist of five literal private strings, and that shape cannot work.**
+A denylist can only contain the leaks somebody already found: it was extended twice by
+hand after near-misses and was still a name behind both times, most recently while a doc
+comment cited a private repo's internal file *and line numbers*. Worse, the five literals
+**were** the disclosure — publishing them would have named two private repos and the
+machine's home layout — and a history scrub over those same strings would have rewritten
+the guard's own constants into placeholders.
+
+The rules are the inverse shape. **Nothing private is named anywhere in this repo.** Each
+rule describes what this repo's *own* content looks like and flags everything else:
+
+| Rule | Flags |
+|---|---|
+| `foreign-path` | a path-shaped citation whose first segment is not a directory this repo has, not an installed package, and not the sanctioned fake root — i.e. a neighbour's internal layout |
+| `home-path` | an absolute path under a home-like root naming any account but the sanctioned fake one — i.e. the machine's directory layout |
+| `neighbour-name` | a bare mention of a directory that actually sits around this checkout, read from the filesystem at run time and never written down — i.e. a name in prose, which is not path-shaped and which no path rule can see |
+
+Four things about this are load-bearing:
+
+- **It catches names nobody has enumerated, and that is the whole point.** The path rule
+  keys on *shape*, so a sibling added next year is flagged the first time it is cited;
+  the neighbour rule reads the directories that are actually there rather than a list.
+  Reshaping the guard this way immediately found three references the hand-maintained
+  denylist and a careful manual audit had both missed, including the user's account name
+  sitting in a table fixture as test data.
+- **There is no self-exception, deliberately.** The old guard excluded its own file —
+  which is exactly where a denylist hides. The rule fixtures are assembled from parts at
+  run time (`["widget_factory", "internal", …].join("/")`) so the test file does not itself
+  contain the shapes it tests for, and the scan covers it like any other file.
+- **`example` is the one sanctioned fake vocabulary** — `example/…` relative,
+  `/home/example/…` absolute. Documentation and test data that needs a plausible path
+  uses it. Anything else is a finding, including in fixtures: two of the leaks this
+  replaced were sitting in fixture markdown.
+- **Nothing here can go inert.** The path and home rules need no configuration at all and
+  are sufficient on their own; the neighbour rule needs only directories that necessarily
+  exist. A missing `node_modules` is a hard error rather than an empty package set. The
+  optional supplement below either applies or says out loud that it did not.
+
+**If you check a dependency out beside your clone, that is handled — but on evidence.**
+The neighbour rule drops a name that collides with an installed package *only* when the
+directory proves it is that package: a `package.json` naming itself. Otherwise reading
+`marked-terminal`'s source next door — which this file tells you to do — would turn every
+mention of it into a finding, and a guard that fails for reasons unrelated to your change
+is a guard that gets switched off.
+
+**Do not "simplify" that by subtracting every installed package name from the neighbour
+set.** The path rule already treats a package name as a safe first segment (it must, so
+`marked/lib/marked.cjs` can be cited), which means the neighbour rule is the *only* thing
+catching a private sibling whose name collides with a package —
+`<pkg-named-sibling>/private/layout.ts` slips past the path rule and is caught here.
+Subtract the intersection wholesale and both rules go blind at once. Three tests pin this,
+including the hole the evidence-based exemption deliberately leaves open.
+
+**The supplement, and why it is only a supplement.** Private strings that are neither
+path-shaped nor directory names — a person, a client, a host — cannot be derived, so a
+*list* is the only instrument. That list is private, and this repo reaches it the way it
+reaches the corpus manifest: it is **told a path** and knows nothing about the other end.
+
+```bash
+MDVIEW_PRIVATE_NAMES=<path to a {"names": [...]} JSON file> bun test mdview/tests
+```
+
+Two states, and only two. **Unset**: the three always-on rules run — which is the binding
+guard — and the test writes a line to stderr saying the supplement was not applied.
+**Set**: the file must exist and parse to a non-empty list of non-empty strings, or the
+test **throws**. A pointer at a file that has moved is precisely how an opt-in check rots
+into one that can never fail, so it is a hard error rather than a quiet fall-back.
+
+**Width-sensitive fixtures are a trap here.** `tests/fixtures/wide-table.md` is the
+`--check` gate's fixture and its whole purpose is being wide, and `table.test.ts`'s
+`LONG_PATH` feeds column-width assertions. When a path in either has to be replaced,
+**the replacement must be no shorter** — shortening one silently weakens a binding gate
+while every test stays green.
+
 To render a file interactively:
 
 ```bash
-bun run mdview/src/cli.ts some/plan.md
+bun run mdview/src/cli.ts example/plan.md
 ```
 
 ## Conventions
 
 - `src/cli.ts` exports `main(args = Bun.argv.slice(2))` so tests call it directly
-  without a subprocess, matching `example_home/scripts/render-config.ts`.
+  without a subprocess, matching the in-house convention for CLI-only tools.
 - No shebang on `src/cli.ts`; it is invoked as `bun run mdview/src/cli.ts`, matching
-  every other standalone `.ts` entry point in this repo.
-- No `INITIATIVE.md` or `FEEDBACK.md` for this tool — `example_home` has neither;
-  `FEEDBACK.md` is user-owned and must never be agent-created.
+  every other standalone `.ts` entry point in the family this tool came from.
+- No `INITIATIVE.md` or `FEEDBACK.md` for this tool — the other CLI-only tool in that
+  family has neither; `FEEDBACK.md` is user-owned and must never be agent-created.
 - `bun build --compile` (the `build` script) produces a **standalone compiled
   binary** — a new pattern for this repo, where every other `bun build` produces a
   bundle. It is ~102 MB (the Bun runtime is embedded) and gitignored via `dist/`.
@@ -691,10 +776,10 @@ bun run mdview/src/cli.ts some/plan.md
   `measurements/`, not here — so the choice has been deferred rather than made. If you do
   fix it, note that dropping padding only buys 2 columns each and does not rescue the
   19-column case.
-- `.gitignore` is assembled from the chunk files in
-  `skills/project-setup/references/gitignore/`; repo-local entries go under the
-  `# --- project-specific ---` marker. `bun.lock` is **ignored**, matching every other
-  tool in the fleet (the root `.gitignore` ignores it globally and no tool tracks one).
+- `.gitignore` is assembled from the chunk files the in-house scaffolding skill ships;
+  repo-local entries go under the `# --- project-specific ---` marker. `bun.lock` is
+  **ignored**, matching every other tool in that family (their shared root `.gitignore`
+  ignores it globally and none of them tracks one).
 
 Plans: `plans/mdview.md` (repo root — the original build; written before `mdview/`
 existed, so it stayed at root per the repo-wide plans routing rule) and

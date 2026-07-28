@@ -198,7 +198,7 @@ export function formatMetaBlock(meta: string, targetWidth: number): string {
     // arrives as the string "2026-07-06" under this schema.
     //
     // `logLevel: "error"` because `yaml` reports recoverable oddities through
-    // `process.emitWarning` (dist/log.js:9-15), not a return value — so Node's default
+    // `process.emitWarning` (yaml/dist/log.js), not a return value — so Node's default
     // handler prints a ~15-line stack trace to stderr and no try/catch here can stop it.
     // Obsidian templates trigger this: `created: {{today}}` parses as a flow mapping used
     // as a key, giving "Keys with collection values will be stringified". Those files are
