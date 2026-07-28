@@ -1,6 +1,6 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
   findOverflow,
@@ -15,6 +15,13 @@ import {
 } from "../scripts/sweep";
 import { BUNDLED_DEFAULT_MANIFEST, resolveCorpusManifestPath, type MdviewConfig } from "../src/config";
 import { renderWithForcedColor } from "./helpers/color";
+import {
+  buildContext,
+  loadSupplementalNames,
+  scanLine,
+  scanTree,
+  type ContainmentContext,
+} from "./helpers/containment";
 import { renderDocumentDetailed } from "../src/render";
 import { UNICODE_GLYPHS } from "../src/glyphs";
 
@@ -379,68 +386,231 @@ describe("unknown --corpus name (WP-1: sourced from the manifest, not a hardcode
   });
 });
 
-describe("no private path leaks into mdview/ (WP-1 constraint 4, automated half of the extraction scrub)", () => {
-  // These four strings are the ones named explicitly in the WP-1 brief: the vault
-  // directory name, the reports directory name, and any home-relative absolute path
-  // this machine's corpora live under. This is a guard against regression, not a
-  // one-time check — a future edit that reintroduces one of these strings anywhere
-  // under mdview/ (source, tests, fixtures, docs, comments) should fail this test.
-  // `example-notes` was added in WP-2d review: a doc comment had named one of that
-  // repo's internal file paths as evidence, and the original four strings could not see
-  // it. The leak this guard exists to stop is "a private repo's layout, quoted in a file
-  // bound for a public clone" — which is not only ever spelled as an absolute path.
-  const FORBIDDEN_STRINGS = [
-    "example-vault",
-    "example_reports",
-    "example-notes",
-    "/home/analyst/code",
-    "/home/analyst",
-  ];
-  const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
-  // This test file itself necessarily contains the forbidden strings above, as
-  // literals, in order to check for them — it is the one deliberate exception,
-  // not a corpus reference.
-  const SELF_PATH = import.meta.path;
+// --- containment (WP-1 constraint 4, reshaped in WP-2h) ---------------------
+//
+// This replaced a denylist of five literal private strings. A denylist can only
+// contain the leaks somebody already found; it was extended twice by hand and was a
+// name behind both times. It also could not survive the publication it existed to
+// protect — the literals *were* the disclosure, and a history scrub would have
+// rewritten the guard's own constants into placeholders.
+//
+// The rules live in `tests/helpers/containment.ts` and name nothing private: they
+// describe what this repo's own content looks like and flag everything else, so a
+// sibling nobody has enumerated is caught by construction. See that file's header.
+//
+// **This block deliberately has no self-exception.** The old guard excluded its own
+// file, which is where a denylist hides. The fixtures below are assembled from parts
+// at run time precisely so that this file does not itself contain the shapes it
+// tests for, and the whole tree — this file included — goes through the same scan.
 
-  async function collectTrackedFiles(root: string): Promise<string[]> {
-    const out: string[] = [];
-    async function recurse(dir: string): Promise<void> {
-      const entries = await readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (SKIP_DIRS.has(entry.name)) continue;
-        const full = join(dir, entry.name);
-        if (entry.isDirectory()) {
-          await recurse(full);
-        } else if (entry.isFile()) {
-          out.push(full);
-        }
-      }
+describe("containment rules", () => {
+  const context: ContainmentContext = {
+    own: new Set(["src", "tests", "scripts"]),
+    packages: new Set(["marked", "@types/bun"]),
+    // Invented. These name nothing on any machine; the point of the exercise is that
+    // the rules do not need to know what a neighbour is called in order to flag it.
+    neighbours: new Set(["widget_factory", "ledger"]),
+    listed: new Set(),
+  };
+  // Assembled, never written out: a literal here would be a finding in this file.
+  const foreignPath = ["widget_factory", "internal", "web", "markdown.ts"].join("/");
+  const homePath = ["", "home", "someone", "notes.md"].join("/");
+  const fakeHomePath = ["", "home", "example", "notes.md"].join("/");
+  const rules = (line: string): string[] => scanLine(line, context).map((finding) => finding.rule);
+
+  test("flags a path citation into a directory this repo does not have", () => {
+    expect(rules(`// adapted from ${foreignPath}:7`)).toContain("foreign-path");
+  });
+
+  test("flags such a citation even when the first segment is on no list anywhere", () => {
+    // The whole point: `quarterly_reports` is not a neighbour here, not in any private
+    // list, and was invented for this assertion. The rule flags it for its *shape*.
+    const unknown = ["quarterly_reports", "packages", "core", "index.ts"].join("/");
+    expect(rules(`see ${unknown}`)).toEqual(["foreign-path"]);
+  });
+
+  test("allows a path into this repo's own directories", () => {
+    expect(rules(`see ${["src", "render.ts"].join("/")} and ${["tests", "fixtures"].join("/")}/`)).toEqual([]);
+  });
+
+  test("allows a path into an installed package", () => {
+    expect(rules(`${["marked", "lib", "marked.cjs"].join("/")} and @types/bun/index.d.ts`)).toEqual([]);
+  });
+
+  test("allows the sanctioned fake root, relative and absolute", () => {
+    expect(rules(`render ${["example", "plan.md"].join("/")} at ${fakeHomePath}`)).toEqual([]);
+  });
+
+  test("flags an absolute path naming any other account", () => {
+    expect(rules(`corpus at ${homePath}`)).toEqual(["home-path"]);
+  });
+
+  test("flags a distinctive neighbour name in bare prose, where no path rule can see it", () => {
+    expect(rules("the same trick widget_factory uses")).toEqual(["neighbour-name"]);
+  });
+
+  test("flags a plain-word neighbour name used as an identifier", () => {
+    expect(rules("see the `ledger` tool")).toEqual(["neighbour-name"]);
+  });
+
+  test("leaves a plain-word neighbour name alone in ordinary prose", () => {
+    // Otherwise every directory on this machine whose name is an English word — and
+    // there are several — makes the guard unusable, which is how guards get disabled.
+    expect(rules("the ledger of what changed")).toEqual([]);
+  });
+
+  test("does not read an English slash-list, a ratio, or a regex as a path", () => {
+    expect(rules("either/or, 50/50, and /\\s/.exec(text)")).toEqual([]);
+  });
+
+  test("does not read a shell variable or a placeholder as a path", () => {
+    expect(rules("$XDG_CONFIG_HOME/mdview/config.json and <path>/manifest.json")).toEqual([]);
+  });
+
+  test("a supplied private name is flagged wherever it appears, prose included", () => {
+    const listed = { ...context, listed: new Set(["quietly"]) };
+    expect(scanLine("it fails quietly", listed).map((f) => f.rule)).toEqual(["listed-name"]);
+  });
+
+  test("the neighbour rule is the only backstop for the path rule's package exemption", () => {
+    // Pins *why* `neighbourNames` refuses to drop the whole neighbours-and-packages
+    // intersection. The path rule treats an installed package name as a safe first
+    // segment — it has to, so `marked/lib/marked.cjs` can be cited — which means a
+    // private sibling sharing a package's name slips past it. This rule catches it.
+    // Subtract `packages` from `neighbours` wholesale and both rules go blind at once.
+    const collision: ContainmentContext = {
+      ...context,
+      packages: new Set(["ledger_core"]),
+      neighbours: new Set(["ledger_core"]),
+    };
+    const cited = `see ${["ledger_core", "private", "layout.ts"].join("/")}`;
+    expect(scanLine(cited, collision).map((f) => f.rule)).toEqual(["neighbour-name"]);
+  });
+});
+
+describe("a dependency checked out beside the repo is not a private neighbour", () => {
+  // A contributor reading a dependency's source next to their checkout — which this
+  // repo's own docs describe doing — must not turn every mention of that dependency
+  // into a finding. A guard that fails for reasons unrelated to your change is a guard
+  // that gets switched off.
+  const DEP = "zz-fixture-dep";
+
+  async function scaffold(withManifest: boolean): Promise<{ dir: string; repo: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-neighbours-"));
+    const repo = join(dir, "repo");
+    await mkdir(join(repo, "node_modules", DEP), { recursive: true });
+    await mkdir(join(dir, DEP), { recursive: true });
+    if (withManifest) {
+      await writeFile(join(dir, DEP, "package.json"), JSON.stringify({ name: DEP }));
     }
-    await recurse(root);
-    return out;
+    return { dir, repo };
   }
 
-  test("the bundled default manifest contains none of the forbidden strings", async () => {
-    const text = await Bun.file(BUNDLED_DEFAULT_MANIFEST).text();
-    for (const needle of FORBIDDEN_STRINGS) {
-      expect(text).not.toContain(needle);
+  test("exempt when the directory proves it is that package", async () => {
+    const { dir, repo } = await scaffold(true);
+    try {
+      expect(buildContext(repo).neighbours.has(DEP)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 
-  test("no tracked file under mdview/ contains any forbidden private-path string", async () => {
-    const files = (await collectTrackedFiles(MDVIEW_ROOT)).filter((file) => file !== SELF_PATH);
-    const offenders: string[] = [];
-    for (const file of files) {
-      let text: string;
-      try {
-        text = await Bun.file(file).text();
-      } catch {
-        continue; // binary or unreadable — not a markdown/source/doc file we care about here
-      }
-      for (const needle of FORBIDDEN_STRINGS) {
-        if (text.includes(needle)) offenders.push(`${file}: contains "${needle}"`);
-      }
+  test("still a neighbour when it only shares the name — this is the hole left open, on purpose", async () => {
+    // The exemption is evidence-based, not name-based. A private sibling that happens
+    // to be called the same thing as an installed package keeps being flagged.
+    const { dir, repo } = await scaffold(false);
+    try {
+      expect(buildContext(repo).neighbours.has(DEP)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
-    expect(offenders).toEqual([]);
+  });
+
+  test("still a neighbour when its manifest names something else", async () => {
+    const { dir, repo } = await scaffold(false);
+    try {
+      await writeFile(join(dir, DEP, "package.json"), JSON.stringify({ name: "@private/something" }));
+      expect(buildContext(repo).neighbours.has(DEP)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("supplemental private-name list", () => {
+  // The list itself is private and lives outside this repo. This repo is *told* a
+  // path and knows nothing about the other end — the same shape as the corpus
+  // manifest above, for the same reason.
+
+  test("absent when unset: the always-on rules are the whole guard", async () => {
+    const result = await loadSupplementalNames({});
+    expect(result.source).toBe("absent");
+    expect(result.names.size).toBe(0);
+  });
+
+  test("a pointer to a file that cannot be read is a hard error, never a silent skip", async () => {
+    // This is the inert-gate failure mode: an opt-in check whose input has moved, and
+    // which therefore passes forever while checking nothing.
+    await expect(
+      loadSupplementalNames({ MDVIEW_PRIVATE_NAMES: join(MDVIEW_ROOT, "no", "such", "list.json") }),
+    ).rejects.toThrow(/cannot be read/);
+  });
+
+  test("a malformed or empty list is a hard error too", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-containment-"));
+    try {
+      const bad = join(dir, "bad.json");
+      await writeFile(bad, "not json");
+      await expect(loadSupplementalNames({ MDVIEW_PRIVATE_NAMES: bad })).rejects.toThrow(/not valid JSON/);
+
+      const empty = join(dir, "empty.json");
+      await writeFile(empty, JSON.stringify({ names: [] }));
+      await expect(loadSupplementalNames({ MDVIEW_PRIVATE_NAMES: empty })).rejects.toThrow(/non-empty/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a well-formed list loads", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-containment-"));
+    try {
+      const good = join(dir, "names.json");
+      await writeFile(good, JSON.stringify({ names: ["alpha", "beta"] }));
+      const result = await loadSupplementalNames({ MDVIEW_PRIVATE_NAMES: good });
+      expect(result.source).toBe("env");
+      expect([...result.names].sort()).toEqual(["alpha", "beta"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("no private reference reaches a public clone of this repo", () => {
+  test("the bundled default manifest is clean", async () => {
+    const text = await Bun.file(BUNDLED_DEFAULT_MANIFEST).text();
+    const context = buildContext(MDVIEW_ROOT);
+    const findings = text
+      .split("\n")
+      .flatMap((line, index) => scanLine(line, context).map((f) => `${index + 1}: ${f.rule} "${f.token}"`));
+    expect(findings).toEqual([]);
+  });
+
+  test("no file under this repo carries a foreign path, a home path, or a neighbour's name", async () => {
+    const supplemental = await loadSupplementalNames();
+    if (supplemental.source === "absent") {
+      // Loud on purpose. The three always-on rules below are the binding guard and are
+      // sufficient without this; the supplement only adds private strings that are
+      // neither path-shaped nor directory names. Saying so beats a silent skip.
+      console.error(
+        "containment: MDVIEW_PRIVATE_NAMES is unset — supplemental name list not applied; " +
+          "the always-on path, home-path and neighbour rules still ran.",
+      );
+    }
+    const context = buildContext(MDVIEW_ROOT, supplemental.names);
+    expect(context.neighbours.size).toBeGreaterThan(0);
+    const findings = scanTree(MDVIEW_ROOT, context).map(
+      (finding) => `${relative(MDVIEW_ROOT, finding.file)}:${finding.line} ${finding.rule} "${finding.token}"`,
+    );
+    expect(findings).toEqual([]);
   });
 });

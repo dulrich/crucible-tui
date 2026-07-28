@@ -76,7 +76,13 @@ function buildTable(headers: string[], rows: string[][], aligns?: string[]): Tok
 const WIDE_FIXTURE = readFileSync(`${import.meta.dir}/fixtures/wide-table.md`, "utf8");
 const WIDE_TABLE = lexTable(WIDE_FIXTURE);
 
-const LONG_PATH = "example_billing/apps/api/src/importer.test.ts";
+// Long unbreakable tokens of the shape the real corpus is full of. They are written
+// under the sanctioned fake root (`example/`) rather than as real paths, and they must
+// stay **at least as long** as what they replaced — this one feeds column-width
+// assertions and `wide-table.md` is the `--check` gate's fixture, so a shorter token
+// silently weakens both. 53 and 43 columns, against 50 and 42 before WP-2h.
+const LONG_PATH = "example/backend/services/api/src/csv-importer.test.ts";
+const LONG_DIR = "example/config-presets/templates/gitignore/";
 const GATE_COMMAND = "bun run design:verify";
 
 // --- geometry --------------------------------------------------------------
@@ -276,9 +282,7 @@ describe("renderTable losslessness", () => {
   test.each([80, 100, 160])("keeps every long token in full at width %i", (target) => {
     const output = renderTable(WIDE_TABLE, target, UNICODE_GLYPHS);
     expect(squeeze(columnText(output, 0))).toContain(squeeze(GATE_COMMAND));
-    expect(squeeze(columnText(output, 1))).toContain(
-      squeeze("skills/project-setup/references/gitignore/"),
-    );
+    expect(squeeze(columnText(output, 1))).toContain(squeeze(LONG_DIR));
     expect(squeeze(columnText(output, 2))).toContain(squeeze(LONG_PATH));
   });
 });

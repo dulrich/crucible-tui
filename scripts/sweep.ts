@@ -12,9 +12,10 @@
  *   3. config key `corpusManifest` (see `src/config.ts`)
  *   4. the bundled public-safe default (`corpus/default-manifest.json`)
  *
- * The private validation manifest (covering the full example-tracker corpus,
- * ~45k files) lives in the separate `example-harness/example-corpus/` repo —
- * see that repo's README for provenance and `measurements/` for recorded runs.
+ * The private validation manifest (covering the full ~45k-file corpus) lives in a
+ * separate private archive repo, which this file deliberately does not name or
+ * locate — see that archive's README for provenance and its `measurements/` for
+ * recorded runs. Point `MDVIEW_CORPUS_MANIFEST` at your own manifest to reproduce.
  *
  * Usage: bun run --cwd mdview sweep [--corpus <name|all>] [--all]
  *                                    [--widths 80,100,160] [--limit N]

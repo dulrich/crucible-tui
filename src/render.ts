@@ -10,25 +10,25 @@ import { resolveFenceLanguage } from "./lang";
 import { stripAnsi, trackListLine, type OpenListItem } from "./detectors";
 
 // Obsidian wiki-links aren't markdown; style them before parsing so they render as
-// recognizable links-to-nowhere instead of literal brackets. Adapted from
-// example_tracker/apps/web/src/markdown.ts:7 (WIKI_LINK) — same regex, ANSI output
-// instead of an HTML <span>, plus a leading optional `!` group this tool adds itself
-// (see `styleWikiLink`'s call site in `preprocessBody`) to catch Obsidian's `![[embed]]`
-// syntax, which the adapted-from regex does not recognize at all.
+// recognizable links-to-nowhere instead of literal brackets. This regex is deliberately
+// the same one an in-house web markdown renderer already uses against the same corpus —
+// same pattern, ANSI output instead of an HTML <span>. Two documents rendered by two
+// tools must decide what a wiki-link *is* the same way, or they disagree about the same
+// note. The one addition here is a leading optional `!` group (see `styleWikiLink`'s
+// call site in `preprocessBody`) to catch Obsidian's `![[embed]]` syntax, which that
+// renderer's pattern does not recognize at all.
 const WIKI_LINK = /(!)?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
 
 // Obsidian's custom checkbox states aren't GFM tasklist syntax — marked's tasklist
-// extension only recognizes " ", "x", "X". Adapted from
-// example_tracker/apps/web/src/markdown.ts:15 (TASK_STATE_LINE) and :18-42
-// (TASK_STATES), mapping to terminal glyphs instead of lucide icon markers (there is
-// no DOM here to mount SVGs into).
+// extension only recognizes " ", "x", "X". Line pattern and state table are kept
+// aligned with the same web renderer for the same reason, mapping to terminal glyphs
+// instead of icon markers (there is no DOM here to mount SVGs into).
 const TASK_STATE_LINE = /^(\s*[-*+]\s+)\[(.)\](\s)/;
 
-// Line-by-line pre-pass with a fence toggle, adapted from
-// example_tracker/apps/web/src/markdown.ts:16 (FENCE_LINE), so neither rewrite runs
-// inside a fenced code block. The web renderer only guards its task-state pass this
-// way (see markdown.ts:45-46, which notes the wiki-link pass has "the same latent
-// gap"); this tool closes that gap for both passes, since the corpus commonly quotes
+// Line-by-line pre-pass with a fence toggle, so neither rewrite runs inside a fenced
+// code block. Borrowed from the same renderer, which guards only its *task-state* pass
+// this way and records in its own source that the wiki-link pass has the same latent
+// gap. This tool closes that gap for both passes, since the corpus commonly quotes
 // `[[slug]]` inside fenced example commands.
 const FENCE_LINE = /^\s*(```|~~~)/;
 
