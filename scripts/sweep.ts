@@ -20,10 +20,11 @@
  *                                    [--widths 80,100,160] [--limit N]
  *                                    [--glyphs unicode|ascii] [--manifest <path>]
  */
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import stringWidth from "string-width";
 import { renderDocumentDetailed } from "../src/render";
+import { findContinuationOverIndent, findListOrphans, isTableLine, stripAnsi } from "../src/detectors";
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "../src/config";
 
@@ -59,6 +60,20 @@ export interface SweepOptions {
   glyphs: GlyphSet;
   /** `--manifest <path>` — outranks the env var, config key, and bundled default. */
   manifestFlag?: string;
+  /**
+   * `--detect` — also run `src/detectors.ts` over every render.
+   *
+   * **Off by default, and that is not timidity.** The width sweep's contract is
+   * `overflow=0 errors=0` on a corpus of ~44.5k real notes; the detectors measure a
+   * defect class that is still *open* (WP-2e, WP-2f), so switching them on by default
+   * would turn the two bundled gates red for known, tracked reasons and destroy their
+   * value as a signal. Detection is a separate tier with its own ratchet thresholds.
+   */
+  detect: boolean;
+  /** `--max-orphans N` — with `--detect`, exit non-zero above N. A ratchet, not a target. */
+  maxOrphans?: number;
+  /** `--max-over-indent N` — same, for the continuation over-indent detector. */
+  maxOverIndent?: number;
 }
 
 export interface OverflowEntry {
@@ -73,6 +88,13 @@ export interface ErrorEntry {
   message: string;
 }
 
+export interface DetectEntry {
+  path: string;
+  targetWidth: number;
+  count: number;
+  line: number;
+}
+
 export interface CorpusResult {
   name: string;
   skipped: boolean;
@@ -82,6 +104,17 @@ export interface CorpusResult {
   overflow: OverflowEntry[];
   errors: ErrorEntry[];
   elapsedSeconds: number;
+  /** Populated only under `--detect`. */
+  orphans: DetectEntry[];
+  overIndent: DetectEntry[];
+  /**
+   * Of `overflow`, how many are a table row or border. Many-column tables overflow below
+   * a width floor **by design** (`plans/mdview.md:64`, decided before the tool was
+   * built), and a dense low-width sweep lights up every table-heavy note in the corpus.
+   * Reported separately so it cannot be mistaken for a regression, and so a difficulty
+   * profile does not end up measuring table width instead of difficulty.
+   */
+  tableOverflow: number;
 }
 
 /**
@@ -299,10 +332,67 @@ async function walkMarkdown(root: string, exclude: string[]): Promise<string[]> 
 }
 
 /**
+ * Canonicalize to realpaths and drop duplicates, first occurrence wins (WP-2d).
+ *
+ * **Read this before citing symlinks as an explanation for anything.** WP-2d was briefed
+ * that the walk followed symlinked `.md` files and swept the same bytes twice. Measured
+ * directly, by resolving every corpus with and without this pass and diffing the lists:
+ * **it does not, and never did — 0 duplicates removed across all 17 corpora / 44,686
+ * files.** `walkMarkdown` gates on `Dirent.isFile()`, which is *false* for a symlink
+ * (`isSymbolicLink()` is the true one), so a symlinked `.md` was never in the walk to be
+ * counted twice. Verified against the specific case the premise rested on — a repo whose
+ * `CLAUDE.md` **is** a symlink to its `AGENTS.md`, which is the fleet-wide convention and
+ * so the strongest form of the premise: the walk returns only the `AGENTS.md`. No recorded
+ * file count in the private archive's `measurements/` is inflated by symlinks, and none
+ * changed here. The corpus-side detail lives in that archive, not in this file.
+ *
+ * The pass is kept anyway, for the exposure that is real: the **glob** path resolves with
+ * `stat()`, which *does* follow symlinks, so a glob-based manifest can genuinely list one
+ * file under two names. It costs ~1.6s over 44.7k files and makes the walk's identity
+ * model explicit instead of incidental.
+ *
+ * Not fixed here, and the opposite sign of defect: because `isDirectory()` is likewise
+ * false for a symlinked directory, a symlinked *subtree* is silently **not** swept at
+ * all. That is an under-count, it is out of WP-2d's scope, and it wants a decision (is a
+ * corpus root's symlinked subtree in the corpus?) rather than a patch.
+ *
+ * A path whose `realpath` fails (a broken symlink) is kept as-is rather than dropped, so
+ * it still surfaces as the `ENOENT` it is instead of vanishing from the count silently.
+ */
+async function canonicalizeAndDedupe(files: string[]): Promise<string[]> {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const file of files) {
+    let canonical: string;
+    try {
+      canonical = await realpath(file);
+    } catch {
+      canonical = file;
+    }
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    out.push(canonical);
+  }
+  return out;
+}
+
+export interface ResolveOptions {
+  /**
+   * Defaults to `true`. The `false` path exists so the dedupe's effect stays directly
+   * measurable (call both, diff the lists) without re-running a 13-minute full sweep to
+   * infer it — it is not a supported mode for an actual sweep.
+   */
+  dedupe?: boolean;
+}
+
+/**
  * Resolve the file list for one corpus. Returns `null` (with a notice already
  * logged by the caller via `skipped`) if the corpus root does not exist.
+ *
+ * Paths come back **realpath-canonicalized and deduplicated** — see
+ * `canonicalizeAndDedupe` for why that is not optional.
  */
-export async function resolveCorpusFiles(spec: CorpusSpec): Promise<string[] | null> {
+export async function resolveCorpusFiles(spec: CorpusSpec, options: ResolveOptions = {}): Promise<string[] | null> {
   try {
     const info = await stat(spec.root);
     if (!info.isDirectory()) return null;
@@ -310,16 +400,19 @@ export async function resolveCorpusFiles(spec: CorpusSpec): Promise<string[] | n
     return null;
   }
 
+  let files: string[];
   if (spec.walkAll) {
-    return walkMarkdown(spec.root, spec.exclude ?? []);
+    files = await walkMarkdown(spec.root, spec.exclude ?? []);
+  } else {
+    const all = new Set<string>();
+    for (const glob of spec.globs ?? []) {
+      const matches = await expandGlob(spec.root, glob);
+      for (const match of matches) all.add(match);
+    }
+    files = [...all];
   }
 
-  const all = new Set<string>();
-  for (const glob of spec.globs ?? []) {
-    const matches = await expandGlob(spec.root, glob);
-    for (const match of matches) all.add(match);
-  }
-  return [...all];
+  return options.dedupe === false ? files : canonicalizeAndDedupe(files);
 }
 
 /**
@@ -346,6 +439,41 @@ export function findOverflow(
   return null;
 }
 
+/**
+ * Parse a `--widths` value: a comma list (`80,100,160`), an inclusive range
+ * (`40-360`), or any mix of the two (`40-80,116,346`).
+ *
+ * The range form exists because **orphan defects are sharply width-sensitive** — an
+ * orphan only exists when an authored line's length plus the item's marker and indent
+ * straddles the target, so a note fails at some widths and is clean at others. The
+ * measured swing was 9x across 16 columns, which means a three-width gate samples this
+ * defect class essentially at random: the old 80/100/160 set was telling us about
+ * 80/100/160 and nothing else. Sweeping a dense range only became affordable by
+ * inverting the axes — few files x every width, instead of every file x few widths.
+ */
+export function parseWidths(value: string): number[] {
+  const widths: number[] = [];
+  for (const rawPart of value.split(",")) {
+    const part = rawPart.trim();
+    const range = /^(\d+)\s*-\s*(\d+)$/.exec(part);
+    if (range) {
+      const from = Number(range[1]);
+      const to = Number(range[2]);
+      if (from <= 0 || to <= 0) throw new Error(`--widths must be positive numbers, got: ${part}`);
+      if (to < from) throw new Error(`--widths range must be ascending, got: ${part}`);
+      for (let width = from; width <= to; width += 1) widths.push(width);
+      continue;
+    }
+    const parsed = Number(part);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error(`--widths must be positive numbers, got: ${part}`);
+    }
+    widths.push(parsed);
+  }
+  if (widths.length === 0) throw new Error("--widths resolved to no widths");
+  return [...new Set(widths)];
+}
+
 export function parseArgs(argv: string[]): { corpus: string; options: SweepOptions } {
   let corpus = "all";
   let widths = DEFAULT_WIDTHS;
@@ -353,6 +481,9 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
   let all = false;
   let glyphs: GlyphSet = UNICODE_GLYPHS;
   let manifestFlag: string | undefined;
+  let detect = false;
+  let maxOrphans: number | undefined;
+  let maxOverIndent: number | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -370,13 +501,33 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
     if (arg === "--widths") {
       const value = argv[index + 1];
       if (!value) throw new Error("missing value for --widths");
-      widths = value.split(",").map((part) => {
-        const parsed = Number(part.trim());
-        if (!Number.isFinite(parsed) || parsed <= 0) {
-          throw new Error(`--widths must be positive numbers, got: ${part}`);
-        }
-        return parsed;
-      });
+      widths = parseWidths(value);
+      index += 1;
+      continue;
+    }
+    if (arg === "--detect") {
+      detect = true;
+      continue;
+    }
+    if (arg === "--max-orphans") {
+      const value = argv[index + 1];
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`--max-orphans must be a non-negative number, got: ${value}`);
+      }
+      maxOrphans = parsed;
+      detect = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--max-over-indent") {
+      const value = argv[index + 1];
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`--max-over-indent must be a non-negative number, got: ${value}`);
+      }
+      maxOverIndent = parsed;
+      detect = true;
       index += 1;
       continue;
     }
@@ -409,7 +560,7 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
     }
   }
 
-  return { corpus, options: { widths, limit, all, glyphs, manifestFlag } };
+  return { corpus, options: { widths, limit, all, glyphs, manifestFlag, detect, maxOrphans, maxOverIndent } };
 }
 
 export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Promise<CorpusResult> {
@@ -426,6 +577,9 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
       overflow: [],
       errors: [],
       elapsedSeconds: 0,
+      orphans: [],
+      overIndent: [],
+      tableOverflow: 0,
     };
   }
 
@@ -441,6 +595,9 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
       overflow: [],
       errors: [{ path: spec.root, message: "corpus exists but matched 0 files" }],
       elapsedSeconds: (performance.now() - started) / 1000,
+      orphans: [],
+      overIndent: [],
+      tableOverflow: 0,
     };
   }
 
@@ -455,6 +612,9 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
 
   const overflow: OverflowEntry[] = [];
   const errors: ErrorEntry[] = [];
+  const orphans: DetectEntry[] = [];
+  const overIndent: DetectEntry[] = [];
+  let tableOverflow = 0;
   let combos = 0;
 
   for (const path of selected) {
@@ -472,6 +632,21 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
         const found = findOverflow(text, width, codeRanges);
         if (found) {
           overflow.push({ path, width: found.width, targetWidth: width, line: found.line });
+          if (isTableLine(text.split("\n")[found.line - 1] ?? "")) tableOverflow += 1;
+        }
+        if (options.detect) {
+          // Fenced ranges are exempt here for the same reason they are exempt from the
+          // width check: fences are never rewritten, so their shape is not ours to
+          // guarantee. Constraint carried over deliberately, not inherited by accident.
+          const foundOrphans = findListOrphans(text, width, { codeRanges });
+          if (foundOrphans.length > 0) {
+            const first = text.split("\n").findIndex((line) => stripAnsi(line).trim() === foundOrphans[0]);
+            orphans.push({ path, targetWidth: width, count: foundOrphans.length, line: first + 1 });
+          }
+          const drift = findContinuationOverIndent(text, { codeRanges });
+          if (drift.length > 0) {
+            overIndent.push({ path, targetWidth: width, count: drift.length, line: drift[0]?.line ?? 0 });
+          }
         }
       } catch (error) {
         errors.push({
@@ -490,17 +665,27 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
     overflow,
     errors,
     elapsedSeconds: (performance.now() - started) / 1000,
+    orphans,
+    overIndent,
+    tableOverflow,
   };
 }
 
-function printResult(result: CorpusResult): void {
+function printResult(result: CorpusResult, detect: boolean): void {
   if (result.skipped) {
     console.log(`[${result.name}] SKIPPED — ${result.skipReason}`);
     return;
   }
+  const orphanTotal = result.orphans.reduce((sum, entry) => sum + entry.count, 0);
+  const driftTotal = result.overIndent.reduce((sum, entry) => sum + entry.count, 0);
   console.log(
     `[${result.name}] files=${result.filesScanned} combos=${result.combos} ` +
       `overflow=${result.overflow.length} errors=${result.errors.length} ` +
+      (detect
+        ? `orphans=${orphanTotal} (${result.orphans.length} file-widths) ` +
+          `overIndent=${driftTotal} (${result.overIndent.length} file-widths) ` +
+          `tableOverflow=${result.tableOverflow} `
+        : "") +
       `elapsed=${result.elapsedSeconds.toFixed(1)}s`,
   );
   // Absolute paths: corpus roots can live anywhere on the filesystem (a private
@@ -545,8 +730,23 @@ async function runCli(): Promise<void> {
   let anyFailure = false;
   for (const spec of targets) {
     const result = await sweepCorpus(spec, options);
-    printResult(result);
+    printResult(result, options.detect);
     if (!result.skipped && (result.overflow.length > 0 || result.errors.length > 0)) {
+      anyFailure = true;
+    }
+    // The detector thresholds are a **ratchet**: the regression corpus is a set of notes
+    // that are currently known-broken, so its expected orphan count is not zero and
+    // pinning it to zero would just mean never running it. What must not happen is the
+    // number going *up*. The current values live beside the corpus, in the private
+    // archive's README — not here, because a public clone has no regression corpus.
+    const orphanTotal = result.orphans.reduce((sum, entry) => sum + entry.count, 0);
+    const driftTotal = result.overIndent.reduce((sum, entry) => sum + entry.count, 0);
+    if (options.maxOrphans !== undefined && orphanTotal > options.maxOrphans) {
+      console.error(`[${result.name}] orphans=${orphanTotal} exceeds --max-orphans ${options.maxOrphans}`);
+      anyFailure = true;
+    }
+    if (options.maxOverIndent !== undefined && driftTotal > options.maxOverIndent) {
+      console.error(`[${result.name}] overIndent=${driftTotal} exceeds --max-over-indent ${options.maxOverIndent}`);
       anyFailure = true;
     }
   }

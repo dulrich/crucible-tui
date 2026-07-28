@@ -316,7 +316,7 @@ describe("corpus manifest resolution precedence (WP-1: flag > env > config > bun
 
 describe("sample honoured / overridden (WP-1: replaces the spec.name === \"vault\" hardcode)", () => {
   let dir = "";
-  const baseOptions: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS };
+  const baseOptions: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
 
   async function makeCorpusDir(fileCount: number): Promise<string> {
     const d = await mkdtemp(join(tmpdir(), "mdview-sample-"));
@@ -385,7 +385,17 @@ describe("no private path leaks into mdview/ (WP-1 constraint 4, automated half 
   // this machine's corpora live under. This is a guard against regression, not a
   // one-time check — a future edit that reintroduces one of these strings anywhere
   // under mdview/ (source, tests, fixtures, docs, comments) should fail this test.
-  const FORBIDDEN_STRINGS = ["example-vault", "example_reports", "/home/analyst/code", "/home/analyst"];
+  // `example-notes` was added in WP-2d review: a doc comment had named one of that
+  // repo's internal file paths as evidence, and the original four strings could not see
+  // it. The leak this guard exists to stop is "a private repo's layout, quoted in a file
+  // bound for a public clone" — which is not only ever spelled as an absolute path.
+  const FORBIDDEN_STRINGS = [
+    "example-vault",
+    "example_reports",
+    "example-notes",
+    "/home/analyst/code",
+    "/home/analyst",
+  ];
   const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
   // This test file itself necessarily contains the forbidden strings above, as
   // literals, in order to check for them — it is the one deliberate exception,
