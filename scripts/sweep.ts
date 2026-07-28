@@ -84,7 +84,19 @@ export interface CorpusResult {
   elapsedSeconds: number;
 }
 
-const DEFAULT_WIDTHS = [80, 100, 160];
+/**
+ * **116 and 346 are two of the user's three real terminal widths** (the three tiled
+ * layouts are 116 / 172 / 346), added in WP-2c. Until then this swept 80/100/160 —
+ * none of which anyone reads at — and the tight-list orphan defect was consequently
+ * measured only at widths that do not exist on this machine. A defect measured at an
+ * unused width is measured wrong, in either direction.
+ *
+ * 80, 100 and 160 are kept rather than swapped out: they are the recorded baseline for
+ * every dated full-corpus run in the private archive's `measurements/`, and 80 is the
+ * narrowest case the table allocator has to survive (it is where the accepted-by-design
+ * many-column overflows in `AGENTS.md` live). Adding widths only ever adds combos.
+ */
+const DEFAULT_WIDTHS = [80, 100, 116, 160, 346];
 
 /**
  * Validate one manifest entry and resolve its `root` to an absolute path.

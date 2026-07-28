@@ -51,6 +51,7 @@ reason — do not remove one without re-running the corpus sweep:
 | `code` | Brackets fenced output so `--check` can exempt it, and normalizes `token.lang` through `src/lang.ts` before highlighting |
 | `html`, and a safety net on `paragraph`/`heading`/`blockquote` | A block-level tag (e.g. a line starting `<script>`) swallows a paragraph and is returned unreflowed; the library's own reflow also measures with `.length` rather than `string-width`, undercounting a few Unicode marks |
 | `paragraph`, inside a list | Every item of a **loose** list is a paragraph token dispatched through this override, so it — not `list` — is where that item's text gets wrapped. See below |
+| `text`, inside a list | Every item of a **tight** list arrives here instead, as a raw block text token still carrying the author's own line breaks. See below |
 
 #### Loose list items are wrapped by `paragraph`, at the item's own budget
 
@@ -90,6 +91,46 @@ Three things that must not be simplified away:
 No width gate can see this class of defect: an orphaned line is *under* the target width.
 It is covered by the orphan metric in `tests/render.test.ts` against
 `tests/fixtures/loose-list.md`, and by nothing else.
+
+#### Tight list items are coalesced by `text`, then wrapped at the item's own budget
+
+The mirror image of the loose case, and a **different override**. A *tight* item is never
+wrapped in a paragraph token, so `Parser.parse(item.tokens, false)` dispatches its block
+`text` token straight to the `text` renderer — and `marked-terminal`'s own `text`
+(`index.js:84-89`) returns the raw `token.text` and never dispatches `token.tokens`.
+Nothing reflows it. The author's own source line breaks therefore arrive verbatim, and
+adding the marker and indent pushes each authored line over the target, so
+`rewrapListBody` splits it *per line* and shears the tail word onto a line of its own.
+
+The rule: **inside a list, in a block position, on a token that carries `tokens`,
+`text` coalesces the item's soft-wrapped lines back into one logical line per segment and
+wraps once** at `targetWidth` minus the same pending-prefix stack the loose path uses.
+
+Four things that must not be simplified away:
+
+- **A `\n` here is authored, and coalescing it is lossless** — which is *not* true one
+  seam over. Markdown treats a single newline inside a paragraph as a soft break, i.e.
+  one space, and because nothing reflowed the text no word has been hard-split. This is
+  precisely the information WP-2b found destroyed in the `paragraph` path; do not carry
+  that conclusion across.
+- **A hard break is still distinguishable, but not as `HARD_RETURN`.** `Renderer.prototype.br`
+  never fires for a tight item (nothing dispatches its inline tokens), so no `\r` is ever
+  produced here — the *markdown source spelling* survives instead: two or more trailing
+  spaces, a trailing backslash, or a literal `<br>`. Those are the segment boundaries.
+  Measured over 600 corpus files: 11,675 soft breaks, 1 hard break, 0 `\r`.
+- **Three conditions gate the pass, and all three are load-bearing:** inside a list, not
+  inside a renderer that dispatches inline tokens (`paragraph`/`heading` keep an
+  `inlineDepth` counter for this), and the token carries `tokens`. The same 600 files put
+  413 *inline* text tokens inside lists through this seam, **242 of them multi-line** —
+  a loose item's source lines before `reflowText` runs. Coalescing those is exactly the
+  WP-2b failure mode; only `tokens` tells them apart.
+- **Fences, tables and nested lists are excluded by construction, not by inspection.**
+  Each is its own token type and never reaches a `text` call — measured: 0 of 11,443
+  tight-item tokens contained a `SENTINEL`. Do not replace this with a line-shape
+  heuristic over the composed list body.
+
+Same guard as the loose path applies: a continuation line this pass creates may not be
+allowed to start `*` or `N.`, or `isPointedLine` claims it.
 
 #### Dead seams — do not try to use these
 
@@ -172,8 +213,12 @@ and must exit 0.
 
 ### Corpus sweep
 
-`scripts/sweep.ts` renders whole corpora in one process at 80/100/160 columns, honoring
-`codeRanges`. It replaced a shell loop that spawned the 102 MB binary per file, and is
+`scripts/sweep.ts` renders whole corpora in one process at **80/100/116/160/346** columns,
+honoring `codeRanges`. **116 and 346 are two of the user's three real terminal widths**
+(the tiled layouts are 116 / 172 / 346) and were added in WP-2c; before that the sweep ran
+80/100/160, none of which anyone reads at. Widths are only ever added here, never swapped
+out — the dated full-corpus runs in the private archive's `measurements/` are recorded
+against the older set and have to stay comparable. It replaced a shell loop that spawned the 102 MB binary per file, and is
 ~13× faster.
 
 **Corpus roots are not hardcoded — they load from a versioned JSON manifest** (WP-1).
