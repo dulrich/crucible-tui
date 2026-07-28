@@ -1,5 +1,5 @@
 import { Marked } from "marked";
-import type { Tokens } from "marked";
+import type { Token, Tokens } from "marked";
 import { markedTerminal } from "marked-terminal";
 import stringWidth from "string-width";
 import { renderTable } from "./table";
@@ -267,6 +267,95 @@ const UNORDERED_MARKER_LINE = /^(\s*)\*(\s)/;
 // matters), its nesting depth can be read straight back out of its own indentation.
 const LIST_INDENT_PER_LEVEL = 4;
 
+// `Renderer.prototype.blockquote` (`index.js:110`) indents its whole rendered body by
+// `this.tab` — the same 4 columns — once its children have already rendered.
+const BLOCKQUOTE_INDENT_PER_LEVEL = 4;
+
+// `"* "`, the literal `marked-terminal` emits for every unordered item
+// (`BULLET_POINT`, `index.js:539`). Continuation lines of an unordered item get
+// `toSpaces(BULLET_POINT)` — the same 2 columns — so this width is uniform per line
+// kind, and our own glyph substitution preserves it (every tier bullet is 1 column).
+const UNORDERED_MARKER_WIDTH = 2;
+
+// `". "` — what `numberedPoint(n)` (`index.js:551`) appends after the number itself.
+const ORDERED_MARKER_SUFFIX_WIDTH = 2;
+
+/**
+ * How many marker lines a list level can renumber, i.e. the largest number it can emit.
+ *
+ * **Not `token.items.length`.** `numberedLines` (`index.js:565-578`) walks the composed
+ * body counting *pointed* lines, and `isPointedLine`'s regex is
+ * `^(?:<tab>)*(?:\*|\d+\.)` — leading tabs allowed — so an already-rendered nested
+ * list's marker lines still count against the *parent's* counter. A 3-item ordered list
+ * whose items carry nested lists therefore numbers well past 3. Counting the whole
+ * subtree is an upper bound that is exact whenever nothing nested is present.
+ *
+ * `token.start` is deliberately ignored: `Renderer.prototype.list` reads it
+ * (`index.js:141`) and never uses it, so a list authored `5.` still renders `1.`.
+ */
+function markerLineCount(token: Tokens.List): number {
+  let count = token.items.length;
+  for (const item of token.items) count += nestedMarkerLineCount(item.tokens);
+  return count;
+}
+
+function nestedMarkerLineCount(tokens: Token[] | undefined): number {
+  let count = 0;
+  for (const token of tokens ?? []) {
+    if (token.type === "list") {
+      count += markerLineCount(token as Tokens.List);
+    } else {
+      count += nestedMarkerLineCount((token as { tokens?: Token[] }).tokens);
+    }
+  }
+  return count;
+}
+
+/**
+ * A rendered line `marked-terminal` will mistake for a list marker of its own.
+ *
+ * When `list` composes its body, an item's continuation lines are still at column 0,
+ * and `isPointedLine` (`index.js:531`) tests `^(?:<tab>)*(?:\*|\d+\.)` — no space
+ * required after the `*`. So a wrapped line that merely *begins* with `**bold**` or
+ * `1.5x` is taken for a marker line, and in an **ordered** list `numberedLine` then
+ * rewrites it: it consumes that item's number and replaces the first `"* "` *anywhere*
+ * in the line — inside the `**` pair — with `"N. "`. The item's text is corrupted and
+ * every later item is renumbered. Measured live: 1 occurrence in a 1,000-file corpus
+ * sample, 59 more lines one list-type away from it.
+ *
+ * This is a `marked-terminal` landmine, not ours, and it predates WP-2b — but WP-2b
+ * decides where a loose item's lines break, so it decides whether the landmine is
+ * stepped on, and re-wrapping a corpus sample lit it once in 1,000 files where the old
+ * wrap lit it zero times. `wrappedParagraph` defuses it for the lines it owns: a
+ * continuation line that starts like a marker is given a single leading space, which
+ * `isPointedLine` cannot match (its indent group is *exactly* four spaces at a time),
+ * so the library pads and numbers the line as the continuation it is. That paragraph is
+ * re-wrapped one column narrower first, so the guard space costs no width.
+ *
+ * Only continuation lines are guarded. A paragraph's *first* line is marker-shaped or
+ * not regardless of where it wraps, and for an item's first paragraph the real marker
+ * lands in front of it anyway.
+ */
+const MARKER_SHAPED_LINE = /^(?:\*|\d+\.)/;
+
+/**
+ * The width of the widest marker this list level can emit — 2 for `"* "`, but 4 for an
+ * ordered list that reaches `"10. "`. **Hardcoding 2 is the bug this function exists to
+ * prevent**: an ordered list with ten or more marker lines pushes its own text two
+ * columns further right than an unordered one, and a budget computed with 2 leaves the
+ * tail of every long item over budget — which is exactly the shear this WP closes.
+ *
+ * The widest marker is used for every item of the level rather than the exact per-item
+ * marker, because at paragraph time no marker has been emitted yet and the item index is
+ * not reachable (`listitem` is a dead seam — see above). The cost is that items 1-9 of a
+ * ten-item ordered list wrap one column early; the alternative — guessing narrow — is an
+ * orphaned line, which is strictly worse and invisible to every gate.
+ */
+function listMarkerWidth(token: Tokens.List): number {
+  if (!token.ordered) return UNORDERED_MARKER_WIDTH;
+  return String(Math.max(1, markerLineCount(token))).length + ORDERED_MARKER_SUFFIX_WIDTH;
+}
+
 /**
  * Replace the leading `"* "` marker `marked-terminal` emits for every unordered list
  * item with the glyph for that line's nesting depth (cycling past the configured
@@ -464,24 +553,42 @@ function extractCodeRanges(renderedWithSentinels: string): RenderResult {
  *   small residual (worst case 3 lines across the whole corpus at three
  *   widths) *for top-level prose*.
  *
- * **Correction (WP-2 investigation, measured — do not trust the last clause of
- * the paragraph above for list content).** The `paragraph` caller is NOT
- * confined to top-level prose: a *loose* list item is parsed into a paragraph
- * token and dispatched through this very override with the list still on the
- * stack. `listitem`/`checkbox` are dead seams, but `paragraph` is a live one.
- * So for every loose list item this call wraps the text at the **full**
- * `targetWidth`, *before* `list` glues on the 2-column bullet and 4-column
- * indent — putting the text 6 columns over budget — and `rewrapListBody` then
- * reflows it a second time, shearing the tail word onto its own line. That is
- * the orphaned-line defect, and **this override is the first of its two wraps.**
+ * **The `paragraph` caller is not confined to top-level prose.** A *loose* list
+ * item is parsed into a paragraph token and dispatched through that override
+ * with the list still on the stack (`listitem`/`checkbox` are dead seams;
+ * `paragraph` is a live one). Until WP-2b that meant every loose item was
+ * wrapped here at the **full** `targetWidth`, *before* `list` glued on its
+ * marker and indent — leaving the text 6 columns over budget at depth 1 — and
+ * `rewrapListBody` then reflowed it a second time, shearing the tail word onto a
+ * line of its own: the orphaned-line defect, 12/9/6/7 orphans in
+ * `tests/fixtures/loose-list.md` at widths 80/100/120/172.
  *
- * Consequently `reflowText` is NOT the lever for that defect: flipping it to
- * `false` was measured to leave list rendering byte-identical (orphan count
- * unchanged, 47 -> 47 over a 300-file corpus sample at width 100) while
- * regressing 60 of those 300 documents' non-list prose, because without the
- * library's reflow the source's own line breaks survive and this function only
- * touches lines that *exceed* `targetWidth`. See `plans/crucible-tui-launch.md`
- * WP-2b; the fixture is `tests/fixtures/loose-list.md`.
+ * **Closed in WP-2b, and not here.** The fix is in the `paragraph` override
+ * itself: inside a list it renders the item through a `marked-terminal` renderer
+ * constructed at the item's *real* budget (`targetWidth` minus every marker and
+ * indent still to be glued on — see `pendingPrefix` at the call site), so the
+ * text arrives already fitting and `rewrapListBody` has nothing to shear. This
+ * function is still that path's safety net, just measured against the budget
+ * rather than the full width.
+ *
+ * **Three levers that look right and are not — all measured, do not retry:**
+ *
+ * - `reflowText: false` leaves list rendering byte-identical (orphans 47 -> 47
+ *   over a 300-file corpus sample at width 100): the flag decides *who* wraps
+ *   first, not at what width. It also regresses 60 of those 300 documents'
+ *   non-list prose, because without the library's reflow the source's own line
+ *   breaks survive and this function only touches lines that *exceed* the width.
+ * - Wrapping here at `currentListBudget(depth, targetWidth)` is a no-op at depth
+ *   1 by construction — that budget accounts only for *ancestor* indents still
+ *   pending, and at depth 1 there are none.
+ * - Correcting the arithmetic to the true paragraph-time budget and re-wrapping
+ *   *here* still does not fix it: this function is a splitter, not a reflower. It
+ *   only touches lines already over budget, and the library has by then wrapped
+ *   the text at `targetWidth`, so the tail stays sheared.
+ *
+ * See `plans/crucible-tui-launch.md` WP-2/WP-2b; the fixture is
+ * `tests/fixtures/loose-list.md` and the metric lives in `tests/render.test.ts`
+ * (no width gate can see this defect — an orphan is *under* the width).
  */
 function wrapOverBudgetLines(rendered: string, targetWidth: number): string {
   return rendered
@@ -507,7 +614,9 @@ function wrapOverBudgetLines(rendered: string, targetWidth: number): string {
  * - `paragraph`/`heading`/`blockquote` with a thin safety-net re-wrap (see
  *   `wrapOverBudgetLines`) over `marked-terminal`'s own `reflowText`, which measures
  *   width with plain `.length` and can undercount a handful of Unicode punctuation
- *   marks relative to `string-width`.
+ *   marks relative to `string-width`. `paragraph` does one thing more: inside a list
+ *   it is the *only* wrap of a loose item's text, and renders it at the item's own
+ *   budget rather than the full width (WP-2b — the orphaned-line defect).
  *
  * `glyphs` defaults to `UNICODE_GLYPHS` rather than reading the environment — every
  * environment-dependent decision is concentrated in `cli.ts`'s call to
@@ -542,11 +651,23 @@ export function renderDocumentDetailed(
   if (renderer) {
     renderer.table = (token: Tokens.Table) => renderTable(token, targetWidth, glyphs);
 
-    let listDepth = 0;
+    // Columns that block renderers still owe every line of whatever is being rendered
+    // *right now*, because they are glued on only after that inner render returns: a
+    // list level's own marker plus its blanket indent, a blockquote's indent. Each
+    // block renderer pushes its own contribution for the duration of its call, so at
+    // any point inside, the sum is exactly how much narrower than `targetWidth` the
+    // text being produced has to be. This is what lets the `paragraph` override wrap a
+    // *loose* list item once, at the width the item will actually occupy — see its
+    // comment below and `wrapOverBudgetLines`'s.
+    const pendingPrefix: Array<{ columns: number; list: boolean }> = [];
+    const pendingPrefixWidth = (): number => pendingPrefix.reduce((sum, entry) => sum + entry.columns, 0);
+    const listDepth = (): number => pendingPrefix.reduce((count, entry) => count + (entry.list ? 1 : 0), 0);
+
     const originalList = renderer.list;
     if (originalList) {
       renderer.list = function wrappedList(token: Tokens.List) {
-        listDepth += 1;
+        pendingPrefix.push({ columns: LIST_INDENT_PER_LEVEL + listMarkerWidth(token), list: true });
+        const depth = listDepth();
         try {
           // `this` is contextually `_Renderer` here (the target this function is
           // assigned to declares `this: _Renderer`); forwarding it is what keeps
@@ -554,17 +675,31 @@ export function renderDocumentDetailed(
           // working exactly as they would un-overridden.
           const result = originalList.call(this, token);
           if (result === false) return false;
-          const rewrapped = rewrapListBody(result, listDepth, targetWidth);
+          const rewrapped = rewrapListBody(result, depth, targetWidth);
           // Bullet substitution only runs once this is the outermost call for this
-          // top-level list (`listDepth === 1`) — see `substituteBullets`'s doc comment
+          // top-level list (`depth === 1`) — see `substituteBullets`'s doc comment
           // for why running it at every recursion level corrupts `marked-terminal`'s
           // own `fixNestedLists` marker detection for ancestors still on the stack.
-          return listDepth === 1 ? substituteBullets(rewrapped, glyphs) : rewrapped;
+          return depth === 1 ? substituteBullets(rewrapped, glyphs) : rewrapped;
         } finally {
-          listDepth -= 1;
+          pendingPrefix.pop();
         }
       };
     }
+
+    // One `marked-terminal` renderer per distinct list budget, built lazily and reused.
+    // Rendering a loose list item's paragraph through a renderer constructed at that
+    // budget is what makes the library's *own* reflow produce correctly-sized lines,
+    // rather than us un-wrapping and re-wrapping text it already broke — see the
+    // `paragraph` override below for why re-wrapping is not an option.
+    const budgetedParagraphs = new Map<number, NonNullable<typeof renderer.paragraph>>();
+    const paragraphRendererAt = (budget: number): typeof renderer.paragraph => {
+      const cached = budgetedParagraphs.get(budget);
+      if (cached) return cached;
+      const paragraph = markedTerminal({ width: budget, reflowText: true }).renderer?.paragraph;
+      if (paragraph) budgetedParagraphs.set(budget, paragraph);
+      return paragraph;
+    };
 
     // `marked-terminal`'s own `hr` hardcodes `-` (`Renderer.prototype.hr`, `index.js:135`,
     // via its internal `hr()` helper at `index.js:612`: `new Array(width).join('-')`,
@@ -614,11 +749,57 @@ export function renderDocumentDetailed(
     // Safety net over `marked-terminal`'s own `reflowText` — see
     // `wrapOverBudgetLines`'s doc comment for why these three still occasionally
     // need it despite already being reflowed.
+    //
+    // **Inside a list this override is not a safety net, it is the wrap** (WP-2b).
+    // Every item of a *loose* list is parsed into a paragraph token and dispatched
+    // here with the list still on the stack, so rendering it at the full
+    // `targetWidth` — as this did until WP-2b — hands `list` text that is already
+    // `pendingPrefixWidth()` columns too wide, and `rewrapListBody` then shears the
+    // tail of each line onto a line of its own. Rendering it through a renderer built
+    // at the item's real budget instead means the text arrives already fitting, and
+    // `rewrapListBody`'s pass over it becomes the no-op it documents itself as.
+    //
+    // Why route through a second `markedTerminal` renderer rather than coalesce this
+    // one's output and re-wrap it: by the time a result gets here, `reflowText` has
+    // already destroyed the information needed to put it back together. Its wraps and
+    // an author's own hard break are both a bare `\n` (`reflowText` splits on the
+    // `HARD_RETURN` its `br` emits and joins every section back with `\n`), and a word
+    // longer than the width has been hard-split mid-word with no marker, so rejoining
+    // with a space corrupts long URLs and paths. Letting the library wrap at the right
+    // width in the first place keeps both cases correct by construction, and keeps
+    // multi-paragraph items separate for free — each paragraph is its own call here,
+    // with nothing joining across them.
     const originalParagraph = renderer.paragraph;
     if (originalParagraph) {
       renderer.paragraph = function wrappedParagraph(token: Tokens.Paragraph) {
-        const result = originalParagraph.call(this, token);
-        return result === false ? false : wrapOverBudgetLines(result, targetWidth);
+        if (listDepth() === 0) {
+          const result = originalParagraph.call(this, token);
+          return result === false ? false : wrapOverBudgetLines(result, targetWidth);
+        }
+
+        const budget = Math.max(1, targetWidth - pendingPrefixWidth());
+        // The library reflows by `.length`, so the safety net still applies — just at
+        // the list's budget rather than the full width.
+        const renderAt = (width: number): string | false => {
+          const render = paragraphRendererAt(width) ?? originalParagraph;
+          const rendered = render.call(this, token);
+          return rendered === false ? false : wrapOverBudgetLines(rendered, width);
+        };
+
+        const result = renderAt(budget);
+        if (result === false) return false;
+        const collides = (text: string): boolean =>
+          text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
+        if (!collides(result)) return result;
+
+        // See `MARKER_SHAPED_LINE`: re-wrap a column narrower to make room, then give
+        // each colliding continuation line the guard space.
+        const guarded = renderAt(Math.max(1, budget - 1));
+        if (guarded === false) return result;
+        return guarded
+          .split("\n")
+          .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
+          .join("\n");
       };
     }
 
@@ -633,7 +814,18 @@ export function renderDocumentDetailed(
     const originalBlockquote = renderer.blockquote;
     if (originalBlockquote) {
       renderer.blockquote = function wrappedBlockquote(token: Tokens.Blockquote) {
-        const result = originalBlockquote.call(this, token);
+        // A blockquote indents its rendered body by `tab` *after* its children have
+        // rendered (`indentify`, `index.js:110`), so anything rendered inside it owes
+        // those columns too. Only the list path reads this — a top-level blockquote's
+        // own rendering is unchanged, by design: widening its blast radius is a
+        // separate change from closing the loose-list defect.
+        pendingPrefix.push({ columns: BLOCKQUOTE_INDENT_PER_LEVEL, list: false });
+        let result: string | false;
+        try {
+          result = originalBlockquote.call(this, token);
+        } finally {
+          pendingPrefix.pop();
+        }
         return result === false ? false : wrapOverBudgetLines(result, targetWidth);
       };
     }

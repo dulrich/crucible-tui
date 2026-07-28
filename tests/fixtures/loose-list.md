@@ -22,6 +22,35 @@ paragraph override even though only the separation between them is blank.
 
 - A closing outer item, long enough to wrap, confirming that the outer list resumes at the outer budget once the nested list has been rendered and folded back into the parent body.
 
+## Loose list with hard line breaks — the breaks must survive
+
+- A hard break follows this sentence.<br />And this sentence must begin a new rendered line of its own, even though the line before it is far too short to have been broken by any wrapping engine, and even though this item is long enough to wrap several times afterwards.
+
+- A trailing double-space break ends this line,  
+  and this text follows it, written long enough that it wraps at every width under test so that the item is not trivially short.
+
+## Loose ordered list with ten items — the marker is four columns wide
+
+1. The first ordered loose item, written long enough that it wraps at every width under test, so a budget computed from a hardcoded two-column marker would shear the tail of every line it produces.
+
+2. Second.
+
+3. Third.
+
+4. Fourth.
+
+5. Fifth.
+
+6. Sixth.
+
+7. Seventh.
+
+8. Eighth.
+
+9. Ninth.
+
+10. The tenth ordered loose item, also long enough to wrap at every width under test — this is the item whose marker is four columns wide rather than three, and the one a hardcoded marker width gets wrong.
+
 ## Tight list — the control, must not change
 
 - A tight list item written long enough that it wraps at every width under test, which is the point: tight items never reach the paragraph override at all, so this rendering is the reference the loose case should match.

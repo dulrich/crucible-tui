@@ -391,7 +391,8 @@ describe("renderDocument — fence language normalization silences highlight.js 
 });
 
 // ---------------------------------------------------------------------------
-// WP-2 — the loose-list double-wrap defect.
+// WP-2 / WP-2b — the loose-list double-wrap defect (characterized in WP-2, closed
+// in WP-2b).
 //
 // Read this before changing anything below. **No width assertion can see this
 // defect**: an orphaned line is *under* the target width, so `--check` and both
@@ -403,6 +404,14 @@ describe("renderDocument — fence language normalization silences highlight.js 
 // prose in the same item*. That last clause matters — without it the metric also
 // flags the natural short final line of any wrapped item (a tight item ending
 // "...being fixed."), which is not a defect and is present either way.
+//
+// **Known blind spot, do not "fix" it by loosening the metric.** `marked-terminal`
+// drops the blank line between two paragraphs of the same loose item
+// (`bulletPointLines`' `.filter(identity)`), so in rendered text a paragraph
+// boundary and a shear are the same shape and the first paragraph's short last line
+// reads as an orphan. No line-based metric can separate them; the multi-paragraph
+// case is therefore asserted structurally, on its own inline source, rather than
+// being added to `loose-list.md`.
 // ---------------------------------------------------------------------------
 
 const LIST_BULLET = /^\s{2,}(?:[•*\-◦‣+]|\d+\.)\s/;
@@ -484,35 +493,159 @@ describe("renderDocument — loose-list double-wrap (WP-2)", () => {
     }
   });
 
-  // KNOWN OPEN DEFECT — characterization test, deliberately asserting the *broken*
-  // counts so the suite stays green while the bug is open and turns red the moment
-  // anything changes it. `reflowText: false` was measured NOT to be the fix (it left
-  // these counts identical and regressed non-list prose in 60/300 corpus documents);
-  // see `wrapOverBudgetLines`'s doc comment in src/render.ts and WP-2b in
-  // plans/crucible-tui-launch.md. **When WP-2b lands, these expectations become 0.**
-  test("KNOWN DEFECT: loose list items still emit orphaned lines (WP-2b flips these to 0)", async () => {
+  // Closed by WP-2b. Until then this fixture rendered 12/9/6/7 orphans at these four
+  // widths; the paragraph override now renders a loose item at the width the item will
+  // actually occupy, so `rewrapListBody` has nothing left to shear. The counts are the
+  // only evidence that holds — every width gate stays green either way.
+  test("loose list items emit no orphaned lines, at every width and both glyph tiers", async () => {
     const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
-    const expected = new Map<number, number>([
-      [80, 12],
-      [100, 9],
-      [120, 6],
-      [172, 7],
-    ]);
-
     for (const [, glyphs] of WP2_TIERS) {
       for (const width of WP2_WIDTHS) {
-        const orphans = findListOrphans(renderDocument(source, width, glyphs), width);
-        expect(orphans.length).toBe(expected.get(width) ?? -1);
+        expect(findListOrphans(renderDocument(source, width, glyphs), width)).toEqual([]);
       }
     }
   });
 
-  test("KNOWN DEFECT: every orphan sits under a nearly-full line, confirming a second reflow caused it", async () => {
+  // The three lines this used to shear off, named individually: a count going to zero
+  // proves nothing if the fixture stopped containing the case.
+  test("the lines the defect used to shear are back on the line they belong to", async () => {
     const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
-    const orphans = findListOrphans(renderDocument(source, 80, UNICODE_GLYPHS), 80);
-    expect(orphans).toContain("several");
-    expect(orphans).toContain("between");
-    // the metric must not assume exactly one word — this one is two
-    expect(orphans).toContain("which the");
+    const lines = renderDocument(source, 80, UNICODE_GLYPHS).split("\n").map(stripAnsi);
+
+    for (const [orphan, follows] of [
+      ["several", "rendered lines at any reasonable"],
+      ["between", "items, which is what makes marked"],
+      ["which the", "orphaned trailing word appears"],
+    ] as const) {
+      expect(lines.some((line) => line.trim() === orphan)).toBe(false);
+      expect(lines.some((line) => line.includes(`${orphan} ${follows}`))).toBe(true);
+    }
+  });
+
+  // Unsettled point 1 of the WP-2b brief. `"10. "` is four columns, not two: a budget
+  // built on a hardcoded 2 leaves every line of a ten-item ordered loose list two
+  // columns over, and `rewrapListBody` shears the tail off again. Counterfactual run
+  // while writing this: forcing `listMarkerWidth` to return 2 puts 2 orphans back at
+  // width 100 and 1 at width 172 in this fixture's ordered section.
+  test("a loose ordered list wide enough to reach a two-digit marker wraps to the marker's real width", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
+    for (const width of WP2_WIDTHS) {
+      const lines = renderDocument(source, width, UNICODE_GLYPHS).split("\n").map(stripAnsi);
+      const tenth = lines.findIndex((line) => line.trimStart().startsWith("10. "));
+      expect(tenth).toBeGreaterThan(-1);
+
+      // the marker line and its continuations, up to the end of that item
+      const item = [lines[tenth] as string];
+      for (let i = tenth + 1; i < lines.length && isIndentedLine(lines[i] as string); i += 1) {
+        if (LIST_BULLET.test(lines[i] as string)) break;
+        item.push(lines[i] as string);
+      }
+      expect(item.length).toBeGreaterThan(1);
+      for (const line of item) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+      // continuations are indented under the four-column marker, not a two-column one
+      expect((item[1] as string).length - (item[1] as string).trimStart().length).toBe(8);
+      expect(findListOrphans(item.join("\n"), width)).toEqual([]);
+    }
+  });
+
+  // Unsettled point 2. An authored break is real content: it must survive whatever the
+  // list path does to wrapping. It is also the reason this WP re-renders the paragraph
+  // at the right width instead of coalescing the wrapped result — by the time a result
+  // reaches the override, `reflowText` has already turned its own wraps *and* the
+  // author's break into the same bare `\n`.
+  test("an authored <br /> break inside a loose list item survives", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
+    for (const width of WP2_WIDTHS) {
+      const lines = renderDocument(source, width, UNICODE_GLYPHS).split("\n").map(stripAnsi);
+      const broken = lines.findIndex((line) => line.trimEnd().endsWith("A hard break follows this sentence."));
+      expect(broken).toBeGreaterThan(-1);
+      // the break held: the next line starts the following sentence, and it would
+      // comfortably have fitted on the line above, so nothing but the break put it there
+      expect((lines[broken + 1] as string).trim()).toStartWith("And this sentence must begin");
+      expect(stringWidth(lines[broken] as string) + 1 + "And".length).toBeLessThan(width);
+    }
+  });
+
+  // Unsettled point 4. Two paragraphs in one loose item fire the override twice; they
+  // must not run into each other. Kept out of `loose-list.md` on purpose: the library
+  // drops the blank line between an item's paragraphs (`bulletPointLines`' own
+  // `.filter(identity)`), so a paragraph boundary is *indistinguishable* from a shear in
+  // the rendered text, and `findListOrphans` flags the first paragraph's short last line
+  // as an orphan. That is a blind spot of the metric, not a defect in the rendering —
+  // see the WP-2b report. Asserted structurally here instead of by count.
+  test("two paragraphs in one loose item stay two paragraphs", () => {
+    const source = [
+      "- The first paragraph of an item that carries two of them, written long enough that it wraps across more than one rendered line at every width under test.",
+      "",
+      "  The second paragraph of that very same item, also long enough to wrap, which must stay a separate block rather than being folded onto the end of the first one.",
+      "",
+      "- A closing item, long enough to wrap, so the two-paragraph item is not the last thing in the list and the list is unambiguously loose.",
+    ].join("\n");
+
+    for (const [, glyphs] of WP2_TIERS) {
+      for (const width of WP2_WIDTHS) {
+        const rendered = renderDocument(source, width, glyphs);
+        const lines = rendered.split("\n").map(stripAnsi);
+        // the second paragraph starts its own line — never appended to the first's tail
+        const second = lines.findIndex((line) => line.trim().startsWith("The second paragraph"));
+        expect(second).toBeGreaterThan(-1);
+        expect(lines.filter((line) => line.includes("under test. The second paragraph"))).toEqual([]);
+        for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  // Not one of the four unsettled points — found by the corpus byte-differential, and
+  // a regression this WP would otherwise have shipped. `marked-terminal`'s
+  // `isPointedLine` treats *any* line starting with `*` or `N.` as a marker line, and
+  // an item's continuation lines sit at column 0 when it runs. Moving a wrap point can
+  // therefore hand it a line it mistakes for a marker: in an ordered list that line
+  // consumes an item number and every later item is renumbered. Counterfactual, with
+  // the guard in `render.ts` disabled: this renders as 1, 2001, 3, 4.
+  test("a continuation line that starts like a list marker does not steal an item number", () => {
+    const build = (fillers: number): string =>
+      [
+        `1. ${Array.from({ length: fillers }, (_, i) => `word${i}`).join(" ")} 2001. Marks the start of a sentence, and the item then continues for a good while afterwards so that it wraps more than once in total.`,
+        "",
+        "2. A second ordered item, long enough to wrap at the widths under test, closing the list.",
+        "",
+        "3. A third ordered item, also long enough to wrap at the widths under test.",
+      ].join("\n");
+
+    // filler counts chosen so the `2001.` token lands at the start of a wrapped line
+    for (const [fillers, width] of [
+      [17, 120],
+      [27, 100],
+      [25, 172],
+    ] as const) {
+      const lines = renderDocument(build(fillers), width)
+        .split("\n")
+        .map(stripAnsi)
+        .filter((line) => line.trim() !== "");
+
+      // the token is where we think it is — otherwise this test proves nothing
+      expect(lines.some((line, index) => index > 0 && line.trim().startsWith("2001."))).toBe(true);
+      // item markers are still 1, 2, 3 at the depth-1 indent
+      expect(lines.map((line) => /^ {4}(\d+)\.\s/.exec(line)?.[1]).filter(Boolean)).toEqual(["1", "2", "3"]);
+      // and no `"* "` inside the text was rewritten into a number
+      expect(lines.filter((line) => /\*\d+\.\s/.test(line))).toEqual([]);
+      for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  // Unsettled point 3. The budget subtracts one marker + one indent *per enclosing
+  // level*, so an off-by-a-level shows up as either overflow (too shallow — caught by
+  // the width test above) or a visibly short right edge (too deep). Depth 2 at width 80
+  // fills to 79 of 80; a depth-3 budget would cap it around 73.
+  test("a nested loose list is wrapped at its own depth's budget, not its parent's", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/loose-list.md`, "utf8");
+    for (const width of WP2_WIDTHS) {
+      const lines = renderDocument(source, width, UNICODE_GLYPHS).split("\n").map(stripAnsi);
+      const nested = lines.filter((line) => /^\s{8}/.test(line) && line.trim() !== "");
+      expect(nested.length).toBeGreaterThan(3);
+      const widest = Math.max(...nested.map((line) => stringWidth(line)));
+      expect(widest).toBeLessThanOrEqual(width);
+      expect(widest).toBeGreaterThanOrEqual(width - 4);
+    }
   });
 });
