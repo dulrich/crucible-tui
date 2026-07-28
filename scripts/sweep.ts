@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * In-process corpus sweep — replaces the old shell loop (see mdview/AGENTS.md's
+ * In-process corpus sweep — replaces the old shell loop (see AGENTS.md's
  * "Corpus sweep" section) which spawned the 102 MB compiled binary once per file
  * (~83ms each). Rendering in-process against `renderDocumentDetailed` directly
  * measured ~13x faster (600 vault files x 3 widths in 23.8s).
@@ -17,7 +17,7 @@
  * locate — see that archive's README for provenance and its `measurements/` for
  * recorded runs. Point `MDVIEW_CORPUS_MANIFEST` at your own manifest to reproduce.
  *
- * Usage: bun run --cwd mdview sweep [--corpus <name|all>] [--all]
+ * Usage: bun run sweep [--corpus <name|all>] [--all]
  *                                    [--widths 80,100,160] [--limit N]
  *                                    [--glyphs unicode|ascii] [--manifest <path>]
  */

@@ -7,7 +7,7 @@ wide tables to the terminal width instead of overflowing or truncating them.
 ## Usage
 
 ```bash
-bun run mdview/src/cli.ts <file.md> [--width N] [--no-pager] [--check]
+bun run src/cli.ts <file.md> [--width N] [--no-pager] [--check]
                                     [--ascii | --unicode] [--help]
 ```
 
@@ -30,8 +30,8 @@ mdview plans/mdview.md
 ### Installing on PATH
 
 ```bash
-bun run --cwd mdview build                                    # compile dist/mdview
-ln -sfn "$PWD/mdview/dist/mdview" ~/.local/bin/mdview         # from the repo root
+bun run build                                    # compile dist/mdview
+ln -sfn "$PWD/dist/mdview" ~/.local/bin/mdview         # from the repo root
 ```
 
 **The compiled binary is a new pattern for this repo** — every other `bun build` here
@@ -73,4 +73,4 @@ layout.
 
 Out of scope by design: images, callouts, block LaTeX, raw HTML.
 
-See `mdview/AGENTS.md` for stack, layout, gates, and the corpus sweep.
+See `AGENTS.md` for stack, layout, gates, and the corpus sweep.
