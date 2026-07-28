@@ -7,6 +7,7 @@ import { formatMetaBlock, splitFrontmatter } from "./frontmatter";
 import { wrapAnsi } from "./wrap";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
 import { resolveFenceLanguage } from "./lang";
+import { stripAnsi, trackListLine, type OpenListItem } from "./detectors";
 
 // Obsidian wiki-links aren't markdown; style them before parsing so they render as
 // recognizable links-to-nowhere instead of literal brackets. Adapted from
@@ -506,6 +507,115 @@ function coalesceTightItemLines(text: string): { segments: string[]; coalesced: 
 }
 
 /**
+ * `isPointedLine` (`marked-terminal` `index.js:531`) as it is actually called on a
+ * composed list body — `this.tab`, i.e. exactly four spaces, repeated zero or more
+ * times, then a literal marker. The **exact-multiple-of-four** indent is the whole
+ * point: a line one column off that grid can never be claimed as a marker, which is
+ * what makes the one-space guard in `realignNestedContinuations` (and in the two
+ * wrapping overrides, via `MARKER_SHAPED_LINE`) work.
+ */
+const LIBRARY_POINTED_LINE = new RegExp(`^(?: {${LIST_INDENT_PER_LEVEL}})*(?:\\*|\\d+\\.)`);
+
+/**
+ * Pull a nested item's continuation lines back to their own item's text column (WP-2e).
+ *
+ * **The defect.** `marked-terminal`'s `list()` calls `bulletPointLines` (unordered) or
+ * `numberedLines` (ordered) over the whole composed body, and both prepend a marker's
+ * width in spaces — `toSpaces(BULLET_POINT)`, 2, or `toSpaces(numberedPoint(n))`, 3+ —
+ * to every line `isPointedLine` does *not* recognize (`index.js:539-578`). For this
+ * level's **own** items that is exactly right: it aligns a continuation under its own
+ * marker's text. But the body it walks also contains an inner list that already
+ * rendered, and there the same pass moves the inner items' *continuation* lines while
+ * leaving their *marker* lines alone (`isPointedLine` recognizes those — mdview
+ * substitutes bullet glyphs only at `listDepth === 1`, so the literal `*` is still
+ * there). So every continuation inside a nested item drifts one marker-width per
+ * ancestor level past the column its own first line starts at. `indentLines`
+ * (`index.js:501`) then adds `this.tab` to every line equally and contributes nothing
+ * to the *relative* drift.
+ *
+ * Measured: 29,035 over-indents against 6,469 orphans in the WP-2d regression tier, and
+ * 64-72% of the orphan residual at the user's real widths after WP-2c. It is not
+ * cosmetic — a continuation shifted right is a continuation over budget, and the
+ * shallower `rewrapListBody` then shears its tail word onto a line of its own. Running
+ * *before* `rewrapListBody` is what makes the orphan disappear with the indent rather
+ * than in addition to it.
+ *
+ * **This subtracts the drift; it does not snap lines to a column.** The distinction is
+ * load-bearing and was found by measurement, not reasoning: a blockquote or a fenced
+ * block inside a list item is *legitimately* indented past its item's text column by its
+ * own renderer (`Renderer.prototype.blockquote`/`code` indent by `this.tab` before the
+ * list ever sees them), and `findContinuationOverIndent` reports those too. Snapping
+ * every flagged line to `item.textColumn` would flatten them. Subtracting exactly the
+ * width this level just added preserves every legitimate *relative* offset underneath
+ * it, at every depth, and leaves that class of detector hit standing — correctly.
+ *
+ * **How much did this level add?** Exactly the marker width of *its own* item, which is
+ * `textColumn - markerColumn` of the item at the bottom of the stack (this level's items
+ * are the ones whose marker sits at `LIST_INDENT_PER_LEVEL`, since `indentLines` has run
+ * by the time we see the body). That derivation is what makes ordered lists work without
+ * a special case: `numberedLines` pads with `String(n).length + 2`, and so does the
+ * bottom-of-stack item's own marker. It is also why this pass must run **per level**
+ * rather than once at the outermost list — see the call site.
+ *
+ * **Fenced code is never rewritten**, including a fence nested in a list item. Same
+ * mechanism as `substituteBullets`: `code`'s override resolves depth-first, so every
+ * fence in this body is already bracketed in `SENTINEL` pairs. A line that *starts*
+ * inside a fence, or that carries a sentinel of its own (the opening and closing lines
+ * of a block, where the marker sits mid-line), is returned untouched and is not allowed
+ * to move the item stack either.
+ *
+ * **A de-indented line may not be allowed to become a marker.** Landing on the
+ * four-column grid with a leading `*` or `12.` is all `isPointedLine` asks for, and an
+ * ancestor's `numberedLine` would then hand that line the item's number and rewrite it.
+ * Unordered text columns are never on the grid (`4d + 2`), but a ten-item ordered list's
+ * are (`4d + 4`), so the case is live. Guarded the same way both wrapping overrides
+ * guard it: one extra leading space, which the grid cannot match.
+ */
+function realignNestedContinuations(body: string): string {
+  const open: OpenListItem[] = [];
+  let insideCode = false;
+
+  return body
+    .split("\n")
+    .map((line) => {
+      const startedInsideCode = insideCode;
+      let carriesSentinel = false;
+      for (const ch of line) {
+        if (ch === SENTINEL) {
+          insideCode = !insideCode;
+          carriesSentinel = true;
+        }
+      }
+      if (startedInsideCode || carriesSentinel) return line;
+
+      const bare = stripAnsi(line);
+      const item = trackListLine(bare, open);
+      if (item === null) return line;
+
+      // This level's own items sit at `LIST_INDENT_PER_LEVEL`; anything deeper came from
+      // an inner list that already rendered, and only those drifted.
+      if (item.markerColumn <= LIST_INDENT_PER_LEVEL) return line;
+      const ownItem = open[0];
+      if (ownItem === undefined || ownItem.markerColumn !== LIST_INDENT_PER_LEVEL) return line;
+      const addedWidth = ownItem.textColumn - ownItem.markerColumn;
+      if (addedWidth <= 0) return line;
+
+      const indent = (/^ */.exec(line) as RegExpExecArray)[0].length;
+      // Leading whitespace must be literal spaces on both the raw and the stripped line,
+      // or the slice below would cut into an escape sequence. Anything else is left alone.
+      if (indent !== (/^ */.exec(bare) as RegExpExecArray)[0].length) return line;
+      if (indent <= item.textColumn) return line;
+
+      const rest = line.slice(indent);
+      const target = Math.max(item.textColumn, indent - addedWidth);
+      const realigned = `${" ".repeat(target)}${rest}`;
+      if (LIBRARY_POINTED_LINE.test(bare) || !LIBRARY_POINTED_LINE.test(stripAnsi(realigned))) return realigned;
+      return `${" ".repeat(target + 1)}${rest}`;
+    })
+    .join("\n");
+}
+
+/**
  * Re-wrap only the lines of a rendered list body that are still over budget at this
  * nesting level. Lines already within budget are left untouched — that is what makes
  * this idempotent and safe to run on a body that already contains a correctly
@@ -758,7 +868,24 @@ export function renderDocumentDetailed(
           // working exactly as they would un-overridden.
           const result = originalList.call(this, token);
           if (result === false) return false;
-          const rewrapped = rewrapListBody(result, depth, targetWidth);
+          // **Per level, and before `rewrapListBody` — both are load-bearing** (WP-2e).
+          //
+          // *Per level*, because the drift this pass subtracts is the marker width
+          // *this* call's `bulletPointLines`/`numberedLines` just added, and that is
+          // only knowable here: at the outermost list the drifts of every ancestor have
+          // already summed, and with ordered levels of differing marker widths (`"* "`
+          // is 2, `"1. "` is 3, `"10. "` is 4) the sum cannot be decomposed back into
+          // the per-level amounts a legitimate nested blockquote or fence has to be
+          // measured against. Correcting at every level also means the drift never
+          // reaches an inner `rewrapListBody` at all, so `currentListBudget`'s
+          // 4-columns-per-ancestor arithmetic becomes exactly true rather than an
+          // under-estimate.
+          //
+          // *Before* `rewrapListBody`, because a line that is no longer over-indented is
+          // no longer over budget, so there is nothing left to shear — the orphan goes
+          // away as a consequence of the indent being right, not as a second fix.
+          const realigned = realignNestedContinuations(result);
+          const rewrapped = rewrapListBody(realigned, depth, targetWidth);
           // Bullet substitution only runs once this is the outermost call for this
           // top-level list (`depth === 1`) — see `substituteBullets`'s doc comment
           // for why running it at every recursion level corrupts `marked-terminal`'s

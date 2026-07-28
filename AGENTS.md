@@ -47,7 +47,7 @@ reason — do not remove one without re-running the corpus sweep:
 | Override | Reason |
 |---|---|
 | `table` | `marked-terminal` never passes the terminal width to tables and drops `token.align` entirely |
-| `list` | It applies `reflowText` only in `paragraph`/`heading`/`blockquote` — **list items are never reflowed**, which was 90% of corpus overflow. Also where bullet-glyph substitution happens |
+| `list` | It applies `reflowText` only in `paragraph`/`heading`/`blockquote` — **list items are never reflowed**, which was 90% of corpus overflow. Also where bullet-glyph substitution and the nested-continuation re-alignment happen |
 | `hr` | The library hardcodes its rule character; the glyph tier has to reach it, and the rule must match the frontmatter divider exactly |
 | `code` | Brackets fenced output so `--check` can exempt it, and normalizes `token.lang` through `src/lang.ts` before highlighting |
 | `html`, and a safety net on `paragraph`/`heading`/`blockquote` | A block-level tag (e.g. a line starting `<script>`) swallows a paragraph and is returned unreflowed; the library's own reflow also measures with `.length` rather than `string-width`, undercounting a few Unicode marks |
@@ -132,6 +132,64 @@ Four things that must not be simplified away:
 
 Same guard as the loose path applies: a continuation line this pass creates may not be
 allowed to start `*` or `N.`, or `isPointedLine` claims it.
+
+#### A nested item's continuations are pulled back to their own item, per level
+
+The third defect in this family, and the one that was worth the most: a continuation
+line inside a **nested** item was indented past its own item's first line, one marker
+width **per ancestor level**.
+
+`marked-terminal`'s `list()` runs `bulletPointLines` or `numberedLines` over the whole
+composed body (`index.js:539-578`), and both prepend a marker's width in spaces —
+`toSpaces(BULLET_POINT)`, 2, or `toSpaces(numberedPoint(n))`, 3 or more — to every line
+`isPointedLine` does not recognize. For the level's **own** items that is exactly right:
+it puts a continuation under its own marker's text. But the body also holds an inner
+list that has already rendered, and there the same pass moves that list's *continuation*
+lines while leaving its *marker* lines alone — `isPointedLine` recognizes those, because
+bullet substitution runs only at `listDepth === 1` and the literal `*` is still present.
+`indentLines` then shifts every line equally and contributes nothing to the *relative*
+drift. `realignNestedContinuations` in `src/render.ts` subtracts it back out.
+
+**This is not a cosmetic fix, which is why it is here and not in a style note.** A
+continuation shifted right is a continuation over budget, and the shallower
+`rewrapListBody` then shears its tail word onto a line of its own — the same orphan the
+two passes above chase, from a source neither of them could see. Running the
+re-alignment *before* `rewrapListBody` is what makes the orphan disappear **as a
+consequence** of the indent being right. Measured on the WP-2d regression tier at every
+width 40-360, both glyph tiers: over-indents 29,035 → 3,683 and orphans 6,469 → 3,060,
+with nothing in either wrapping override touched.
+
+Four things that must not be simplified away:
+
+- **It subtracts the drift; it does not snap lines to a column.** A blockquote or a
+  fenced block inside a list item is *legitimately* indented past its item's text column
+  by its own renderer, and `findContinuationOverIndent` reports those too. Snapping every
+  reported line to the item's text column flattens them. Subtracting exactly the width
+  *this level* added preserves every legitimate relative offset at every depth — and
+  correctly leaves that class of detector hit standing.
+- **Per level, not once at the outermost list.** The amount to subtract is the marker
+  width this call just added, and that is only knowable here: at the outermost list the
+  ancestors' drifts have already summed, and with levels of differing marker width
+  (`"* "` is 2, `"1. "` is 3, `"10. "` is 4) the sum cannot be decomposed back. Deriving
+  it from the bottom-of-stack item's own `textColumn - markerColumn` is what makes
+  ordered levels work with no special case. Correcting at every level also makes
+  `currentListBudget`'s four-columns-per-ancestor arithmetic exactly true rather than an
+  under-estimate.
+- **Fenced code is never rewritten**, by the same `SENTINEL` walk `substituteBullets`
+  uses — `code`'s override resolves depth-first, so every fence in the body is already
+  bracketed by the time `list` composes it. A line that starts inside a fence, or that
+  carries a sentinel of its own, is left alone *and* is not allowed to move the item
+  stack. `rewrapListBody` still is **not** sentinel-aware; that is a separate, filed
+  defect and not this pass's.
+- **A de-indented line may not become a marker.** Landing on the four-column grid with a
+  leading `*` or `12.` is all `isPointedLine` asks for. Unordered text columns are never
+  on the grid (`4d + 2`); a ten-item ordered list's are (`4d + 4`), so the case is live
+  and is guarded with one extra leading space, as both wrapping passes above guard it.
+
+The stack model — "which item does this rendered line belong to" — is
+`trackListLine` in `src/detectors.ts`, shared with `findContinuationOverIndent`
+deliberately: a detector and the fix it grades must not be able to disagree about where
+an item's text column is. The fixture is `tests/fixtures/nested-list.md`.
 
 #### Dead seams — do not try to use these
 
@@ -299,8 +357,19 @@ that class. Two detectors, both width-blind by design where the width is not the
 | `findListOrphans(rendered, width)` | a line in a list item with <= 2 words, after a nearly-full line, followed by more prose in the same item |
 | `findContinuationOverIndent(rendered)` | a continuation line indented past **its own item's** text column |
 
-Three things about this module are load-bearing:
+Four things about this module are load-bearing:
 
+- **`findContinuationOverIndent` reports two classes it cannot tell apart, and its
+  residual is not a to-do list.** It compares a line's column against its own item's
+  text column, so a block that is *legitimately* indented past that column reads as a
+  hit: a blockquote or a fence inside a list item, indented by its own renderer's
+  `this.tab`. Those are correct renderings and the re-alignment pass deliberately leaves
+  them alone. A second, genuine class also survives it — a list nested inside a
+  **blockquote**, where `Renderer.prototype.blockquote`'s `indentify(this.tab,
+  quote.trim())` strips the rendered list's indent from only its *first* line and then
+  re-adds four columns to every line, leaving the first item's marker four columns left
+  of where its own continuations land. Different mechanism, different fix, and not the
+  list override's to make. **Read a non-zero count here before assuming a regression.**
 - **`findListOrphans` is history.** It is the metric every number WP-2, WP-2b and WP-2c
   recorded was measured with, moved here from `tests/render.test.ts` unchanged. Editing
   its body silently invalidates every dated figure in the private archive's
@@ -312,9 +381,11 @@ Three things about this module are load-bearing:
   guarantee — the same reason the width gates exempt them. It defaults to *off* because
   turning it on changes `findListOrphans`' historical counts. New callers pass it.
 - **`--detect` is off by default and that is not timidity.** The two bundled sweeps'
-  contract is `overflow=0 errors=0`; the detectors measure a class that is still open
-  (WP-2e, WP-2f), so switching them on by default would turn both gates red for known,
-  tracked reasons and destroy their value as a signal.
+  contract is `overflow=0 errors=0`; the detectors measure a class that is still partly
+  open — `rewrapListBody`'s missing sentinel-awareness, the blockquote case above, and
+  the two metric blind spots the orphan detector documents — so switching them on by
+  default would turn both gates red for known, tracked reasons and destroy their value
+  as a signal.
 
 ##### The fast tier: few notes, every width
 

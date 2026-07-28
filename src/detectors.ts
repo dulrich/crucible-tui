@@ -58,6 +58,50 @@ export const isIndentedLine = (line: string): boolean => /^\s{2,}\S/.test(line);
 const isExempt = (lineNumber: number, codeRanges: CodeRanges | undefined): boolean =>
   codeRanges !== undefined && codeRanges.some(([start, end]) => lineNumber >= start && lineNumber <= end);
 
+/** One open list item on an innermost-last stack: where its marker sits, where its text starts. */
+export interface OpenListItem {
+  /** Display column the marker glyph itself sits at. */
+  markerColumn: number;
+  /** Display column the item's text starts at — where its continuations belong. */
+  textColumn: number;
+}
+
+/**
+ * Advance an innermost-last stack of open list items by one rendered line, and report
+ * which item that line is a **continuation** of (`null` when it is not a continuation:
+ * a blank line, a marker line, or a line that closed every open list).
+ *
+ * This is the one implementation of "which item does this rendered line belong to".
+ * `findContinuationOverIndent` measures with it and `render.ts`'s re-alignment pass
+ * (WP-2e) rewrites with it, deliberately: a detector and the fix it grades must not be
+ * able to disagree about what an item's text column is.
+ *
+ * Callers pass ANSI-stripped lines and own the stack array, which is mutated in place.
+ */
+export function trackListLine(line: string, open: OpenListItem[]): OpenListItem | null {
+  if (line.trim() === "") return null; // a loose item's blank line does not close it
+
+  const marker = LIST_MARKER_PREFIX.exec(line);
+  if (marker) {
+    const prefix = marker[1] as string;
+    const markerColumn = stringWidth(prefix.slice(0, prefix.length - prefix.trimStart().length));
+    const textColumn = stringWidth(prefix);
+    // a marker at or left of the top of the stack closes every level it is not inside
+    while (open.length > 0 && (open[open.length - 1] as OpenListItem).markerColumn >= markerColumn) {
+      open.pop();
+    }
+    open.push({ markerColumn, textColumn });
+    return null;
+  }
+
+  if (!isIndentedLine(line)) {
+    open.length = 0; // back at column 0 with real text — every list is closed
+    return null;
+  }
+
+  return open[open.length - 1] ?? null;
+}
+
 /**
  * Orphaned lines inside rendered list items — the WP-2/2b/2c metric, moved here
  * verbatim from `tests/render.test.ts`.
@@ -145,35 +189,14 @@ export interface ContinuationOverIndent {
 export function findContinuationOverIndent(rendered: string, options: DetectorOptions = {}): ContinuationOverIndent[] {
   const lines = rendered.split("\n").map(stripAnsi);
   const found: ContinuationOverIndent[] = [];
-  // Innermost-last stack of open items: the column their marker sits at, and the
-  // column their text starts at.
-  const open: Array<{ markerColumn: number; textColumn: number }> = [];
+  // Innermost-last stack of open items, advanced by the shared `trackListLine` model.
+  const open: OpenListItem[] = [];
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] as string;
 
-    if (line.trim() === "") continue; // a loose item's blank line does not close it
-
-    const marker = LIST_MARKER_PREFIX.exec(line);
-    if (marker) {
-      const prefix = marker[1] as string;
-      const markerColumn = stringWidth(prefix.slice(0, prefix.length - prefix.trimStart().length));
-      const textColumn = stringWidth(prefix);
-      // a marker at or left of the top of the stack closes every level it is not inside
-      while (open.length > 0 && (open[open.length - 1] as { markerColumn: number }).markerColumn >= markerColumn) {
-        open.pop();
-      }
-      open.push({ markerColumn, textColumn });
-      continue;
-    }
-
-    if (!isIndentedLine(line)) {
-      open.length = 0; // back at column 0 with real text — every list is closed
-      continue;
-    }
-
-    const item = open[open.length - 1];
-    if (item === undefined) continue;
+    const item = trackListLine(line, open);
+    if (item === null) continue;
     if (isExempt(i + 1, options.codeRanges)) continue;
 
     const actualColumn = stringWidth(line.slice(0, line.length - line.trimStart().length));
