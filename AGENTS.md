@@ -414,13 +414,13 @@ line. See "`rewrapListBody` rewrites neither a fence nor a marker" above.
 From the repository root, run gates sequentially, stopping at the first failure:
 
 ```bash
-bun install --cwd mdview
-bun run --cwd mdview typecheck
-bun run --cwd mdview lint
-bun test mdview/tests
-bun run mdview/src/cli.ts --check --width 80 mdview/tests/fixtures/wide-table.md
-bun run --cwd mdview sweep
-bun run --cwd mdview sweep -- --glyphs ascii
+bun install
+bun run typecheck
+bun run lint
+bun test tests
+bun run src/cli.ts --check --width 80 tests/fixtures/wide-table.md
+bun run sweep
+bun run sweep -- --glyphs ascii
 ```
 
 **Flag order matters.** `bun run --cwd <dir> <script>` works; `bun --cwd <dir> run
@@ -462,10 +462,10 @@ its own line** — a green run against the bundled default proves almost nothing
 ~5 files); do not mistake it for a validation run.
 
 ```bash
-bun run --cwd mdview sweep                                   # unicode tier, resolved manifest
-bun run --cwd mdview sweep -- --glyphs ascii                 # ascii tier
-bun run --cwd mdview sweep -- --corpus <name> --all          # one corpus, full (no sampling)
-bun run --cwd mdview sweep -- --manifest example/manifest.json  # override resolution
+bun run sweep                                   # unicode tier, resolved manifest
+bun run sweep -- --glyphs ascii                 # ascii tier
+bun run sweep -- --corpus <name> --all          # one corpus, full (no sampling)
+bun run sweep -- --manifest example/manifest.json  # override resolution
 ```
 
 Each corpus in a manifest may set a `sample` (positive integer): if set, that corpus is
@@ -569,7 +569,7 @@ of ~50 real notes that have actually failed, rendered at **every** width in a ra
 
 ```bash
 MDVIEW_CORPUS_MANIFEST=<regressions manifest> \
-  bun run --cwd mdview sweep -- --corpus regressions --widths 40-360 --detect
+  bun run sweep -- --corpus regressions --widths 40-360 --detect
 ```
 
 `--widths` accepts an inclusive range (`40-360`), the existing comma list, or a mix
@@ -591,8 +591,12 @@ just mean never running it. What must not happen is the number going up. The set
 its index, and the current threshold values live in the private archive — a public clone
 has no regression corpus and no thresholds to pin.
 
-Run verification from `mdview/`, **not the repo root** — the root resolves a different
-`string-width` and gives false readings.
+Run verification from this repo's root. This instruction used to read "run from
+``, **not** the repo root": while this tool was a subfolder of a mono-repo, the
+parent's `node_modules` resolved a different `string-width` and gave false readings.
+Extraction removed the parent, so there is no longer a second resolution to get wrong —
+but the failure mode is worth knowing, because it is silent and looks like a real
+measurement.
 
 ### Containment — this repo is published, and it grew up next to private ones
 
@@ -659,7 +663,7 @@ path-shaped nor directory names — a person, a client, a host — cannot be der
 reaches the corpus manifest: it is **told a path** and knows nothing about the other end.
 
 ```bash
-MDVIEW_PRIVATE_NAMES=<path to a {"names": [...]} JSON file> bun test mdview/tests
+MDVIEW_PRIVATE_NAMES=<path to a {"names": [...]} JSON file> bun test tests
 ```
 
 Two states, and only two. **Unset**: the three always-on rules run — which is the binding
@@ -677,17 +681,21 @@ while every test stays green.
 To render a file interactively:
 
 ```bash
-bun run mdview/src/cli.ts example/plan.md
+bun run src/cli.ts example/plan.md
 ```
 
 ## Conventions
 
 - `src/cli.ts` exports `main(args = Bun.argv.slice(2))` so tests call it directly
   without a subprocess, matching the in-house convention for CLI-only tools.
-- No shebang on `src/cli.ts`; it is invoked as `bun run mdview/src/cli.ts`, matching
+- No shebang on `src/cli.ts`; it is invoked as `bun run src/cli.ts`, matching
   every other standalone `.ts` entry point in the family this tool came from.
-- No `INITIATIVE.md` or `FEEDBACK.md` for this tool — the other CLI-only tool in that
-  family has neither; `FEEDBACK.md` is user-owned and must never be agent-created.
+- `INITIATIVE.md` exists here but did not while this was a subfolder — a tool folder in
+  that family carried none, and the standalone repo is its own initiative. Its YAML
+  frontmatter is agent-maintained; **the body is the user's**, and `# Blocked on User` is
+  append-only.
+- **No `FEEDBACK.md`, ever agent-created.** It is the user's scratchpad: read it if it
+  exists, never write it, never scaffold it.
 - `bun build --compile` (the `build` script) produces a **standalone compiled
   binary** — a new pattern for this repo, where every other `bun build` produces a
   bundle. It is ~102 MB (the Bun runtime is embedded) and gitignored via `dist/`.
@@ -695,13 +703,13 @@ bun run mdview/src/cli.ts example/plan.md
   **The binary does not track source. It must be rebuilt after any source edit:**
 
   ```bash
-  bun run --cwd mdview build
+  bun run build
   ```
 
   PATH install (already in place; `~/.local/bin` precedes `/usr/local/bin` on PATH):
 
   ```bash
-  ln -sfn "$PWD/mdview/dist/mdview" ~/.local/bin/mdview         # from the repo root
+  ln -sfn "$PWD/dist/mdview" ~/.local/bin/mdview         # from the repo root
   ```
 
   The symlink points at the build output, so a rebuild takes effect immediately — but
@@ -778,10 +786,13 @@ bun run mdview/src/cli.ts example/plan.md
   19-column case.
 - `.gitignore` is assembled from the chunk files the in-house scaffolding skill ships;
   repo-local entries go under the `# --- project-specific ---` marker. `bun.lock` is
-  **ignored**, matching every other tool in that family (their shared root `.gitignore`
-  ignores it globally and none of them tracks one).
+  **ignored** — it was ignored globally by the parent's root `.gitignore` while this was
+  a subfolder, and extraction dropped that file, so the rule is restated here to keep the
+  tracked set unchanged across the split. **Whether a published repo should instead track
+  its lockfile is a live question, deliberately left to WP-5** (dependency decisions);
+  extraction is not the place to change what is committed.
 
-Plans: `plans/mdview.md` (repo root — the original build; written before `mdview/`
-existed, so it stayed at root per the repo-wide plans routing rule) and
-`mdview/plans/vault-readiness.md` (glyph tier, fence languages, divider, embeds, and the
-multi-corpus sweep).
+Plans: `plans/mdview.md` (the original build) and `plans/vault-readiness.md` (glyph tier,
+fence languages, divider, embeds, and the multi-corpus sweep). The two sat at different
+levels before extraction — the first predated the tool's own folder — and were flattened
+into one `plans/` when this repo was split out.

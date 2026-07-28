@@ -112,7 +112,7 @@ describe("bullet cycling by nesting depth", () => {
 // --- regression: fenced/indented code nested inside a list item must never be
 // touched (caught in review) --------------------------------------------------
 
-// `mdview/AGENTS.md`'s rendering policy is unqualified: fenced code is never
+// `AGENTS.md`'s rendering policy is unqualified: fenced code is never
 // rewritten — a wrapped or altered command is a wrong command. `substituteBullets`
 // initially rewrote `* `/bare-`*` content inside a fence nested in a list item,
 // because it walked the fully-resolved list body with no awareness that part of that

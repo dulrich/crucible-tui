@@ -9,7 +9,7 @@ import { resolve } from "node:path";
  * highlight.js "language not found" diagnostic) is dead code in every normal test
  * run. Two facts about this trap, both verified against this repo's
  * `render.ts`/`highlight.js` before this helper was written (see
- * mdview/plans/vault-readiness.md's WP-1 brief):
+ * plans/vault-readiness.md's WP-1 brief):
  *
  * 1. Chalk resolves its color level at MODULE-LOAD time, not per call. Setting
  *    `FORCE_COLOR` after `render.ts` (and therefore chalk) has already been
@@ -40,7 +40,7 @@ import { resolve } from "node:path";
  * `FORCE_COLOR=3` set in that subprocess's environment before its own module
  * graph loads for the first time. This is immune to whatever the parent test
  * process has already cached, and matches the brief's own manual repro command
- * (`FORCE_COLOR=3 bun run mdview/src/cli.ts ...`), which is itself a fresh
+ * (`FORCE_COLOR=3 bun run src/cli.ts ...`), which is itself a fresh
  * process. The env-var-before-module-load invariant the brief states is
  * preserved; only the "same process, dynamic import" mechanism was wrong for
  * use inside a shared test run.

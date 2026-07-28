@@ -407,7 +407,7 @@ function listMarkerWidth(token: Tokens.List): number {
  * already completed, so nothing downstream still needs the `"*"` literal.
  *
  * **Regression, found in review: a fenced code block nested inside a list item got its
- * `* `/bare-`*` content rewritten.** `mdview/AGENTS.md`'s rendering policy is
+ * `* `/bare-`*` content rewritten.** `AGENTS.md`'s rendering policy is
  * unqualified on this: "fenced code is never rewritten" — a wrapped or altered command
  * is a wrong command, no exceptions. No gate caught it: `--check` and both sweeps
  * exempt code ranges from width checking entirely, so corrupting a line *inside* one is
