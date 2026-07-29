@@ -574,15 +574,46 @@ Measured anyway: **4,368 renders (21 files × 104 widths × both tiers) byte-ide
 `VTE_VERSION`, the multiplexer, and the locale. The locale is in the key because it is
 conventionally *the* thing that changes a terminal's ambiguous-width behaviour.
 
-*This paragraph originally justified the over-specification by claiming `TERM` alone
-cannot separate the two terminals this tool is validated against, "because a multiplexer
-rewrites it". **The validation run disproved that.*** Measured 2026-07-28: ghostty under
-zellij reported `TERM=xterm-ghostty`, not a rewritten `screen`/`tmux-256color`, and urxvt
-reported `rxvt-unicode-256color` — so `TERM` alone *would* have separated these two. The
-key is still right, for the weaker and honest reason: `TERM` is a *terminfo* name, not an
-identity, two emulators can and do claim the same one, and a multiplexer rewriting it is a
-real behaviour that merely did not happen here. Over-specifying costs one re-probe;
-under-specifying hands ghostty urxvt's answer. Keep the claim sized to the evidence. Writes are atomic (temp file +
+*This paragraph has been rewritten twice against field data, and the history is the
+point.* It first justified the key by claiming `TERM` alone cannot separate the validated
+terminals "because a multiplexer rewrites it". **The validation disproved that**: zellij
+did **not** rewrite `TERM` — ghostty under zellij reported `xterm-ghostty` — so that
+specific mechanism never fired. The five-terminal survey of 2026-07-28 then supplied the
+mechanism that is actually real:
+
+| host | `TERM` | distinguishing field |
+|---|---|---|
+| ghostty + zellij | `xterm-ghostty` | `TERM` |
+| urxvt | `rxvt-unicode-256color` | `TERM` |
+| kitty | `xterm-kitty` | `TERM` |
+| gnome-terminal | **`xterm-256color`** | **`VTE_VERSION=7600`** |
+| anything + tmux | `tmux-256color` | *(deliberately collapsed — see below)* |
+
+**`TERM` is a terminfo name, not an identity, and this machine already proves it**:
+gnome-terminal reports the *generic* `xterm-256color`, the value plain xterm, alacritty
+and terminator also claim. `VTE_VERSION` is what separates it. That is the real
+justification; the multiplexer-rewrite story was speculation that happened to be wrong.
+
+**Under a multiplexer the key collapses to the multiplexer's own fields, and that is
+correct rather than a collision.** tmux rewrites `TERM` to `tmux-256color`, sets
+`TERM_PROGRAM=tmux`, and strips `VTE_VERSION`, so every host collapses to one key —
+kitty-under-tmux and a **fully detached** tmux session with no host terminal attached
+produce byte-identical identity strings. That is right, because **tmux answers DSR from
+its own grid model rather than relaying to the host**: measured by running the probe in a
+detached session, which replied `\e[1;2R` in 5 ms with nothing attached to render
+anything. mdview's output is laid into tmux's grid and *tmux* decides the wrapping, so
+tmux's opinion is the one that governs and sharing it across hosts is the desired
+behaviour. A host that disagrees with its own multiplexer is already rendering corrupt
+output for every program, and is not mdview's to reconcile.
+
+The residual is benign and worth knowing: `COLORTERM` still leaks the host through under
+tmux (`truecolor` for kitty and ghostty, `rxvt-xpm` for urxvt), so urxvt-under-tmux gets a
+*different* key from kitty-under-tmux despite both being tmux. That costs one spurious
+re-probe and nothing else. Over-specifying costs a re-probe; under-specifying hands
+ghostty urxvt's answer. **Keep the claim sized to the evidence** — this paragraph was
+wrong twice while the code was right throughout.
+
+Writes are atomic (temp file +
 `rename`, `src/config.ts`'s pattern); every corrupt, truncated, wrong-version or
 unreadable shape reads as a **miss** and re-probes, and an unwritable cache is a
 `false` return, never a throw — a viewer that refuses to render because a file it
