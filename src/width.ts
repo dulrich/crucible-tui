@@ -154,8 +154,40 @@ export function resolveAmbiguousCachePath(env: NodeJS.ProcessEnv = process.env):
  * Over-specifying only ever costs a re-probe (~a few ms, once); under-specifying costs
  * a silently wrong render.
  */
+/**
+ * Which multiplexer is drawing the cells — the **innermost** one, which is the layer that
+ * answers DSR and decides wrapping.
+ *
+ * **Order matters here, and the naive one is wrong.** Multiplexers do not agree about
+ * cleaning up after themselves: `tmux` strips `ZELLIJ`/`ZELLIJ_SESSION_NAME` from a new
+ * session's environment, but **`screen` does not** — so inside screen-within-zellij both
+ * `STY` and `ZELLIJ` are set, and a plain `ZELLIJ ? … : TMUX ? … : STY ? …` chain reports
+ * `zellij` for a session screen is actually drawing. Measured 2026-07-28: a detached
+ * screen session started from a zellij pane reported `TERM=screen`, `STY=…`, `ZELLIJ=0`
+ * simultaneously.
+ *
+ * `TERM` is the tiebreaker, because the innermost multiplexer is the last thing to set
+ * it: screen sets `screen*`, tmux sets `tmux*` (or `screen*`), and zellij passes a plain
+ * `xterm*` through. So a `screen*` `TERM` with `STY` set means screen really is innermost,
+ * whatever an outer multiplexer left lying around; zellij-inside-screen keeps its
+ * `xterm*` `TERM` and still resolves to `zellij`, correctly.
+ *
+ * The cache cost of getting this wrong is only a spurious miss (screen-in-zellij and bare
+ * screen would key differently and each re-probe once). The real cost is that
+ * `mdview probe` would **print a false statement** about the user's own terminal stack,
+ * in the one output whose entire job is to be believed.
+ */
+function detectMultiplexer(env: NodeJS.ProcessEnv): string {
+  const term = env.TERM ?? "";
+  if (env.STY && term.startsWith("screen")) return "screen";
+  if (env.TMUX) return "tmux";
+  if (env.ZELLIJ || env.ZELLIJ_SESSION_NAME) return "zellij";
+  if (env.STY) return "screen";
+  return "none";
+}
+
 export function terminalIdentity(env: NodeJS.ProcessEnv = process.env): string {
-  const multiplexer = env.ZELLIJ || env.ZELLIJ_SESSION_NAME ? "zellij" : env.TMUX ? "tmux" : env.STY ? "screen" : "none";
+  const multiplexer = detectMultiplexer(env);
   const locale = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
   const parts = [
     `term=${env.TERM ?? ""}`,
