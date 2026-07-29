@@ -31,6 +31,7 @@ describe("parseArgs", () => {
       check: false,
       help: false,
       licenses: false,
+      probe: false,
     });
   });
 

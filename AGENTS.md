@@ -49,6 +49,8 @@ src/frontmatter.ts  YAML split and metadata block formatting
 src/table.ts        the wide-table allocator — the reason the tool exists
 src/wrap.ts         ANSI-safe prose wrapping for what marked-terminal won't
 src/glyphs.ts       Unicode/ASCII capability tier — the only module that reads env
+src/width.ts        display-width measurement + the East Asian Ambiguous probe (WP-3);
+                    the only module that imports string-width
 src/lang.ts         fence-language alias map + supportsLanguage() fallback
 src/config.ts       XDG config load + corpus-manifest path resolution
 src/detectors.ts    orphan / continuation-over-indent detectors (see below)
@@ -418,6 +420,14 @@ Every Unicode substitute is exactly 1 column, so the tier has **no width impact*
 `chromeWidth` stays `3N+1`. Both tiers are swept separately anyway (below); a change
 that widens a glyph must show up there.
 
+**That paragraph is true only under *narrow* ambiguous-width measurement, and WP-3 found
+out how narrowly.** `•`, `─` and the whole box-drawing set are East Asian *Ambiguous* and
+measure 2 columns under `MDVIEW_AMBIGUOUS=wide`; only `◦`, `‣` and `✓` are 1 either way.
+`resolveGlyphs` therefore takes the resolved ambiguous setting as a third argument and
+refuses to hand this tier out in wide mode at all — ahead of `--unicode`. See "Ambiguous
+width (WP-3)" below for the measurement and for why it is not repairable in the
+allocator.
+
 Bullet substitution runs **once, at the outermost list** (`listDepth === 1`), reading
 depth from indentation. This is not a style choice: `marked-terminal`'s `fixNestedLists`
 (`index.js:152`) finds sublist boundaries with a `POINT_REGEX` hardcoded to literal `\*`
@@ -456,9 +466,10 @@ and must exit 0.
 ### Command-line surface (WP-4)
 
 ```
-mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--help]
+mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--probe] [--help]
 mdview view <file.md> [options ...]
 mdview highlight-as <fence> <language>
+mdview probe [--refresh] [--no-cache] [--timeout MS]
 mdview help [subcommand]
 ```
 
@@ -466,8 +477,13 @@ mdview help [subcommand]
 subcommands and is the invocation the user runs daily, so `main` dispatches to a named
 handler *only* when `args[0]` is exactly `view`, `highlight-as`, or `help`; everything
 else — including every flag, all of which start with `-` — falls through to the same view
-path as before. A new subcommand slots into that dispatch without disturbing it, which is
-how WP-3's `--probe` is expected to arrive. The cost of the shape is one edge case,
+path as before. A new subcommand slots into that dispatch without disturbing it, and
+WP-3's `probe` did exactly that — one added name in `main`, one in `runHelp`, and nothing
+about the fall-through touched. `--probe` is *also* accepted on the view path, because
+`plans/crucible-tui-launch.md` publishes both spellings (its "Public Interfaces" section
+says `mdview --probe`, its WP-3 text says subcommand) and supporting both costs one line
+of delegation, where picking one would make a published spelling a lie. The cost of the
+shape is one edge case,
 accepted knowingly: a file named exactly `view`, `help`, or `highlight-as` with no
 extension must be given as `./view` or via `mdview view view`.
 
@@ -504,6 +520,157 @@ one source, because the tool answers to two names and a reader who knows the pro
 `crucible-tui` should not get "No manual entry" for typing it. That split is deliberate
 and settled — see "Two names, on purpose" at the top of this file. Do not reconcile the
 two names.
+
+### Ambiguous width (WP-3)
+
+`src/width.ts` owns one question: **how many columns is an East Asian *Ambiguous*
+character?** Unicode's answer is "one or two, depending on the terminal, and you cannot
+tell from the character" — and almost every non-ASCII character in this corpus is in
+that class (`— – → ← … ≥ × • ○` and the whole box-drawing set; 90 em dashes in one real
+document). `string-width@7` defaults to narrow, which is also TR11's own recommendation
+when the context cannot be established, and that default was hardcoded at **26 call
+sites across 7 modules** because the library takes the setting as a *per-call option*
+and offers no global switch.
+
+**`src/width.ts` is now the only file in `src/` or `scripts/` that imports
+`string-width`**, and `tests/width.test.ts` asserts it. That is not tidiness: a module
+that imports it directly silently opts out of whatever mode was resolved, and **no width
+gate can see that**, because a check measured with the wrong ruler passes. It is the
+same class of defect as the `cli-table3` v4/v7 disagreement below, and it is exactly the
+kind that this repo has shipped green four times.
+
+#### The mode is threaded, exactly like `GlyphSet`, and for the same stated reason
+
+`src/glyphs.ts`'s header is the precedent: *"this module is the only place that reads the
+environment; `render.ts` and `table.ts` stay pure and take a `GlyphSet` argument so every
+test is deterministic regardless of the machine's `TERM` or locale."* A process-global
+`ambiguousIsNarrow` in `width.ts` would be smaller and is precisely what that sentence
+was written to prevent — it makes every test's result depend on what ran before it, and
+the sweep's numbers depend on the machine that ran them.
+
+So a `Measure` is a value: a callable `(text) => columns` carrying an `ambiguous` tag,
+passed alongside the glyph set on the channel that already exists (`cli.ts` →
+`renderDocumentDetailed` → `renderTable`), and **defaulting to `NARROW_MEASURE` at every
+public entry point**. The default is not a convenience — it *is* rule 4 of the
+resolution order — and the narrow branch calls `stringWidth(text)` with **no options
+object at all**, byte-for-byte the call all 26 sites used to make. That makes narrow-mode
+output identical to the parent commit *by construction* rather than by measurement.
+Measured anyway: **4,368 renders (21 files × 104 widths × both tiers) byte-identical,
+0 differing bytes, 0 `codeRanges` disagreements.**
+
+#### Resolution order (highest first)
+
+1. `MDVIEW_AMBIGUOUS=narrow|wide`. Any other value — unset, empty, a typo — is **ignored**
+   and falls through. Never throws on a bad env var; that is the `MDVIEW_GLYPHS`
+   contract and this matches it exactly.
+2. A cached probe result for **this terminal identity**.
+3. A live DSR probe, iff stdin *and* stdout are TTYs **and the caller opted in**.
+   `allowProbe` defaults to *off*, which is the load-bearing direction: `--check`, the
+   sweep and the whole test suite get "no terminal I/O, no cache writes" for free rather
+   than each having to remember.
+4. **Narrow.**
+
+**The cache key is deliberately over-specified**: `TERM`, `TERM_PROGRAM`, `COLORTERM`,
+`VTE_VERSION`, the multiplexer, and the locale. `TERM` alone does not separate the two
+terminals the user actually runs — a multiplexer rewrites it and two emulators routinely
+claim the same value — and the locale is in the key because it is conventionally *the*
+thing that changes a terminal's ambiguous-width behaviour. Over-specifying costs one
+re-probe; under-specifying hands ghostty urxvt's answer. Writes are atomic (temp file +
+`rename`, `src/config.ts`'s pattern); every corrupt, truncated, wrong-version or
+unreadable shape reads as a **miss** and re-probes, and an unwritable cache is a
+`false` return, never a throw — a viewer that refuses to render because a file it
+generated is corrupt has mistaken its plumbing for the user's request.
+
+**The probe never moves the cursor to a cell it did not already own.** It asks where the
+cursor is, writes one character *there*, asks again, and the difference is the answer;
+then it returns to the recorded column and clears to end of line, which is exact because
+nothing to the right of the cursor existed before. The obvious alternative — CR to
+column 1, write, restore — overwrites whatever the shell prompt left there and cannot
+put it back. Within two columns of the right margin it **refuses and says so** rather
+than guessing, because the glyph would wrap and the erase would clear a line the probe
+never wrote.
+
+Cooked mode is restored in **three** layers, and the third is not belt-and-braces: a
+`finally` covers a throw or a return, `process.on("exit")` covers `process.exit`, and
+handlers for `SIGINT`/`SIGTERM`/`SIGHUP` cover an external `kill` — whose *default*
+disposition terminates without emitting `exit` at all, which is the one path that would
+strand the user's shell in raw mode. Verified against a scripted pty: killed mid-probe,
+the tty comes back `icanon`. Ctrl-C is handled as a **byte** (`\x03`), not a signal,
+because raw mode is exactly what turns `ISIG` off.
+
+#### `wide` forces the ASCII glyph tier — arithmetic, not taste
+
+The tier section above says *"every Unicode substitute is exactly 1 column, so the tier
+has no width impact and `chromeWidth` stays `3N+1`"*. **That is a narrow-measurement
+statement, and under `wide` it is false for most of the set**: `•` (U+2022), `─`
+(U+2500) and the entire box-drawing charset are themselves Ambiguous and measure 2. Only
+`◦`, `‣` and `✓` survive.
+
+Two consequences, neither cosmetic and neither repairable in the allocator:
+
+- **A table's border row cannot be made to fit.** `cli-table3` draws a horizontal rule as
+  one `─` per column of cell width, so the border row is exactly *twice* the content
+  rows. `renderTable`'s re-render loop reduces the budget by the observed overage — but
+  here the overage **is** the entire budget, `allocateWidths` reports `fits: false`, and
+  the loop correctly declines to collapse the table rather than emitting a wreck.
+  Measured on `tests/fixtures/wide-table.md`: **160 columns at a target of 80, 200 at
+  100 — exactly 2×**, pinned in `tests/width.test.ts`.
+- **A substituted bullet widens its own item.** `substituteBullets` swaps `"* "` for
+  `"• "` *after* the budget arithmetic ran on the source marker, so every unordered item
+  is one column over budget per level.
+
+Measured over the bundled corpus at all five sweep widths: **wide + Unicode = 35
+overflows of 60 combos; wide + ASCII = 0.** So `resolveGlyphs` takes the ambiguous
+setting as a third argument and returns ASCII whenever it is `wide`, **ahead of
+`--unicode` and `MDVIEW_GLYPHS`** — because `--unicode` asserts a *capability* ("this
+terminal can draw these"), which remains true and is simply not the constraint that
+binds. An explicit `--unicode` that gets overridden this way is named once on stderr
+(`wideForcesAscii`), never swallowed. `MDVIEW_AMBIGUOUS=narrow` is the escape hatch.
+
+`renderRule` divides the target by the rule glyph's *measured* width for the same
+reason — `"─".repeat(targetWidth - 1)` is twice the document width in wide mode, which
+would put the tool's own frontmatter divider over budget on every file that has one.
+
+#### The residual, named rather than papered over
+
+**`cli-table3` bundles its own `string-width@4.2.3`, which has no `ambiguousIsNarrow`
+option at all**, so its cell padding can never honour wide mode. A cell containing *k*
+ambiguous characters is padded *k* columns too wide, and since *k* varies cell by cell
+within a column, **a table's right edge can be ragged by up to *k* columns in wide
+mode**. This is not fixable from outside the library: it pads to `colWidths` in its own
+units, so no amount of pre-padding, pre-wrapping or budget adjustment on our side can
+make its count agree with ours per-cell.
+
+What the existing re-render loop *does* absorb, with evidence: the **aggregate** overage.
+It measures the finished table with our `Measure` and re-allocates against a reduced
+budget, so with unambiguous borders (the ASCII tier — i.e. the tier wide mode actually
+gets) the widest line stays within the target: ambiguous-carrying tables at targets 80
+and 100 came back at 80 and 83. What it cannot absorb is an overage equal to the whole
+budget, which is the box-drawing case above.
+
+#### The sweep keeps the two axes independent, on purpose
+
+`scripts/sweep.ts` takes `--ambiguous narrow|wide` and **never** reads `MDVIEW_AMBIGUOUS`,
+never consults the cache, and never probes. It is a corpus *measurement* instrument whose
+numbers are compared against dated runs in the private archive; a baseline that changed
+ruler because of the machine's `TERM`, or because someone once ran `mdview probe`, could
+not be compared to anything. It also does **not** apply the wide-forces-ASCII rule, so
+`--ambiguous wide --glyphs unicode` stays reachable — that combination is how the finding
+above was measured, and an instrument that cannot reproduce a finding is not an
+instrument. It prints a NOTE saying the CLI never produces that combination.
+
+`--check` is the other way round and for the opposite reason: it honours the env var and
+the cache (it just never probes), because its whole claim is "the renderer hit the budget
+it was given". A check measured with a different ruler than the allocation used is
+asserting something else entirely.
+
+#### What the orchestrator cannot verify
+
+The probe's *arithmetic*, cleanup, timeout, interrupt and cache behaviour are covered by
+`tests/width.test.ts` against a scripted terminal double, and end-to-end against a
+scripted pty. **What no test here can establish is what a real terminal answers.** The
+user runs urxvt and ghostty-inside-zellij; run `mdview probe` in each and read the
+`ambiguous width` line. Nothing in this repo may claim those pass.
 
 ### Corpus sweep
 

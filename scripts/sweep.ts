@@ -20,14 +20,15 @@
  * Usage: bun run sweep [--corpus <name|all>] [--all]
  *                                    [--widths 80,100,160] [--limit N]
  *                                    [--glyphs unicode|ascii] [--manifest <path>]
+ *                                    [--ambiguous narrow|wide]
  */
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import stringWidth from "string-width";
 import { renderDocumentDetailed } from "../src/render";
 import { findContinuationOverIndent, findListOrphans, isTableLine, stripAnsi } from "../src/detectors";
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "../src/config";
+import { NARROW_MEASURE, measureFor, type Measure } from "../src/width";
 
 export interface CorpusSpec {
   name: string;
@@ -71,6 +72,18 @@ export interface SweepOptions {
    * value as a signal. Detection is a separate tier with its own ratchet thresholds.
    */
   detect: boolean;
+  /**
+   * `--ambiguous narrow|wide` — the East Asian Ambiguous ruler (WP-3, `src/width.ts`).
+   *
+   * **The sweep never probes and never reads `MDVIEW_AMBIGUOUS`**, unlike the CLI. It
+   * is a corpus *measurement* instrument, not a renderer aimed at a terminal: its
+   * numbers are compared against dated runs in the private archive, and a baseline
+   * that silently changed ruler because of the machine's `TERM` — or because someone
+   * had once run `mdview probe` — would be a baseline that cannot be compared to
+   * anything. Wide is therefore reachable only by asking for it, explicitly, on the
+   * command line. Defaults to narrow, matching every recorded run.
+   */
+  measure?: Measure;
   /** `--max-orphans N` — with `--detect`, exit non-zero above N. A ratchet, not a target. */
   maxOrphans?: number;
   /** `--max-over-indent N` — same, for the continuation over-indent detector. */
@@ -426,13 +439,14 @@ export function findOverflow(
   output: string,
   targetWidth: number,
   codeRanges: Array<[number, number]>,
+  measure: Measure = NARROW_MEASURE,
 ): { line: number; width: number } | null {
   const lines = output.split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
     const exempt = codeRanges.some(([start, end]) => lineNumber >= start && lineNumber <= end);
     if (exempt) continue;
-    const width = stringWidth(lines[index] ?? "");
+    const width = measure(lines[index] ?? "");
     if (width > targetWidth) {
       return { line: lineNumber, width };
     }
@@ -481,6 +495,7 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
   let limit: number | undefined;
   let all = false;
   let glyphs: GlyphSet = UNICODE_GLYPHS;
+  let measure: Measure = NARROW_MEASURE;
   let manifestFlag: string | undefined;
   let detect = false;
   let maxOrphans: number | undefined;
@@ -552,6 +567,15 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
       index += 1;
       continue;
     }
+    if (arg === "--ambiguous") {
+      const value = argv[index + 1];
+      if (value !== "narrow" && value !== "wide") {
+        throw new Error(`--ambiguous must be "narrow" or "wide", got: ${value}`);
+      }
+      measure = measureFor(value);
+      index += 1;
+      continue;
+    }
     if (arg === "--manifest") {
       const value = argv[index + 1];
       if (!value) throw new Error("missing value for --manifest");
@@ -561,7 +585,7 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
     }
   }
 
-  return { corpus, options: { widths, limit, all, glyphs, manifestFlag, detect, maxOrphans, maxOverIndent } };
+  return { corpus, options: { widths, limit, all, glyphs, measure, manifestFlag, detect, maxOrphans, maxOverIndent } };
 }
 
 export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Promise<CorpusResult> {
@@ -629,8 +653,11 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
     for (const width of options.widths) {
       combos += 1;
       try {
-        const { text, codeRanges } = renderDocumentDetailed(source, width, options.glyphs);
-        const found = findOverflow(text, width, codeRanges);
+        // One ruler for the render and the check, always: a sweep that allocated one
+        // way and measured another would report an overflow count about nothing.
+        const measure = options.measure ?? NARROW_MEASURE;
+        const { text, codeRanges } = renderDocumentDetailed(source, width, options.glyphs, measure);
+        const found = findOverflow(text, width, codeRanges, measure);
         if (found) {
           overflow.push({ path, width: found.width, targetWidth: width, line: found.line });
           if (isTableLine(text.split("\n")[found.line - 1] ?? "")) tableOverflow += 1;
@@ -639,12 +666,12 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
           // Fenced ranges are exempt here for the same reason they are exempt from the
           // width check: fences are never rewritten, so their shape is not ours to
           // guarantee. Constraint carried over deliberately, not inherited by accident.
-          const foundOrphans = findListOrphans(text, width, { codeRanges });
+          const foundOrphans = findListOrphans(text, width, { codeRanges, measure });
           if (foundOrphans.length > 0) {
             const first = text.split("\n").findIndex((line) => stripAnsi(line).trim() === foundOrphans[0]);
             orphans.push({ path, targetWidth: width, count: foundOrphans.length, line: first + 1 });
           }
-          const drift = findContinuationOverIndent(text, { codeRanges });
+          const drift = findContinuationOverIndent(text, { codeRanges, measure });
           if (drift.length > 0) {
             overIndent.push({ path, targetWidth: width, count: drift.length, line: drift[0]?.line ?? 0 });
           }
@@ -718,7 +745,20 @@ async function runCli(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`glyphs=${options.glyphs.tier}`);
+  const ambiguous = (options.measure ?? NARROW_MEASURE).ambiguous;
+  console.log(`glyphs=${options.glyphs.tier} ambiguous=${ambiguous}`);
+  // The sweep keeps these two axes independent *on purpose*, while `src/cli.ts` does
+  // not: `resolveGlyphs` refuses to hand out the Unicode tier in wide mode, because
+  // that tier's own glyphs are ambiguous and its tables cannot be laid out (see
+  // `wideForcesAscii`). Forcing the same rule here would make the residual it was
+  // discovered by unmeasurable, and an instrument that cannot reproduce the finding is
+  // not an instrument. So the combination stays reachable and is labelled instead.
+  if (ambiguous === "wide" && options.glyphs.tier === "unicode") {
+    console.log(
+      "NOTE: --ambiguous wide with the unicode tier is a diagnostic combination the CLI never " +
+        "produces (wide forces the ascii tier); expect overflow from ambiguous box-drawing glyphs",
+    );
+  }
 
   const targets = corpus === "all" ? manifest.corpora : manifest.corpora.filter((spec) => spec.name === corpus);
   if (targets.length === 0) {

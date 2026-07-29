@@ -25,7 +25,7 @@
  * historical counts, and the guardrail on that function is that it does not move.
  * New callers (the regression tier) pass it; the WP-2 test suite does not.
  */
-import stringWidth from "string-width";
+import { NARROW_MEASURE, type Measure } from "./width";
 
 /** Inclusive 1-based `[startLine, endLine]` pairs, as `renderDocumentDetailed` returns. */
 export type CodeRanges = Array<[number, number]>;
@@ -33,6 +33,17 @@ export type CodeRanges = Array<[number, number]>;
 export interface DetectorOptions {
   /** When supplied, lines inside these ranges are not reported. See the module note. */
   codeRanges?: CodeRanges;
+  /**
+   * Display-width ruler (WP-3). **Defaults to `NARROW_MEASURE`, and that default is a
+   * guardrail rather than a convenience**: every dated figure in the private archive's
+   * `measurements/` was taken with the narrow ruler, and a detector that silently
+   * measured wide because the machine's terminal happened to answer wide would move
+   * those numbers with no code change to blame — the exact "a drift looks like a fix"
+   * failure mode the freeze on `findListOrphans` exists to prevent. A caller grading a
+   * *wide* render passes the wide measure explicitly and knows it is producing a
+   * different series.
+   */
+  measure?: Measure;
 }
 
 // Deliberately matching the ESC control character to strip ANSI SGR codes, so a
@@ -78,14 +89,18 @@ export interface OpenListItem {
  *
  * Callers pass ANSI-stripped lines and own the stack array, which is mutated in place.
  */
-export function trackListLine(line: string, open: OpenListItem[]): OpenListItem | null {
+export function trackListLine(
+  line: string,
+  open: OpenListItem[],
+  measure: Measure = NARROW_MEASURE,
+): OpenListItem | null {
   if (line.trim() === "") return null; // a loose item's blank line does not close it
 
   const marker = LIST_MARKER_PREFIX.exec(line);
   if (marker) {
     const prefix = marker[1] as string;
-    const markerColumn = stringWidth(prefix.slice(0, prefix.length - prefix.trimStart().length));
-    const textColumn = stringWidth(prefix);
+    const markerColumn = measure(prefix.slice(0, prefix.length - prefix.trimStart().length));
+    const textColumn = measure(prefix);
     // a marker at or left of the top of the stack closes every level it is not inside
     while (open.length > 0 && (open[open.length - 1] as OpenListItem).markerColumn >= markerColumn) {
       open.pop();
@@ -122,6 +137,10 @@ export function trackListLine(line: string, open: OpenListItem[]): OpenListItem 
  * Returns the trimmed text of each orphaned line, in document order.
  */
 export function findListOrphans(rendered: string, width: number, options: DetectorOptions = {}): string[] {
+  // The one WP-3 change to this frozen function: the ruler is now a parameter with the
+  // historical value as its default, instead of a hardcoded `stringWidth` import. The
+  // detection logic below is untouched — see `DetectorOptions.measure`.
+  const measure = options.measure ?? NARROW_MEASURE;
   const lines = rendered.split("\n").map(stripAnsi);
   const orphans: string[] = [];
   let inList = false;
@@ -140,7 +159,7 @@ export function findListOrphans(rendered: string, width: number, options: Detect
     const previous = lines[i - 1] as string;
     if (previous.trim() === "") continue;
     if (line.trim().split(/\s+/).filter(Boolean).length > 2) continue;
-    if (stringWidth(previous) < width - 10) continue;
+    if (measure(previous) < width - 10) continue;
 
     // must continue into more prose in the same item, not simply end it
     const next = lines[i + 1];
@@ -187,6 +206,7 @@ export interface ContinuationOverIndent {
  * as a dense-width-sweep signal without the width itself confounding the result.
  */
 export function findContinuationOverIndent(rendered: string, options: DetectorOptions = {}): ContinuationOverIndent[] {
+  const measure = options.measure ?? NARROW_MEASURE;
   const lines = rendered.split("\n").map(stripAnsi);
   const found: ContinuationOverIndent[] = [];
   // Innermost-last stack of open items, advanced by the shared `trackListLine` model.
@@ -195,11 +215,11 @@ export function findContinuationOverIndent(rendered: string, options: DetectorOp
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] as string;
 
-    const item = trackListLine(line, open);
+    const item = trackListLine(line, open, measure);
     if (item === null) continue;
     if (isExempt(i + 1, options.codeRanges)) continue;
 
-    const actualColumn = stringWidth(line.slice(0, line.length - line.trimStart().length));
+    const actualColumn = measure(line.slice(0, line.length - line.trimStart().length));
     if (actualColumn <= item.textColumn) continue;
 
     found.push({
