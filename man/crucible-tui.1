@@ -1,0 +1,184 @@
+.TH CRUCIBLE\-TUI 1 "2026-07-28" "crucible-tui" "User Commands"
+.SH NAME
+crucible\-tui \- terminal markdown viewer (installed command: \fBmdview\fR)
+.SH SYNOPSIS
+.B mdview
+.I file.md
+[\fB\-\-width\fR \fIN\fR]
+[\fB\-\-no\-pager\fR]
+[\fB\-\-check\fR]
+[\fB\-\-ascii\fR|\fB\-\-unicode\fR]
+[\fB\-\-help\fR]
+.br
+.B mdview view
+.I file.md
+[\fIoptions\fR ...]
+.br
+.B mdview highlight\-as
+.I fence
+.I language
+.br
+.B mdview help
+[\fIsubcommand\fR]
+.SH DESCRIPTION
+.B mdview
+renders a markdown file to the terminal: frontmatter as a metadata block,
+wide tables wrapped losslessly instead of overflowing or being truncated,
+loose and tight lists reflowed correctly at the target width, and fenced code
+passed through byte\-for\-byte.
+.PP
+A bare
+.I file.md
+argument is, and remains, a complete invocation \(em no subcommand is ever
+required to view a file. Subcommands below sit alongside that default, not in
+front of it.
+.PP
+This repository is named
+.B crucible\-tui
+(part of the Crucible\-DE toolset); the installed binary is still named
+.B mdview
+and continues to be invoked that way. A rename of the binary and its
+environment variables to match the repository is a deliberately deferred,
+separate piece of work, not yet done.
+.SH SUBCOMMANDS
+.TP
+.BI "view " "file.md " "[options...]"
+Spelled\-out form of the default action: render
+.I file.md
+and print it, exactly as a bare
+.I file.md
+argument does. See OPTIONS below.
+.TP
+.BI "highlight\-as " "fence language"
+Map a fenced code block's declared language
+.RI ( fence ,
+e.g. the word after the opening \(oq```\(cq) to a language the syntax
+highlighter recognizes
+.RI ( language ),
+and save that mapping to the user config file (see FILES). The mapping is
+validated before it is written: an unrecognized
+.I language
+is rejected with an explanatory message rather than being written silently,
+which would otherwise leave the fence unhighlighted with no indication why.
+Two mappings are built in and need no configuration:
+.B dataviewjs
+renders as
+.B javascript
+and
+.B dataview
+renders as
+.BR sql .
+A configured mapping for a fence language that already has a built\-in
+default overrides it. Only the one mapping named on the command line is
+touched; every other key in the config file, and every other
+.B highlight\-as
+mapping already recorded, is left exactly as it was.
+.TP
+.BI "help " "[subcommand]"
+Print this usage information, or \(em given a subcommand name \(em that
+subcommand's own usage. Equivalent to
+.B \-\-help
+or
+.B \-h
+passed to the subcommand directly.
+.SH OPTIONS
+These apply to the default (bare\-file, or explicit
+.BR view )
+action.
+.TP
+.BI "\-\-width " N
+Target render width, in columns. Default: the terminal's reported column
+count if available, otherwise 100 \(em chosen so headless or redirected runs
+stay deterministic.
+.TP
+.B \-\-no\-pager
+Write plain output to standard output instead of piping it through a pager.
+Implied whenever standard output is not a terminal.
+.TP
+.B \-\-check
+Render with no pager and exit non\-zero if any non\-fenced\-code line exceeds
+the target width. This is the tool's own self\-smoke gate; fenced code is
+exempt because it is never rewritten (see FILES and the fence\-language
+discussion above \(em the same "never rewrite what was authored" principle
+applies to code blocks generally).
+.TP
+.B \-\-ascii
+Force the ASCII glyph tier for bullets, rules, table borders and task states,
+regardless of what auto\-detection would otherwise choose.
+.TP
+.B \-\-unicode
+Force the Unicode glyph tier. Mutually exclusive with
+.BR \-\-ascii .
+.TP
+.BR \-\-help ", " \-h
+Print usage and exit. At the top level (no subcommand named), this includes
+the subcommand list; run
+.B mdview help
+.I subcommand
+or
+.B mdview
+.I subcommand
+.B \-\-help
+for one subcommand's own usage.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/mdview/config.json
+(or, if
+.B XDG_CONFIG_HOME
+is unset,
+.IR ~/.config/mdview/config.json )
+User configuration, a JSON object. Currently one key of interest to normal
+use:
+.RS
+.TP
+.B highlightAs
+An object mapping a fence language to a highlighter language, written by
+.B mdview highlight\-as
+(see SUBCOMMANDS above) and layered over the built\-in
+.B dataviewjs
+/
+.B dataview
+defaults \(em a configured entry for a language that also has a built\-in
+default takes precedence over it.
+.RE
+.IP
+A missing config file is normal and silently equivalent to an empty one. A
+config file that exists but cannot be parsed, or whose
+.B highlightAs
+value is the wrong shape, is never treated as fatal and never reported as a
+raw parser stack trace: the problem is named in one line on standard error
+(the file's path and what was wrong with it), and rendering continues using
+whatever in the file was still usable, falling back further to built\-in
+defaults for anything that was not.
+.SH ENVIRONMENT
+.TP
+.B MDVIEW_GLYPHS
+.RB ( ascii " or " unicode )
+Overrides glyph\-tier auto\-detection when neither
+.B \-\-ascii
+nor
+.B \-\-unicode
+is given on the command line. Command\-line flags still take precedence over
+this variable.
+.TP
+.B XDG_CONFIG_HOME
+Standard XDG base\-directory variable; see FILES above for how it locates the
+config file.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B non\-zero
+An error occurred: a missing or unreadable input file, an invalid argument,
+.B \-\-check
+finding an over\-width line, or (for
+.BR highlight\-as )
+an unrecognized target language or a config file that could not be safely
+updated.
+.SH SEE ALSO
+Project documentation in the
+.B crucible\-tui
+source repository describes the rendering model (list wrapping, table
+allocation, glyph tiers) and the corpus\-sweep developer tooling in more
+detail than belongs in this page.

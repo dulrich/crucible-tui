@@ -433,6 +433,56 @@ The `--check` gate is the CLI's own self-smoke: it renders with no pager and exi
 non-zero if any output line exceeds the target width. All **seven** gates are binding
 and must exit 0.
 
+### Command-line surface (WP-4)
+
+```
+mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--help]
+mdview view <file.md> [options ...]
+mdview highlight-as <fence> <language>
+mdview help [subcommand]
+```
+
+**`mdview <file.md>` with no subcommand is load-bearing, not a convenience.** It predates
+subcommands and is the invocation the user runs daily, so `main` dispatches to a named
+handler *only* when `args[0]` is exactly `view`, `highlight-as`, or `help`; everything
+else — including every flag, all of which start with `-` — falls through to the same view
+path as before. A new subcommand slots into that dispatch without disturbing it, which is
+how WP-3's `--probe` is expected to arrive. The cost of the shape is one edge case,
+accepted knowingly: a file named exactly `view`, `help`, or `highlight-as` with no
+extension must be given as `./view` or via `mdview view view`.
+
+`main(args = Bun.argv.slice(2))` stays exported and stays **throwing**; tests call it
+in-process and assert on thrown messages, which is what keeps the suite subprocess-free.
+The `import.meta.main` block is therefore the *only* place errors are caught, rendering
+them as a single `mdview: <message>` line on stderr with exit 1. Without that boundary Bun
+wraps every carefully worded message in a source excerpt, a stack trace, and its own
+version banner, and leaks the absolute install path while doing it. **Do not move the
+catch into `main`, and do not add a second one.**
+
+**Config** is JSON at `$XDG_CONFIG_HOME/mdview/config.json` (falling back to
+`~/.config/...`). `highlightAs` maps a fence info-string to a highlighter language,
+layered *over* `src/lang.ts`'s built-ins (`dataviewjs`→`javascript`, `dataview`→`sql`);
+a user entry for a key with a built-in default wins. `src/cli.ts` calls
+`setHighlightAliases` once at startup — module-level state in `lang.ts` rather than a
+parameter, because `render.ts` calls `resolveFenceLanguage(token.lang)` with one argument
+and was out of WP-4's scope.
+
+The read and write paths are deliberately asymmetric, and the asymmetry is the design:
+**reading is lenient, writing refuses.** A malformed config degrades to defaults with one
+stderr notice naming the file and still renders the document; a bad *entry* is dropped
+individually so it does not cost the others. But `highlight-as` **refuses** to write into
+a file it cannot parse, because merging into a file it cannot understand would either
+clobber content it can't see or silently discard it. Writes are atomic (temp file +
+`rename`) and touch only `highlightAs[fence]`, preserving every other key — it round-trips
+the *raw* JSON object, never the typed `MdviewConfig`, which would silently drop any key
+this module doesn't know about the first time the subcommand ran.
+
+**Man page:** roff source at `man/crucible-tui.1`, installed by `bun run install:man` as
+`~/.local/share/man/man1/mdview.1` — symlinked, matching the `dist/mdview` PATH convention,
+so edits take effect without reinstalling. Installed under the *binary's* name so `man
+mdview` resolves today; the source keeps the repo's name. That split disappears when
+WP-6b settles the rename.
+
 ### Corpus sweep
 
 `scripts/sweep.ts` renders whole corpora in one process at **80/100/116/160/346** columns,

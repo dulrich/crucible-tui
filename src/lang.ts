@@ -25,6 +25,43 @@ const LANG_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * The map `resolveFenceLanguage` actually consults: the built-in aliases above,
+ * with any user-configured `highlightAs` entries (WP-4, `src/config.ts`)
+ * layered over them. Module-level state rather than a parameter, because
+ * `src/render.ts` calls `resolveFenceLanguage(token.lang)` with a single
+ * argument and is out of scope here — `src/cli.ts` calls `setHighlightAliases`
+ * once at startup, before any rendering happens, which is what lets a
+ * `highlight-as` write actually affect the next render without touching
+ * `render.ts`'s call site.
+ */
+let effectiveAliases: Readonly<Record<string, string>> = LANG_ALIASES;
+
+/**
+ * Install user-configured fence-language aliases, layered over the built-in
+ * map — a user entry for a fence that also has a built-in default wins.
+ * Called once by `src/cli.ts` before rendering; calling it again (e.g. between
+ * tests) fully replaces the previous layering rather than accumulating.
+ */
+export function setHighlightAliases(userAliases: Readonly<Record<string, string>> = {}): void {
+  effectiveAliases = { ...LANG_ALIASES, ...userAliases };
+}
+
+/** The built-in alias map alone, e.g. for `highlight-as --help`'s reference list. */
+export function getBuiltinAliases(): Readonly<Record<string, string>> {
+  return LANG_ALIASES;
+}
+
+/**
+ * Whether `cli-highlight` (and therefore highlight.js) recognizes `language`.
+ * `mdview highlight-as` validates against this before writing, so a typo'd or
+ * unsupported target language is rejected at write time rather than producing
+ * a fence that mysteriously never highlights later.
+ */
+export function isSupportedLanguage(language: string): boolean {
+  return supportsLanguage(language.trim().toLowerCase());
+}
+
+/**
  * Resolve a fence's declared language to one `cli-highlight` supports.
  *
  * - Marked puts the *whole* fence info-string tail into `token.lang` — ` ```js
@@ -47,6 +84,6 @@ export function resolveFenceLanguage(rawLang: string | undefined): string | unde
 
   const firstWord = trimmed.split(/\s+/)[0] ?? trimmed;
   const lower = firstWord.toLowerCase();
-  const aliased = LANG_ALIASES[lower] ?? lower;
+  const aliased = effectiveAliases[lower] ?? lower;
   return supportsLanguage(aliased) ? aliased : "plaintext";
 }
