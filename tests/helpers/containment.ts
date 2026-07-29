@@ -349,14 +349,26 @@ export function buildContext(root: string, listed: Set<string> = new Set()): Con
   return { own, packages, neighbours: neighbourNames(root, own, packages), listed };
 }
 
-/** Every file under `root`, skipping generated and vendored trees. */
+/**
+ * Every file under `root`, skipping generated and vendored trees.
+ *
+ * **`SKIP_DIRS` is matched by name, before the entry's type is consulted, and that
+ * ordering is the point.** The check used to sit *inside* the `isDirectory()` branch,
+ * which quietly assumed every skippable name is a directory. **In a git worktree `.git`
+ * is a file**, holding a line like `gitdir: /abs/path/to/main/.git/worktrees/<name>`. The
+ * old form therefore scanned it, found an absolute home path **git itself had written**,
+ * and failed containment on plumbing rather than on anything this repo contains. That
+ * made every worktree unusable and pushed dispatched work into full clones instead —
+ * which then had to live in a dedicated parent directory to dodge the neighbour rule,
+ * and which registered as phantom initiatives in the fleet's own tooling.
+ */
 export function collectFiles(root: string): string[] {
   const files: string[] = [];
   const recurse = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (SKIP_DIRS.has(entry.name)) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue;
         recurse(full);
       } else if (entry.isFile()) {
         files.push(full);
