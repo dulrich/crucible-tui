@@ -1031,6 +1031,29 @@ export function renderDocumentDetailed(
   const processedBody = preprocessBody(body, glyphs);
 
   const instance = new Marked();
+  // WP-5 (dependency decisions): `emoji: false` is deliberately NOT set here.
+  // `marked-terminal`'s default `emoji: true` runs `insertEmojis` over every
+  // `:shortcode:`-shaped span in paragraph/heading/link/listitem text; disabling it
+  // saves ~468 KB in the compiled binary and was investigated on exactly that basis.
+  // **Rejected on evidence, not assumed safe — but read which evidence.** Measured
+  // 2026-07-28 by rendering each candidate token twice, `emoji` on vs off, and keeping
+  // only tokens whose rendered bytes actually differ (a behavioural test, not a
+  // `node-emoji` lookup):
+  //   - Across the 45,129 files `scripts/sweep.ts` actually sweeps: **zero** prose
+  //     shortcodes. All 19 hits sit inside fences, where `marked-terminal`'s `code`
+  //     renderer never applies the transform, so they are inert either way.
+  //   - Across the 12,363 further files reachable only through **symlinked subtrees**:
+  //     **392** prose shortcodes in 59 files, 282 of them whitespace-isolated —
+  //     `star`×117, `wrench`×69, `bulb`×41. Unmistakably authored.
+  // The sweep corpus does not see those files: `walkMarkdown` gates on
+  // `Dirent.isDirectory()`, false for a symlinked directory (see `scripts/sweep.ts`'s
+  // note on this, which flags it as an open question). So the *swept* corpus would
+  // permit `emoji: false`, and the user's *actual* markdown would not. The decision
+  // follows the files the user reads, not the files the gate happens to walk — flipping
+  // this would silently strip glyphs from 59 real documents to save ~468 KB of a ~98 MB
+  // binary (0.5%). Do not re-flip without re-running the behavioural test **over the
+  // symlink-following walk**; the sweep corpus alone will tell you it is safe, and it
+  // is not. See `AGENTS.md`'s "Dependencies (WP-5)" section.
   const extension = markedTerminal({ width: targetWidth, reflowText: true });
   const renderer = extension.renderer;
   if (renderer) {
@@ -1176,6 +1199,10 @@ export function renderDocumentDetailed(
     const paragraphRendererAt = (budget: number): typeof renderer.paragraph => {
       const cached = budgetedParagraphs.get(budget);
       if (cached) return cached;
+      // Same `emoji` default as the main construction above, deliberately — see that
+      // comment. A per-budget renderer built with a different `emoji` setting would
+      // make shortcode substitution depend on whether a paragraph happened to sit
+      // inside a list, which is not a distinction this tool's output should make.
       const paragraph = markedTerminal({ width: budget, reflowText: true }).renderer?.paragraph;
       if (paragraph) budgetedParagraphs.set(budget, paragraph);
       return paragraph;
@@ -1313,6 +1340,8 @@ export function renderDocumentDetailed(
     const headingRendererAt = (budget: number): typeof renderer.heading => {
       const cached = budgetedHeadings.get(budget);
       if (cached) return cached;
+      // Same `emoji` default as the main construction above, for the same reason as
+      // `paragraphRendererAt`.
       const heading = markedTerminal({ width: budget, reflowText: true }).renderer?.heading;
       if (heading) budgetedHeadings.set(budget, heading);
       return heading;

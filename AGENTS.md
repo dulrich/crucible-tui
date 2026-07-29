@@ -789,8 +789,96 @@ bun run src/cli.ts example/plan.md
   **ignored** — it was ignored globally by the parent's root `.gitignore` while this was
   a subfolder, and extraction dropped that file, so the rule is restated here to keep the
   tracked set unchanged across the split. **Whether a published repo should instead track
-  its lockfile is a live question, deliberately left to WP-5** (dependency decisions);
-  extraction is not the place to change what is committed.
+  its lockfile was evaluated in WP-5** (dependency decisions) **and left as a
+  recommendation in that WP's report, not decided here** — tracking the lockfile is a
+  publication-policy call for the user to make (raised again at WP-6b, licensing and
+  distribution), not something extraction or a dependency-pinning pass should change
+  unilaterally.
+
+### Dependencies (WP-5)
+
+The premise this WP started from — "trim dependency fat to shrink the binary" —
+inverted once it was measured. Record that inversion here so nobody re-derives it and
+re-opens a removal pass that costs review time for zero benefit.
+
+**Binary size is not a dependency problem.** The compiled binary (`bun build
+--compile`, see "Conventions" above) is ~98 MB, almost entirely Bun's own embedded
+runtime — present in every Bun-compiled binary regardless of what a project imports.
+The actual runtime dependency closure (`marked`, `marked-terminal`, `cli-highlight`,
+`cli-table3`, `string-width`, `yaml`, and everything each pulls in transitively) is
+**60 packages, ~8 MB**. The other **~57 MB of `node_modules`** (122 packages total) is
+devDependency tooling — `eslint`, `typescript`, `typescript-eslint`, `jiti`,
+`@types/bun`, and their own transitive closures — that never ships in the binary at
+all. Dependency weight is therefore **~2% of the compiled artifact**. "Remove a
+dependency to shrink the binary" is the wrong frame for this tool; no dependency was
+removed on that basis, and none should be without re-measuring what actually changes.
+
+**`cli-highlight` and `cli-table3` must stay declared in `dependencies`, even though a
+dependency-pruning tool will flag both as reachable transitively through
+`marked-terminal`.** `src/lang.ts:13` imports `supportsLanguage` from `cli-highlight`
+directly, and `src/table.ts:1` imports `Table` from `cli-table3` directly — neither
+import goes through `marked-terminal`'s own copy of either package. Dropping either
+declaration would leave those imports resolving only because `marked-terminal` happens
+to hoist a compatible version of the same package into `node_modules` — code that
+works by accident of a *different* package's dependency tree, for **zero** install-size
+saving, since the packages are already present in `node_modules` either way. **Do not
+remove either declaration on a dependency-graph tool's say-so**; the tool is reading
+reachability, not who actually imports what.
+
+**`highlight.js` is pinned at `10.7.3`** (a transitive pin, via `cli-highlight`), two
+majors behind upstream, **and cannot be subset to shrink it**: `cli-highlight`
+hardcodes a full `require` of highlight.js's entire bundled language set rather than
+importing individual languages one at a time, so there is no seam to trim unused
+languages through. Upgrading past the pin is out of scope for this WP — recorded here
+so the staleness is a known, deliberate deferral, not something a future pass
+rediscovers and "fixes" by bumping a major version with no compatibility check against
+this tool's fence-language handling (`src/lang.ts`).
+
+**`emoji: false` was investigated and rejected — but read *which* evidence rejected it.**
+`marked-terminal` ships a `:shortcode:` → emoji-glyph pass (`insertEmojis`, gated by
+its own `emoji` option, default `true`); turning it off saves ~468 KB in the compiled
+binary, which is why it was investigated at all. **Measured 2026-07-28, and the answer
+depends entirely on which walk you use — which is the part worth remembering.**
+
+Method: render each candidate token twice, `emoji` on vs off, and keep only tokens whose
+rendered bytes actually *differ*. A behavioural test rather than a `node-emoji` lookup,
+so it cannot drift from what the library really substitutes. Fence-aware, since
+`marked-terminal`'s `code` renderer never applies the transform.
+
+| Walk | Files | Prose shortcodes that change rendering |
+|---|---|---|
+| What `scripts/sweep.ts` actually sweeps | 45,129 | **0** — all 19 hits sit inside fences, inert |
+| Following symlinked subtrees as well | +12,363 | **392**, across 59 files; 282 whitespace-isolated |
+
+The 392 are `star`×117, `wrench`×69, `bulb`×41, `thread`×31, `warning`×18 and a long
+tail — unmistakably authored, not colon-delimited accidents.
+
+**Every one of them is invisible to the sweep.** `walkMarkdown` gates on
+`Dirent.isDirectory()`, which is `false` for a symlinked directory, so a symlinked
+subtree is silently never swept — `scripts/sweep.ts` documents this itself and flags it
+as an open question. The swept corpus therefore reports `emoji: false` as perfectly safe,
+and it is not.
+
+**`emoji: false` is therefore not set** — see the comment at `src/render.ts`'s
+`markedTerminal()` construction, which points back here. The decision follows the files
+the user actually reads, not the files the gate happens to walk: flipping it would strip
+glyphs from 59 real documents to save ~468 KB of a ~98 MB binary (**0.5%**). No gate here
+would catch that regression — neither sweep measures *content*, only width. **If you
+re-open this, re-run the behavioural test over the symlink-following walk**; the sweep
+corpus alone will tell you it is safe.
+
+**Corollary, and it deserves its own WP:** those 12,363 symlink-reachable files are real
+user markdown that no gate in this repo has ever rendered. The effective corpus is ~21%
+smaller than the manifest implies, and every "verified across the whole corpus" claim
+made before 2026-07-28 — including this file's — carries that hole.
+
+**Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
+installed and exercised by this test suite — `marked@14.1.4`, `marked-terminal@7.3.0`,
+`cli-highlight@2.1.11`, `cli-table3@0.6.5`, `string-width@7.2.0`, `yaml@2.9.0` — rather
+than left on `^` ranges that could silently resolve to an untested minor on a fresh
+`bun install` on a different machine. **This WP pins; it does not upgrade.** Bumping any
+of these is a separate, deliberate decision with its own corpus/sweep verification
+pass, not a side effect of installing on a new machine.
 
 Plans: `plans/mdview.md` (the original build) and `plans/vault-readiness.md` (glyph tier,
 fence languages, divider, embeds, and the multi-corpus sweep). The two sat at different
