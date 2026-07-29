@@ -1,6 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
   findOverflow,
@@ -19,6 +20,7 @@ import { renderWithForcedColor } from "./helpers/color";
 import {
   buildContext,
   collectFiles,
+  EXEMPT_ROOT_DIRS,
   loadSupplementalNames,
   scanLine,
   scanTree,
@@ -513,6 +515,49 @@ describe("sample honoured / overridden (WP-1: replaces the spec.name === \"vault
   });
 });
 
+// WP-12c: a `walkAll` root that exists but contains no markdown (two of the reference
+// clones, `memtest_vulkan` and `urxvt-perls`, are exactly this) is a fact about the root,
+// not a misconfiguration. It used to land in `errors`, which trained the reader to expect
+// noise in the one channel meant to mean "something went wrong," and — because `errors`
+// feeds `anyFailure` regardless of `skipped` — silently flipped the sweep's exit code for
+// a root that never had a defect in the first place. A glob-based corpus matching nothing
+// is a different case (a user-supplied pattern can be typo'd) and keeps the original
+// error behaviour untouched.
+describe("a markdown-free root is a skip, not an error", () => {
+  const baseOptions: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+
+  test("`walkAll` against a root with no markdown files skips, with a distinguishing reason, and does not affect the exit-code contract", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-empty-walkall-"));
+    try {
+      await writeFile(join(dir, "not-markdown.txt"), "no .md files in this tree\n");
+      const spec: CorpusSpec = { name: "no-markdown", root: dir, walkAll: true };
+      const result = await sweepCorpus(spec, baseOptions);
+      expect(result.skipped).toBe(true);
+      expect(result.skipReason).toMatch(/no markdown/i);
+      expect(result.errors).toEqual([]);
+      // The exit-code contract: only `!skipped && (overflow.length > 0 || errors.length > 0)`
+      // may fail a sweep (see `runCli`'s `anyFailure`). A skip must never satisfy that.
+      expect(!result.skipped && (result.overflow.length > 0 || result.errors.length > 0)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a glob-based corpus matching nothing is still an error — the original protection is untouched", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-empty-glob-"));
+    try {
+      await writeFile(join(dir, "note.md"), "# note\n");
+      const spec: CorpusSpec = { name: "broken-glob", root: dir, globs: ["*.does-not-exist"], walkAll: false };
+      const result = await sweepCorpus(spec, baseOptions);
+      expect(result.skipped).toBe(false);
+      expect(result.errors).toEqual([{ path: dir, message: "corpus exists but matched 0 files" }]);
+      expect(!result.skipped && (result.overflow.length > 0 || result.errors.length > 0)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("unknown --corpus name (WP-1: sourced from the manifest, not a hardcoded constant)", () => {
   test("filtering a manifest's corpora by an unknown name yields no targets, and the available names are recoverable from the manifest", () => {
     const manifest = parseManifest(
@@ -632,6 +677,99 @@ describe("containment rules", () => {
     };
     const cited = `see ${["ledger_core", "private", "layout.ts"].join("/")}`;
     expect(scanLine(cited, collision).map((f) => f.rule)).toEqual(["neighbour-name"]);
+  });
+});
+
+// WP-12d (user decision 2026-07-29): execution briefs and plans are checked into a repo's
+// `runs/` directory carrying real absolute paths, so the containment guard must not scan
+// there — but every rule must keep running everywhere else, `plans/` included, since plans
+// are inside the shared corpus. These tests plant an identical violation in four
+// locations and prove the guard's verdict differs *only* for the one that is exempt, then
+// clean the fixtures up. The literal is assembled at run time for the same reason the
+// synthetic fixtures above are: this file has no self-exception and is scanned like any
+// other.
+describe("the runs/ exemption is exactly that narrow (WP-12d)", () => {
+  const plantedCitation = ["quietly_planted_zz", "internal", "layout.ts"].join("/");
+  const plantedLine = `see ${plantedCitation} for the real layout\n`;
+
+  test("a planted violation is still caught under src/, tests/fixtures/, and a root *.md — but not under runs/", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-runs-exemption-"));
+    try {
+      await mkdir(join(dir, "node_modules"), { recursive: true });
+      await mkdir(join(dir, "src"), { recursive: true });
+      await mkdir(join(dir, "tests", "fixtures"), { recursive: true });
+      await mkdir(join(dir, "runs", "dispatch"), { recursive: true });
+      await writeFile(join(dir, "src", "module.ts"), `// ${plantedLine}`);
+      await writeFile(join(dir, "tests", "fixtures", "note.md"), plantedLine);
+      await writeFile(join(dir, "README.md"), plantedLine);
+      await writeFile(join(dir, "runs", "dispatch", "brief.md"), plantedLine);
+
+      const context = buildContext(dir);
+      const findings = scanTree(dir, context);
+      const findingsUnder = (relPath: string) =>
+        findings.filter((f) => relative(dir, f.file) === relPath);
+
+      expect(findingsUnder(join("src", "module.ts")).length).toBeGreaterThan(0);
+      expect(findingsUnder(join("tests", "fixtures", "note.md")).length).toBeGreaterThan(0);
+      expect(findingsUnder("README.md").length).toBeGreaterThan(0);
+      // The exemption: the identical planted string, in a file under `runs/`, is invisible.
+      expect(findingsUnder(join("runs", "dispatch", "brief.md")).length).toBe(0);
+      expect(findings).toHaveLength(3); // src/, tests/fixtures/, README.md — runs/ contributes nothing
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("collectFiles never descends into a top-level runs/ at all", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-runs-collect-"));
+    try {
+      await mkdir(join(dir, "runs", "dispatch"), { recursive: true });
+      await writeFile(join(dir, "runs", "dispatch", "brief.md"), "anything\n");
+      await writeFile(join(dir, "keep.md"), "# keep\n");
+      const files = collectFiles(dir);
+      expect(files.some((f) => f.endsWith("keep.md"))).toBe(true);
+      expect(files.some((f) => f.includes(`${join("runs", "dispatch")}`))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a nested directory literally named runs/ (not at the repo root) is not exempt", async () => {
+    // The exemption is root-relative and top-level only — `<root>/runs/**`, never a
+    // directory that merely happens to be named `runs` somewhere deeper in the tree.
+    const dir = await mkdtemp(join(tmpdir(), "mdview-nested-runs-"));
+    try {
+      await mkdir(join(dir, "src", "runs"), { recursive: true });
+      await writeFile(join(dir, "src", "runs", "scheduler.ts"), "export const runs = 1;\n");
+      const files = collectFiles(dir);
+      expect(files.some((f) => f.endsWith(join("src", "runs", "scheduler.ts")))).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("no default-manifest glob can ever match anything under runs/ — the assertion that makes the exemption enforceable", async () => {
+    const manifestPath = BUNDLED_DEFAULT_MANIFEST;
+    const manifest = JSON.parse(await Bun.file(manifestPath).text()) as {
+      corpora: Array<{ root: string; globs?: string[] }>;
+    };
+    expect(manifest.corpora.length).toBeGreaterThan(0);
+    for (const spec of manifest.corpora) {
+      const resolvedRoot = resolve(dirname(manifestPath), spec.root);
+      // The corpus root itself must never be, or resolve into, the exempted directory.
+      expect(basename(resolvedRoot)).not.toBe("runs");
+      for (const glob of spec.globs ?? []) {
+        const firstSegment = glob.split("/")[0] ?? "";
+        // A bare wildcard as the first segment could expand to match `runs` itself; a
+        // literal `runs` segment obviously would. If either ever appears, the corpus and
+        // the exemption are no longer disjoint and this must fail.
+        const overlapsRuns = EXEMPT_ROOT_DIRS.has(firstSegment) || firstSegment === "**" || firstSegment === "*";
+        expect(overlapsRuns).toBe(false);
+      }
+    }
+    // And the exemption itself must still be exactly what this test assumes — nothing
+    // broader could quietly widen it without this failing too.
+    expect([...EXEMPT_ROOT_DIRS]).toEqual(["runs"]);
   });
 });
 
@@ -762,6 +900,55 @@ describe("skip rules match by name, not by entry type", () => {
       const files = collectFiles(dir);
       expect(files.some((file) => file.endsWith("/keep.md"))).toBe(true);
       expect(files.some((file) => file.endsWith("/dist"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// WP-12a: `ownNames` used to seed itself from nothing but `basename(root)`, and
+// `neighbourNames` walked ancestors from `root` itself. Both are true of a plain checkout
+// only by coincidence — a worktree's `root` is a branch-ish scratch directory
+// (`.worktrees/<branch>`), so its basename is not the repo's name and its ancestor chain
+// passes through a directory (`.worktrees`) that is not a real sibling. Measured on the
+// real checkout this repo runs from: 0 findings from the main checkout, dozens from a
+// worktree of the exact same commit, every one a self-reference. This test describes the
+// *shape* of the bug — a real git worktree parked under a dot-prefixed scratch directory,
+// with its leaf named for the branch rather than the repo — without hardcoding any path
+// on this machine.
+describe("a worktree resolves its own identity the same way the main checkout does", () => {
+  test("own name, neighbour set, and self-exemption all match between a repo and its worktree", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-worktree-identity-"));
+    try {
+      const mainRepo = join(dir, "sample-repo");
+      await mkdir(join(mainRepo, "node_modules"), { recursive: true });
+      execFileSync("git", ["init", "-q", mainRepo]);
+      execFileSync("git", ["-C", mainRepo, "config", "user.email", "test@example.com"]);
+      execFileSync("git", ["-C", mainRepo, "config", "user.name", "test"]);
+      await writeFile(join(mainRepo, "README.md"), "placeholder\n");
+      execFileSync("git", ["-C", mainRepo, "add", "README.md"]);
+      execFileSync("git", ["-C", mainRepo, "commit", "-q", "-m", "init"]);
+
+      // The exact shape from the brief: a worktree under a dot-prefixed sibling directory,
+      // its leaf named for the branch, not for the repo.
+      const scratchDir = join(dir, ".worktrees", "some-branch");
+      execFileSync("git", ["-C", mainRepo, "worktree", "add", "-q", scratchDir, "-b", "some-branch"]);
+      await mkdir(join(scratchDir, "node_modules"), { recursive: true });
+
+      const mainContext = buildContext(mainRepo);
+      const worktreeContext = buildContext(scratchDir);
+
+      // The repo's real name is recognized as "own" from the worktree, not just from the
+      // main checkout — this is the fix, resolving through git's common dir rather than
+      // trusting the checkout's leaf directory name.
+      expect(worktreeContext.own.has(basename(mainRepo))).toBe(true);
+      // The ancestor-derived neighbour set is identical from both locations: the walk keys
+      // off the resolved repo root, not off wherever this particular checkout happens to
+      // live, so `.worktrees` and the branch label never enter it.
+      expect([...worktreeContext.neighbours].sort()).toEqual([...mainContext.neighbours].sort());
+      // And the repo never appears as its own neighbour — the failure mode this fixes.
+      expect(worktreeContext.neighbours.has(basename(mainRepo))).toBe(false);
+      expect(mainContext.neighbours.has(basename(mainRepo))).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

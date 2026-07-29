@@ -651,10 +651,35 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
     };
   }
 
-  // An existing-but-empty corpus is an error, not a skip — the plan calls this out
-  // explicitly (a corpus silently returning zero files could otherwise mask a broken
-  // glob or a moved directory).
   if (files.length === 0) {
+    if (spec.walkAll) {
+      // WP-12c: a `walkAll` root with zero matches is a **fact about the root**, not a
+      // misconfiguration — unlike the glob case just below, `walkAll` has no user-supplied
+      // pattern that could be typo'd; it only recurses looking for `.md` files under a
+      // root whose existence was already confirmed above. Two of the reference clones
+      // (`memtest_vulkan`, `urxvt-perls`) are exactly this: genuinely markdown-free
+      // repositories. Reporting them into `errors` trained the reader to expect noise in
+      // the one channel that is supposed to mean "something went wrong," so this follows
+      // the existing `skipped`/`skipReason` seam instead of inventing a third state.
+      return {
+        name: spec.name,
+        skipped: true,
+        skipReason: "corpus root contains no markdown files",
+        filesScanned: 0,
+        combos: 0,
+        overflow: [],
+        errors: [],
+        elapsedSeconds: (performance.now() - started) / 1000,
+        orphans: [],
+        overIndent: [],
+        tableOverflow: 0,
+        symlinkedDirsSkipped: symlinkStats.symlinkedDirs,
+      };
+    }
+    // An existing-but-empty *glob-based* corpus stays an error — the plan calls this out
+    // explicitly (a corpus silently returning zero files could otherwise mask a broken
+    // glob or a moved directory). A glob is a user-supplied pattern, so zero matches is
+    // exactly the shape that failure mode produces; nothing here narrows that protection.
     return {
       name: spec.name,
       skipped: false,
