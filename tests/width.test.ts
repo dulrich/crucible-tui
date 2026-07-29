@@ -118,6 +118,41 @@ describe("terminalIdentity", () => {
     expect(terminalIdentity({ ...bare, TMUX: "/tmp/x" })).not.toBe(terminalIdentity({ ...bare, ZELLIJ: "0" }));
   });
 
+  // Regression, found by running the probe in every multiplexer on the machine rather
+  // than by reading the code. Multiplexers disagree about cleaning up after themselves:
+  // tmux strips ZELLIJ from a new session's environment, screen does not. So inside
+  // screen-within-zellij, STY *and* ZELLIJ are both set, and checking zellij first
+  // reports "zellij" for a session screen is actually drawing. These three environments
+  // are transcribed from measured runs on 2026-07-28, not invented.
+  describe("the innermost multiplexer wins", () => {
+    const zellijInner = { TERM: "xterm-ghostty", TERM_PROGRAM: "ghostty", ZELLIJ: "0", ZELLIJ_SESSION_NAME: "Dev" };
+    const tmuxInner = { TERM: "tmux-256color", TERM_PROGRAM: "tmux", TMUX: "/tmp/tmux-1001/default,1282324,3" };
+    // The one that used to be wrong: screen started from a zellij pane.
+    const screenInsideZellij = { TERM: "screen", TERM_PROGRAM: "ghostty", STY: "1360650.envs", ZELLIJ: "0", ZELLIJ_SESSION_NAME: "Dev" };
+
+    test("screen nested in zellij reports screen, not zellij", () => {
+      expect(terminalIdentity(screenInsideZellij)).toContain("mux=screen");
+    });
+
+    test("tmux, which sanitizes its environment, still reports tmux", () => {
+      expect(terminalIdentity(tmuxInner)).toContain("mux=tmux");
+    });
+
+    test("bare zellij is unaffected", () => {
+      expect(terminalIdentity(zellijInner)).toContain("mux=zellij");
+    });
+
+    // The mirror case: zellij started inside screen keeps its own xterm* TERM, so the
+    // TERM tiebreaker must not fire and zellij must still win despite STY being set.
+    test("zellij nested in screen reports zellij", () => {
+      expect(terminalIdentity({ TERM: "xterm-256color", STY: "1360650.envs", ZELLIJ: "0" })).toContain("mux=zellij");
+    });
+
+    test("bare screen still reports screen", () => {
+      expect(terminalIdentity({ TERM: "screen", STY: "1360650.envs" })).toContain("mux=screen");
+    });
+  });
+
   // The locale is conventionally what drives a terminal's ambiguous-width behaviour,
   // so the same emulator can legitimately answer differently under a different LANG.
   test("the locale changes the identity", () => {
