@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -32,7 +33,10 @@ import { basename, dirname, join, resolve } from "node:path";
  * Rules 1 and 2 need no configuration and no filesystem context beyond the repo
  * itself, so they are always on and are sufficient on their own. Rule 3 needs only
  * the directories that already exist around the checkout, which are always readable.
- * There is deliberately no mode in which the guard has nothing to check.
+ * There is deliberately no mode in which the guard has nothing to check — one narrow
+ * exception, `EXEMPT_ROOT_DIRS` below (`runs/**`, WP-12d), which stops the guard short of
+ * a directory that is not part of the shared corpus in the first place. All three rules
+ * still run on everything else, without exception.
  *
  * The one sanctioned fake vocabulary is `example` — `example/...` as a relative root
  * and `/home/example/...` as an absolute one. Test data and documentation that needs
@@ -212,9 +216,69 @@ export function scanLine(
   return findings;
 }
 
+/**
+ * The directory holding the repository's *shared* git metadata, via
+ * `git rev-parse --git-common-dir`. In an ordinary checkout this resolves to
+ * `<root>/.git`; **in a worktree it resolves through the `gitdir:` pointer back to the
+ * main checkout's `.git`** — which is exactly what `basename(root)` cannot do, because a
+ * worktree's `root` is the branch-ish scratch directory (`.worktrees/<branch>`), not the
+ * repository's real name.
+ *
+ * Returns `undefined` for anything that is not a git checkout at all (a plain extracted
+ * tarball, `git` missing from `PATH`) — this is a widening supplement to `basename(root)`,
+ * never a replacement, so its absence must degrade gracefully rather than error the way a
+ * missing `node_modules` does for `packageNames`.
+ */
+function gitCommonDirRoot(root: string): string | undefined {
+  try {
+    const output = execFileSync("git", ["-C", root, "rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (output.length === 0) return undefined;
+    return dirname(resolve(root, output)); // strip the trailing `.git`
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * This checkout's own `package.json` `name` field, if one exists and parses. Same
+ * evidence standard as `isPackageCheckout` below: a name is trusted only when it comes
+ * from a manifest this checkout actually carries, at its own root.
+ */
+function ownPackageName(root: string): string | undefined {
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    if (typeof manifest === "object" && manifest !== null && !Array.isArray(manifest)) {
+      const name = (manifest as Record<string, unknown>).name;
+      if (typeof name === "string" && name.length > 0) return name;
+    }
+  } catch {
+    // no manifest, unreadable, or unparsable — no evidence, so nothing to add
+  }
+  return undefined;
+}
+
+/**
+ * The repository's real root: a worktree resolved back to its main checkout via git's
+ * common dir, or `root` itself when there is no such metadata to consult. `ownNames` and
+ * `neighbourNames` both key their location-dependent lookups off this rather than off
+ * `root` directly, which is what makes a worktree and its main checkout produce the
+ * **same answer** — the same own-name set and the same ancestor chain to walk for
+ * siblings (WP-12a: from `.worktrees/<branch>`, `basename(root)` is the branch-ish
+ * scratch name and the ancestor walk passes through the `.worktrees` directory itself,
+ * neither of which describes this repo or its real neighbours).
+ */
+function canonicalRoot(root: string): string {
+  return gitCommonDirRoot(root) ?? resolve(root);
+}
+
 /** Directory names anywhere inside `root`, plus `root`'s own top-level entries. */
 function ownNames(root: string): Set<string> {
-  const names = new Set<string>([basename(root)]);
+  const names = new Set<string>([basename(root), basename(canonicalRoot(root))]);
+  const packageName = ownPackageName(root);
+  if (packageName !== undefined) names.add(packageName);
   const recurse = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
@@ -290,6 +354,14 @@ function isPackageCheckout(dir: string, name: string): boolean {
  * equally correct set; a name collision there is a loud failure with the offending
  * token named, not a silent pass.
  *
+ * The walk starts from `canonicalRoot(root)`, not `root` itself (WP-12a). A worktree's
+ * `root` sits under a `.worktrees/<branch>` directory that is not part of the checked-out
+ * repository at all — walking from there would collect `.worktrees` and the branch label
+ * as if they were real siblings, and the ancestor chain above them would stop one level
+ * too shallow. Resolving to the main checkout first makes the ancestor chain — and
+ * therefore this whole set — identical whether the guard runs from the main checkout or
+ * from any worktree of it.
+ *
  * **One exemption, and it is evidence-based on purpose.** A contributor who checks a
  * dependency out beside the repo to read its source — which this repo's own docs
  * describe doing — would otherwise turn every mention of that dependency into a
@@ -316,7 +388,7 @@ function neighbourNames(root: string, own: Set<string>, packages: Set<string>): 
     else sources.set(name, [dir]);
   };
 
-  let current = dirname(resolve(root));
+  let current = dirname(canonicalRoot(root));
   for (;;) {
     note(basename(current), current);
     try {
@@ -350,6 +422,41 @@ export function buildContext(root: string, listed: Set<string> = new Set()): Con
 }
 
 /**
+ * Top-level directories exempted from the containment scan entirely (WP-12d, user
+ * decision 2026-07-29). This is not the `SKIP_DIRS` shape — those carry no authored
+ * content at all. `runs/` is the opposite: real control-plane material (execution
+ * briefs, dispatch notes) that must cite real absolute paths to be self-contained, and
+ * is deliberately *not* published-facing.
+ *
+ * **Why exempting a directory rather than widening a rule is safe here, and why it is
+ * the only exemption of its kind.** The guard's job is to keep unpublishable content out
+ * of the *shared corpus* — the user's own words: "we don't expose non-publishable
+ * content in a corpus that is meant to be shared." The corpus is not "this whole
+ * checkout"; it is the explicit glob list in `corpus/default-manifest.json`
+ * (`README.md`, `AGENTS.md`, `plans/*.md`, `tests/fixtures/*.md`), and `runs/**` is not
+ * in it. So exempting `runs/**` from the scan narrows the guard to match the corpus it
+ * exists to protect, rather than the whole working tree. `tests/sweep.test.ts` pins the
+ * one assertion that makes this enforceable rather than a convention: none of that
+ * manifest's globs may ever match anything under `runs/**`. If that assertion ever
+ * fails, this exemption is wrong and must shrink, not the manifest.
+ *
+ * **`plans/` is deliberately not here.** Plans are inside the corpus
+ * (`plans/*.md`), so they stay fully governed by all three rules; a plan citing a real
+ * private path is a real finding, not a control-plane exception.
+ *
+ * **What this does not solve.** Whether `runs/` (or anything else) should be filtered out
+ * of an eventual *public push* of this repo is a separate, live, cross-repo question,
+ * explicitly out of scope here — this exemption only concerns what the containment guard
+ * checks today, not what a future publication step must additionally strip.
+ *
+ * Root-relative and top-level only: matches `<root>/runs/**`, not a directory named
+ * `runs` appearing anywhere else in the tree (unlike `SKIP_DIRS`, which matches by name
+ * at any depth — that asymmetry is intentional, since this is a narrow, named carve-out
+ * rather than "never authored content").
+ */
+export const EXEMPT_ROOT_DIRS = new Set(["runs"]);
+
+/**
  * Every file under `root`, skipping generated and vendored trees.
  *
  * **`SKIP_DIRS` is matched by name, before the entry's type is consulted, and that
@@ -364,18 +471,19 @@ export function buildContext(root: string, listed: Set<string> = new Set()): Con
  */
 export function collectFiles(root: string): string[] {
   const files: string[] = [];
-  const recurse = (dir: string): void => {
+  const recurse = (dir: string, isRoot: boolean): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (SKIP_DIRS.has(entry.name)) continue;
+      if (isRoot && entry.isDirectory() && EXEMPT_ROOT_DIRS.has(entry.name)) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        recurse(full);
+        recurse(full, false);
       } else if (entry.isFile()) {
         files.push(full);
       }
     }
   };
-  recurse(root);
+  recurse(root, true);
   return files;
 }
 
