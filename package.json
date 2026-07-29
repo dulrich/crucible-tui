@@ -7,8 +7,9 @@
     "lint": "eslint . --max-warnings=0",
     "test": "bun test tests",
     "build": "bun build --compile --outfile dist/mdview src/cli.ts",
-    "install:man": "mkdir -p \"$HOME/.local/share/man/man1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/mdview.1\"",
-    "sweep": "bun run scripts/sweep.ts"
+    "install:man": "mkdir -p \"$HOME/.local/share/man/man1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/mdview.1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/crucible-tui.1\"",
+    "sweep": "bun run scripts/sweep.ts",
+    "gen-licenses": "bun run scripts/gen-licenses.ts"
   },
   "dependencies": {
     "cli-highlight": "2.1.11",

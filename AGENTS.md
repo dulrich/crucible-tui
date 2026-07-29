@@ -17,8 +17,9 @@ user their config path and muscle memory to buy nothing. `crucible-tui` is the n
 project those functions would belong to. The split follows `ripgrep`/`rg` and
 `the-silver-searcher`/`ag`: repo name and command name are allowed to differ.
 
-Concretely: the man page source is `man/crucible-tui.1` and installs as `mdview.1` so
-`man mdview` resolves. **Do not "fix" this to agree.** If a future WP does rename the
+Concretely: the man page source is `man/crucible-tui.1` and installs as **both** `mdview.1`
+and `crucible-tui.1`, so `man` resolves either name to the same page. **Do not "fix" the
+two names to agree.** If a future WP does rename the
 command, it owns the whole set at once — binary, package, env vars, config dir, and a
 compatibility shim for the old config path — and it updates this section rather than
 deleting it.
@@ -497,11 +498,12 @@ the *raw* JSON object, never the typed `MdviewConfig`, which would silently drop
 this module doesn't know about the first time the subcommand ran.
 
 **Man page:** roff source at `man/crucible-tui.1`, installed by `bun run install:man` as
-`~/.local/share/man/man1/mdview.1` — symlinked, matching the `dist/mdview` PATH convention,
-so edits take effect without reinstalling. Installed under the *binary's* name so `man
-mdview` resolves today; the source keeps the repo's name. That split disappears when
-That split is deliberate and settled — see "Two names, on purpose" at the top of this
-file. Do not reconcile the two names.
+**both** `~/.local/share/man/man1/mdview.1` and `.../crucible-tui.1` — symlinked, matching
+the `dist/mdview` PATH convention, so edits take effect without reinstalling. Two links to
+one source, because the tool answers to two names and a reader who knows the project as
+`crucible-tui` should not get "No manual entry" for typing it. That split is deliberate
+and settled — see "Two names, on purpose" at the top of this file. Do not reconcile the
+two names.
 
 ### Corpus sweep
 
@@ -855,15 +857,18 @@ bun run src/cli.ts example/plan.md
   fix it, note that dropping padding only buys 2 columns each and does not rescue the
   19-column case.
 - `.gitignore` is assembled from the chunk files the in-house scaffolding skill ships;
-  repo-local entries go under the `# --- project-specific ---` marker. `bun.lock` is
-  **ignored** — it was ignored globally by the parent's root `.gitignore` while this was
-  a subfolder, and extraction dropped that file, so the rule is restated here to keep the
-  tracked set unchanged across the split. **Whether a published repo should instead track
-  its lockfile was evaluated in WP-5** (dependency decisions) **and left as a
-  recommendation in that WP's report, not decided here** — tracking the lockfile is a
-  publication-policy call for the user to make (raised again at WP-6b, licensing and
-  distribution), not something extraction or a dependency-pinning pass should change
-  unilaterally.
+  repo-local entries go under the `# --- project-specific ---` marker. **`bun.lock` is
+  now tracked** (decided at WP-6b). It was ignored globally by the parent mono-repo's
+  root `.gitignore` while this was a subfolder; extraction dropped that file, and the
+  rule was restated locally (WP-6a) purely to keep the tracked set unchanged across the
+  split — that restatement was never itself a decision to keep ignoring it going
+  forward. **Pinning direct dependencies (WP-5) does not reach the transitive tree** —
+  `highlight.js@10.7.3`, pulled in transitively via `cli-highlight`, is already two
+  majors stale and would silently drift on a fresh `bun install` on a different machine
+  with no lockfile to hold it — and a published application should ship the lockfile
+  that was actually tested against, not trust every future clone to re-resolve the same
+  transitive tree. The `.gitignore` rule and its old explanatory comment are removed;
+  the lockfile is committed like any other tracked file from here on.
 
 ### Dependencies (WP-5)
 

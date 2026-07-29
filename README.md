@@ -1,63 +1,103 @@
-# mdview
+# crucible-tui (`mdview`)
 
-A terminal markdown viewer for this repo's own plans, execution briefs, and
-`INITIATIVE.md` files: renders frontmatter as a labelled metadata block, and wraps
-wide tables to the terminal width instead of overflowing or truncating them.
+A terminal markdown viewer built for reading the documents a working repo actually
+produces — long plans, execution briefs, `INITIATIVE.md` files — rather than for
+rendering a blog post. Frontmatter becomes a labelled metadata block instead of being
+stripped or dumped as raw YAML; wide tables are wrapped losslessly, columns shrinking
+proportionally to a floor rather than overflowing the terminal or truncating a cell;
+prose and lists reflow ANSI-safely at the target width, correctly at every nesting
+depth, in both tight and loose Markdown list styles; fenced code always passes through
+byte-for-byte, so a pasted command stays pasteable.
+
+That combination — losslessly wrapped wide tables plus environment-detected
+Unicode/ASCII glyph tiers — turned out to be rare. A field survey of nineteen terminal
+markdown tools (read by source and commit history, not by README) found exactly one
+other project doing glyph-tier detection at all, and it renders no tables whatsoever.
+Most of the field is dead or effectively a single maintainer's side project; this one
+is a full public project because of that, not in spite of it.
+
+## Install
+
+There's no npm package yet (see [Distribution](#distribution) below). For now, clone
+and run on [Bun](https://bun.sh):
+
+```bash
+bun install
+bun run build                                    # compiles dist/mdview (~102 MB;
+                                                  # embeds the Bun runtime — this is
+                                                  # normal, not a dependency problem)
+ln -sfn "$PWD/dist/mdview" ~/.local/bin/mdview    # from the repo root
+```
+
+The symlink points at the build output, so a rebuild takes effect immediately — but
+editing source without rebuilding leaves `mdview` silently running the old code. There
+is no watch mode.
+
+Alternatively, run straight from source with no build step:
+
+```bash
+bun run src/cli.ts <file.md>
+```
+
+A roff man page ships at `man/crucible-tui.1`; `bun run install:man` symlinks it in as
+`mdview.1` so `man mdview` resolves.
 
 ## Usage
 
 ```bash
-bun run src/cli.ts <file.md> [--width N] [--no-pager] [--check]
-                                    [--ascii | --unicode] [--help]
+mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--help] [--licenses]
+mdview view <file.md> [options...]        # spelled-out form of the bare invocation above
+mdview highlight-as <fence> <language>    # map a fence's declared language to a highlighter language
+mdview help [subcommand]
 ```
+
+A bare `mdview file.md` is, and remains, a complete invocation — no subcommand is ever
+required just to view a file. That is the daily-driver path and every flag falls
+straight through to it.
 
 - `--width N` — target render width (default: terminal columns, else 100).
 - `--no-pager` — write plain output to stdout instead of piping to `less -R`.
-- `--check` — render with no pager; exit non-zero if any line exceeds the target
-  width. This is the tool's self-smoke gate.
-- `--ascii` / `--unicode` — force the glyph tier (below). Mutually exclusive.
-- `--help` / `-h` — print usage and exit.
+- `--check` — render with no pager; exit non-zero if any non-code line exceeds the
+  target width. This is the tool's own self-smoke gate.
+- `--ascii` / `--unicode` — force the glyph tier (below), overriding auto-detection.
+  Mutually exclusive.
+- `--help`, `-h` — print usage (top-level, or a subcommand's own) and exit.
+- `--licenses` — print the aggregated third-party notices (below) and exit. Takes no
+  file argument.
 
-When stdout is a TTY and `--no-pager` is absent, output is piped to `less -R`. When
-`less` is unavailable, or stdout is redirected, output goes to stdout directly.
+`mdview highlight-as <fence> <language>` maps a fence info-string (the word after the
+opening ` ``` `) to a language the syntax highlighter recognizes, and saves it to the
+config file — validated against the highlighter's own supported-language list before
+anything is written, so a typo is rejected with an explanation rather than silently
+producing an unhighlighted fence later. `dataviewjs` → `javascript` and `dataview` →
+`sql` are built in and need no configuration; a user entry for either overrides it.
 
-Once installed on PATH (below), that is simply:
+### Config
 
-```bash
-mdview plans/mdview.md
+JSON at `$XDG_CONFIG_HOME/mdview/config.json` (or `~/.config/mdview/config.json` if
+`XDG_CONFIG_HOME` is unset). Currently one key of interest to normal use:
+
+```json
+{
+  "highlightAs": {
+    "dataviewjs": "javascript"
+  }
+}
 ```
 
-### Installing on PATH
+Reading is lenient — a missing file is normal, and a malformed one degrades to
+defaults with a one-line notice on stderr rather than a stack trace, still rendering
+the document. Writing (`highlight-as`) is stricter: it refuses to touch a config file
+it cannot parse, since merging into one it can't understand risks silently clobbering
+or dropping content it can't see. A write only ever touches the one `highlightAs` entry
+named on the command line; every other key, and every other mapping already recorded,
+is left exactly as it was.
 
-```bash
-bun run build                                    # compile dist/mdview
-ln -sfn "$PWD/dist/mdview" ~/.local/bin/mdview         # from the repo root
-```
+### Glyph tier
 
-**The compiled binary is a new pattern for this repo** — every other `bun build` here
-produces a bundle, not a standalone executable. It embeds the Bun runtime (~102 MB),
-is gitignored, and **must be rebuilt after any source edit**; there is no watch mode.
-Editing source without rebuilding leaves `mdview` running the old code.
-
-## What it does
-
-- **Frontmatter** renders as a dimmed, key-aligned metadata block rather than being
-  stripped. Empty values (`[]`, `""`, null) show `—` so they read as empty, not broken.
-- **Wide tables** are the reason the tool exists: columns shrink proportionally to a
-  floor, and tokens too long for their column are hard-split, never ellipsized. 43% of
-  this repo's 4,550 table rows exceed 120 columns.
-- **Prose and lists** wrap to the target width, ANSI-safely — escape sequences are
-  never cut, and CJK/emoji are measured by display width.
-- **Fenced code is never rewritten**, so commands stay pasteable; `--check` exempts it.
-  Unknown fence languages fall back to `plaintext` instead of writing highlight.js
-  warnings to stderr; `dataviewjs` highlights as JavaScript and `dataview` as SQL.
-- Wiki-links (`[[slug|alias]]`), embeds (`![[target]]`), and Obsidian task states render
-  as styled text and glyphs.
-- **A rule follows the frontmatter block**, drawn exactly like the document's own `---`.
-
-## Glyph tier
-
-Bullets, rules, table borders, and task glyphs move together as one capability tier:
+Bullets, rules, table borders, and task-list glyphs move together as one capability
+tier, detected from the locale and `TERM` (UTF-8 locale and a non-dumb terminal ⟶
+Unicode; otherwise ASCII):
 
 | | Unicode | ASCII |
 |---|---|---|
@@ -66,11 +106,52 @@ Bullets, rules, table borders, and task glyphs move together as one capability t
 | Table borders | box-drawing | `+` `-` `\|` |
 | Task states | `○` / `✓` | `[ ]` / `[x]` |
 
-Detection prefers Unicode when the locale is UTF-8 and `TERM` isn't a known-dumb
-terminal. Override it with `--ascii` / `--unicode`, or set `MDVIEW_GLYPHS=ascii|unicode`
-(flags win). Every Unicode substitute is one column wide, so the tier never changes
-layout.
+Override with `--ascii` / `--unicode`, or `MDVIEW_GLYPHS=ascii|unicode` in the
+environment (flags win). Every Unicode substitute occupies exactly one column, so the
+tier choice never changes layout.
 
 Out of scope by design: images, callouts, block LaTeX, raw HTML.
 
-See `AGENTS.md` for stack, layout, gates, and the corpus sweep.
+## Two names, on purpose
+
+The project and repository are **`crucible-tui`**; the command, the package, the
+`MDVIEW_*` environment variables, and the `~/.config/mdview/` directory are all
+**`mdview`** — and that split is settled, not an unfinished rename. `mdview` describes
+what the tool does today: it views markdown. `crucible-tui` is the name of the project
+those functions would belong to if editing, a file tree, or other full-TUI-application
+features arrive later — the event that would actually justify renaming the command.
+Shipping that churn early would cost every user their config path and muscle memory to
+buy nothing. This follows the same split as `ripgrep`/`rg` and
+`the-silver-searcher`/`ag`: a repo name and a command name are allowed to differ.
+`man crucible-tui` and `man mdview` both resolve, on purpose, to the same page.
+
+See `AGENTS.md`'s "Two names, on purpose" for the full rationale, and
+[`docs/adr/0001-editor-path.md`](docs/adr/0001-editor-path.md) for the architecture
+decision this naming is deliberately keeping room for.
+
+## Distribution
+
+There is no npm package yet. The plan — not yet implemented — is a small npm package
+containing the source, which runs on the user's own Bun (as `bun run src/cli.ts` above
+already does), plus optional pre-compiled per-platform binaries attached as GitHub
+release assets for people who would rather not install Bun at all. This follows
+[opencode](https://github.com/sst/opencode)'s model, and deliberately avoids publishing
+a ~422 MB matrix of platform-specific npm packages the way some CLI tools do. Nothing
+about this is implemented yet, and `package.json` stays `"private": true` until the
+maintainer decides otherwise.
+
+## Third-party licenses
+
+MIT (see [`LICENSE`](LICENSE)). Aggregated notices for the runtime dependency closure
+— generated by `scripts/gen-licenses.ts`, never hand-edited — are in
+[`THIRD-PARTY-LICENSES.txt`](THIRD-PARTY-LICENSES.txt) and printed by `mdview
+--licenses`. Two notices in there are reproduced in full because a bare SPDX identifier
+doesn't cover them: `marked` bundles a second, separate license for John Gruber's
+original Markdown spec alongside its own MIT grant, and `highlight.js` is BSD-3-Clause,
+which requires its copyright notice and disclaimer to travel with the software.
+
+## Contributing
+
+`AGENTS.md` is the contributor contract: stack, layout, the rendering model, the corpus
+sweep and its gates, dependency decisions, and the containment rules that keep this
+repo safe to publish next to private ones. Read it before sending a change.
