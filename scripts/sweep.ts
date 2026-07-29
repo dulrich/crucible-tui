@@ -129,6 +129,13 @@ export interface CorpusResult {
    * profile does not end up measuring table width instead of difficulty.
    */
   tableOverflow: number;
+  /**
+   * Symlinked directories inside the corpus root, skipped by design (see
+   * `canonicalizeAndDedupe`'s comment on `walkMarkdown`'s symlink semantics, which this
+   * does not change) and disclosed here so the skip is a recorded decision rather than a
+   * silent one. Always `0` for a glob-based (non-`walkAll`) corpus.
+   */
+  symlinkedDirsSkipped: number;
 }
 
 /**
@@ -322,7 +329,17 @@ async function expandGlob(root: string, pattern: string): Promise<string[]> {
   return results;
 }
 
-async function walkMarkdown(root: string, exclude: string[]): Promise<string[]> {
+/**
+ * Mutable out-param for `walkMarkdown`'s symlinked-directory count — a plain counter
+ * object rather than a return-shape change, so the walk's return contract
+ * (`Promise<string[]>`) stays exactly what every existing caller already expects.
+ */
+export interface SymlinkStats {
+  /** Symlinked directories encountered (and, by design, never recursed into). */
+  symlinkedDirs: number;
+}
+
+async function walkMarkdown(root: string, exclude: string[], stats?: SymlinkStats): Promise<string[]> {
   const results: string[] = [];
   async function recurse(dir: string): Promise<void> {
     let entries;
@@ -334,6 +351,21 @@ async function walkMarkdown(root: string, exclude: string[]): Promise<string[]> 
     for (const entry of entries) {
       const full = join(dir, entry.name);
       if (exclude.some((needle) => full.includes(needle))) continue;
+      if (entry.isSymbolicLink()) {
+        // `isDirectory()`/`isFile()` are both false for a symlink, so this entry was
+        // already silently skipped either way — that skip is deliberate (see
+        // `canonicalizeAndDedupe`'s comment above) and stays unchanged here. What's new
+        // is disclosure: if it resolves to a directory, count it so the caller can make
+        // the skip audible instead of silent.
+        if (stats) {
+          try {
+            if ((await stat(full)).isDirectory()) stats.symlinkedDirs += 1;
+          } catch {
+            // Broken symlink — resolves to nothing, so it is not a skipped directory.
+          }
+        }
+        continue;
+      }
       if (entry.isDirectory()) {
         await recurse(full);
       } else if (entry.isFile() && entry.name.endsWith(".md")) {
@@ -405,8 +437,17 @@ export interface ResolveOptions {
  *
  * Paths come back **realpath-canonicalized and deduplicated** — see
  * `canonicalizeAndDedupe` for why that is not optional.
+ *
+ * `symlinkStats`, if passed, is populated with the count of symlinked directories the
+ * walk skipped (only meaningful for `spec.walkAll`; a glob-based corpus never had this
+ * count in the first place). Optional and out-of-band on purpose, so this function's
+ * own return contract (`Promise<string[] | null>`) is unchanged for every existing caller.
  */
-export async function resolveCorpusFiles(spec: CorpusSpec, options: ResolveOptions = {}): Promise<string[] | null> {
+export async function resolveCorpusFiles(
+  spec: CorpusSpec,
+  options: ResolveOptions = {},
+  symlinkStats?: SymlinkStats,
+): Promise<string[] | null> {
   try {
     const info = await stat(spec.root);
     if (!info.isDirectory()) return null;
@@ -416,7 +457,7 @@ export async function resolveCorpusFiles(spec: CorpusSpec, options: ResolveOptio
 
   let files: string[];
   if (spec.walkAll) {
-    files = await walkMarkdown(spec.root, spec.exclude ?? []);
+    files = await walkMarkdown(spec.root, spec.exclude ?? [], symlinkStats);
   } else {
     const all = new Set<string>();
     for (const glob of spec.globs ?? []) {
@@ -590,7 +631,8 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
 
 export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Promise<CorpusResult> {
   const started = performance.now();
-  const files = await resolveCorpusFiles(spec);
+  const symlinkStats: SymlinkStats = { symlinkedDirs: 0 };
+  const files = await resolveCorpusFiles(spec, {}, symlinkStats);
 
   if (files === null) {
     return {
@@ -605,6 +647,7 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
       orphans: [],
       overIndent: [],
       tableOverflow: 0,
+      symlinkedDirsSkipped: 0,
     };
   }
 
@@ -623,6 +666,7 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
       orphans: [],
       overIndent: [],
       tableOverflow: 0,
+      symlinkedDirsSkipped: symlinkStats.symlinkedDirs,
     };
   }
 
@@ -696,10 +740,11 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
     orphans,
     overIndent,
     tableOverflow,
+    symlinkedDirsSkipped: symlinkStats.symlinkedDirs,
   };
 }
 
-function printResult(result: CorpusResult, detect: boolean): void {
+export function printResult(result: CorpusResult, detect: boolean): void {
   if (result.skipped) {
     console.log(`[${result.name}] SKIPPED — ${result.skipReason}`);
     return;
@@ -716,6 +761,17 @@ function printResult(result: CorpusResult, detect: boolean): void {
         : "") +
       `elapsed=${result.elapsedSeconds.toFixed(1)}s`,
   );
+  if (result.symlinkedDirsSkipped > 0) {
+    // Disclosure, not a warning: symlinked subtrees are excluded from the walk by
+    // design (see `canonicalizeAndDedupe`'s comment on `walkMarkdown`), and this makes
+    // that decision visible per corpus instead of leaving it a silent skip. Informational
+    // only — never affects `anyFailure`/the exit code.
+    const noun = result.symlinkedDirsSkipped === 1 ? "directory" : "directories";
+    console.log(
+      `NOTE: [${result.name}] ${result.symlinkedDirsSkipped} symlinked ${noun} excluded by design — ` +
+        "symlinked subtrees are not swept",
+    );
+  }
   // Absolute paths: corpus roots can live anywhere on the filesystem (a private
   // manifest routinely points outside this repo entirely), so a single
   // "relative to one repo root" display no longer means anything consistent.

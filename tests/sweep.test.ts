@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -6,6 +6,7 @@ import {
   findOverflow,
   loadManifest,
   parseManifest,
+  printResult,
   resolveCorpusFiles,
   resolveManifestSource,
   strideSample,
@@ -87,6 +88,151 @@ describe("resolveCorpusFiles", () => {
       walkAll: true,
     });
     expect(files).toBeNull();
+  });
+});
+
+// WP-1: the symlinked-subtree skip (walkMarkdown, unchanged) is made *audible* rather
+// than fixed. Fixtures live entirely in a mkdtemp'd directory — no symlink is ever
+// added to the repo itself.
+describe("symlinked subtree disclosure (WP-1)", () => {
+  async function makeRootWithSymlinkedSubtree(): Promise<{ root: string; target: string }> {
+    const root = await mkdtemp(join(tmpdir(), "mdview-symlink-root-"));
+    const target = await mkdtemp(join(tmpdir(), "mdview-symlink-target-"));
+    await writeFile(join(root, "real.md"), "# real\n");
+    await writeFile(join(target, "inner.md"), "# inner\n");
+    await symlink(target, join(root, "linked"), "dir");
+    return { root, target };
+  }
+
+  async function makeRootWithoutSymlinks(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "mdview-no-symlink-root-"));
+    await writeFile(join(root, "real.md"), "# real\n");
+    await mkdir(join(root, "sub"));
+    await writeFile(join(root, "sub", "nested.md"), "# nested\n");
+    return root;
+  }
+
+  test("resolveCorpusFiles counts a symlinked directory via the out-param, and still does not sweep its files", async () => {
+    const { root, target } = await makeRootWithSymlinkedSubtree();
+    try {
+      const stats = { symlinkedDirs: 0 };
+      const files = await resolveCorpusFiles({ name: "with-link", root, walkAll: true }, {}, stats);
+      expect(stats.symlinkedDirs).toBe(1);
+      expect(files).not.toBeNull();
+      expect(files?.some((f) => f.endsWith("real.md"))).toBe(true);
+      expect(files?.some((f) => f.endsWith("inner.md"))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(target, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveCorpusFiles's count stays at 0 for a root with no symlinked directories", async () => {
+    const root = await makeRootWithoutSymlinks();
+    try {
+      const stats = { symlinkedDirs: 0 };
+      await resolveCorpusFiles({ name: "no-link", root, walkAll: true }, {}, stats);
+      expect(stats.symlinkedDirs).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a symlinked directory matching the corpus's own exclude rule is not counted (same substring rule as the walk)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mdview-symlink-excluded-"));
+    const target = await mkdtemp(join(tmpdir(), "mdview-symlink-excluded-target-"));
+    try {
+      await mkdir(join(root, "node_modules"));
+      await symlink(target, join(root, "node_modules", "linked-pkg"), "dir");
+      const stats = { symlinkedDirs: 0 };
+      await resolveCorpusFiles({ name: "excluded-link", root, walkAll: true, exclude: ["/node_modules/"] }, {}, stats);
+      expect(stats.symlinkedDirs).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(target, { recursive: true, force: true });
+    }
+  });
+
+  test("sweepCorpus threads the count through to CorpusResult.symlinkedDirsSkipped", async () => {
+    const { root, target } = await makeRootWithSymlinkedSubtree();
+    try {
+      const spec: CorpusSpec = { name: "with-link", root, walkAll: true };
+      const options: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+      const result = await sweepCorpus(spec, options);
+      expect(result.symlinkedDirsSkipped).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(target, { recursive: true, force: true });
+    }
+  });
+
+  test("sweepCorpus reports 0 for a root with no symlinked directories", async () => {
+    const root = await makeRootWithoutSymlinks();
+    try {
+      const spec: CorpusSpec = { name: "no-link", root, walkAll: true };
+      const options: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+      const result = await sweepCorpus(spec, options);
+      expect(result.symlinkedDirsSkipped).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("printResult logs a NOTE line naming the count when a corpus has skipped symlinked directories", () => {
+    const originalLog = console.log;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printResult(
+        {
+          name: "with-link",
+          skipped: false,
+          filesScanned: 1,
+          combos: 1,
+          overflow: [],
+          errors: [],
+          elapsedSeconds: 0.1,
+          orphans: [],
+          overIndent: [],
+          tableOverflow: 0,
+          symlinkedDirsSkipped: 3,
+        },
+        false,
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    const noteLine = captured.find((line) => line.startsWith("NOTE:"));
+    expect(noteLine).toBeDefined();
+    expect(noteLine).toContain("3 symlinked directories");
+    expect(noteLine).toContain("with-link");
+  });
+
+  test("printResult stays silent about symlinks when the count is 0", () => {
+    const originalLog = console.log;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printResult(
+        {
+          name: "no-link",
+          skipped: false,
+          filesScanned: 1,
+          combos: 1,
+          overflow: [],
+          errors: [],
+          elapsedSeconds: 0.1,
+          orphans: [],
+          overIndent: [],
+          tableOverflow: 0,
+          symlinkedDirsSkipped: 0,
+        },
+        false,
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured.some((line) => line.startsWith("NOTE:"))).toBe(false);
   });
 });
 
