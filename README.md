@@ -132,6 +132,14 @@ identity — `TERM`, `TERM_PROGRAM`, `COLORTERM`, `VTE_VERSION`, the multiplexer
 locale — so a second terminal never inherits the first one's answer. `--refresh`
 re-probes; delete the file and the next probe recreates it.
 
+**If you change your terminal's own ambiguous-width setting, run `mdview probe
+--refresh`.** Some emulators make this a config-file option — mlterm's
+`col_size_of_width_a`, xterm's `cjkWidth` — and such a setting is invisible in the
+environment, so it cannot appear in the cache identity. Flipping it leaves the same
+identity mapped to what is now the wrong answer, and mdview will keep using it until you
+re-probe. This is the one direction the identity key is genuinely blind in; everywhere
+else it errs toward re-probing too often, which costs 5 ms.
+
 Resolution order, highest first:
 
 1. `MDVIEW_AMBIGUOUS=narrow|wide` in the environment (any other value is ignored, never

@@ -588,6 +588,7 @@ mechanism that is actually real:
 | kitty | `xterm-kitty` | `TERM` |
 | gnome-terminal | **`xterm-256color`** | **`VTE_VERSION=7600`** |
 | anything + tmux | `tmux-256color` | *(the host that started the server — see below)* |
+| mlterm | `mlterm` | `TERM` — **and the only measured `wide`** |
 
 **`TERM` is a terminfo name, not an identity, and this machine already proves it**:
 gnome-terminal reports the *generic* `xterm-256color`, the value plain xterm, alacritty
@@ -626,6 +627,24 @@ So tmux keys split **per server origin**, not per host and not into one bucket, 
 split persists for every client that ever attaches. The cost is bounded at one spurious
 re-probe per origin, all of them agreeing, because tmux gives the same answer regardless.
 Over-specifying costs a re-probe; under-specifying hands ghostty urxvt's answer.
+
+**The one place the key is genuinely under-specified, found 2026-07-28 by installing a
+terminal that can be configured either way.** mlterm's `col_size_of_width_a` is a
+config-file setting: `=2` probed **wide** (`\e[2;3R`, cursor 1→3), `=1` probed **narrow**
+(`\e[2;2R`), same binary, same session shape, and **byte-identical identity strings**
+(`term=mlterm|program=|colorterm=truecolor|vte=|mux=none|locale=en_US.UTF-8`). Two correct
+opposite answers under one key. The cache therefore serves the stale verdict across such a
+flip until `--refresh`, and no field available to the identity can fix it, because the
+setting never reaches the environment. Documented in the README as user-facing advice
+rather than papered over. **Do not "fix" this by widening the key** — there is nothing to
+widen it with; the honest options are a TTL or always re-probing on a TTY, and neither is
+worth 5 ms per run against a setting most users change never.
+
+This pair is also **the proof that the probe measures rendering rather than correlating
+with `TERM`.** Six narrow terminals could not establish it; one terminal that answers both
+ways under an unchanged identity does, and it is the only evidence in the repo that
+distinguishes the design from a lookup table. Every `wide` claim before this was
+`MDVIEW_AMBIGUOUS` or a test double.
 
 **zellij is the opposite and overrides nothing.** Measured on two different hosts:
 ghostty under zellij keeps `TERM=xterm-ghostty`, kitty under zellij keeps
