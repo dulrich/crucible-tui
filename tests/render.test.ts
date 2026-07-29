@@ -1395,3 +1395,64 @@ describe("renderDocument — lists inside blockquotes (WP-2g)", () => {
     }
   });
 });
+
+// WP-3 (corpus-symlink-membership): pins shortcode substitution **on**, which is
+// `marked-terminal`'s default and a deliberate choice — see the comment at
+// `src/render.ts`'s main `markedTerminal()` construction. The audit that was meant to
+// justify turning it off (`scripts/emoji-audit.ts`, committed and re-runnable) instead
+// killed the reason for it: the ~468 KB binary saving does not exist, because
+// `node-emoji` is imported unconditionally and the option only selects a function at
+// runtime. In a modern terminal `:rocket:` is expected to render as a glyph.
+//
+// These tests fail if anyone sets `emoji: false` at any of the three construction
+// sites, including the two per-budget caches. That is not a permanent veto: making
+// substitution follow the glyph tier (`--ascii` cannot render glyphs and must keep the
+// literal) is planned work, and whoever does it updates these tests deliberately —
+// which is the point of pinning it.
+describe("renderDocument — emoji shortcode substitution stays on (WP-3)", () => {
+  test("a prose shortcode in a paragraph is substituted with its glyph", () => {
+    const output = renderDocument("Ship it :rocket: today.\n", 80);
+    const plain = stripAnsi(output);
+    expect(plain).toContain("🚀");
+    expect(plain).not.toContain(":rocket:");
+  });
+
+  test("a prose shortcode in a heading is substituted with its glyph", () => {
+    const output = renderDocument("# Status :white_check_mark:\n", 80);
+    const plain = stripAnsi(output);
+    expect(plain).toContain("✅");
+    expect(plain).not.toContain(":white_check_mark:");
+  });
+
+  test("a shortcode inside a loose list item's own budgeted paragraph renderer is substituted too", () => {
+    // Exercises `paragraphRendererAt` — the per-budget cache with its own
+    // `markedTerminal()` construction, which must carry the same `emoji` setting.
+    // Substitution must not depend on whether a paragraph sits inside a list.
+    const source = "- one\n\n  still one, with a shortcode :bulb: in its second paragraph\n\n- two\n";
+    const output = renderDocument(source, 80);
+    const plain = stripAnsi(output);
+    expect(plain).toContain("💡");
+    expect(plain).not.toContain(":bulb:");
+  });
+
+  test("a shortcode inside a fence stays literal, whatever the option says", () => {
+    const output = renderDocument("```\n:star:\n```\n", 80);
+    const plain = stripAnsi(output);
+    // `marked-terminal`'s `code` renderer never runs `insertEmojis`, so fence content
+    // is inert by construction — it proves nothing about the `emoji` option either
+    // way, and nobody should mistake it for evidence. Recorded so the glyph-tier work
+    // knows fences already behave correctly and need no special case.
+    expect(plain).toContain(":star:");
+  });
+
+  test("the stray space `insertEmojis` appends is absorbed mid-line but survives at end of block", () => {
+    // `insertEmojis` returns `emojiSign + ' '` — the glyph plus a space that was never
+    // in the source. Measured, not assumed: reflow collapses it against following text,
+    // so mid-sentence output is clean, but at the end of a paragraph or heading it
+    // survives as trailing whitespace. List items trim it. Pinned as-is rather than
+    // worked around, so the glyph-tier WP sees exactly which case it has to fix.
+    expect(stripAnsi(renderDocument("Ship it :rocket: today.\n", 80))).toContain("Ship it 🚀 today.");
+    expect(stripAnsi(renderDocument("All done :rocket:\n", 80))).toContain("🚀 \n");
+    expect(stripAnsi(renderDocument("- item :bulb:\n", 80))).toContain("💡\n");
+  });
+});
