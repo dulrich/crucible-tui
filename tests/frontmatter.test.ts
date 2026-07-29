@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import stringWidth from "string-width";
-import { formatMetaBlock, splitFrontmatter } from "../src/frontmatter";
+import { stripAnsi } from "../src/detectors";
+import { formatMetaBlock, formatMetaBlockDetailed, splitFrontmatter } from "../src/frontmatter";
+import { renderDocumentDetailed } from "../src/render";
 
 describe("splitFrontmatter", () => {
   test("frontmatter at byte 0 parses; meta populated, body excludes the block", () => {
@@ -139,4 +141,197 @@ describe("formatMetaBlock", () => {
     }
     expect(warnings).toEqual([]);
   });
+
+});
+
+// ---------------------------------------------------------------------------
+// The four frontmatter width defects, each with the test that would have caught it.
+// Before this block there was no test that failed if any of this behaviour changed,
+// which is the reason all four survived a full corpus sweep.
+// ---------------------------------------------------------------------------
+
+// Authored the way a Windows editor writes it. Inline rather than a `tests/fixtures`
+// file on purpose: a checked-in CRLF fixture is one `core.autocrlf` setting or one
+// editor "fix line endings" away from silently becoming an LF file, at which point the
+// regression guard would pass while guarding nothing.
+const CRLF_SOURCE = [
+  "---",
+  "name: example-skill",
+  'description: "Validation for deployment readiness. Runs deep checks."',
+  "license: MIT",
+  "metadata:",
+  "  author: Example",
+  '  version: "1.2.1"',
+  "---",
+  "",
+  "# Body",
+  "",
+].join("\r\n");
+
+describe("defect 0 — CRLF frontmatter reaches the parser as bytes that parse", () => {
+  test("splitFrontmatter normalizes the meta block's line endings and leaves the body alone", () => {
+    const { meta, body } = splitFrontmatter(CRLF_SOURCE);
+    expect(meta).not.toBeNull();
+    expect(meta).not.toContain("\r");
+    expect(meta).toBe(
+      [
+        "name: example-skill",
+        'description: "Validation for deployment readiness. Runs deep checks."',
+        "license: MIT",
+        "metadata:",
+        "  author: Example",
+        '  version: "1.2.1"',
+      ].join("\n"),
+    );
+    // The body is handed on byte-for-byte; `marked` normalizes line endings itself.
+    expect(body).toBe("\r\n# Body\r\n");
+  });
+
+  test("valid CRLF frontmatter renders a meta block, not a raw echo", () => {
+    const { meta } = splitFrontmatter(CRLF_SOURCE);
+    const result = formatMetaBlockDetailed(meta as string, 100);
+    const plain = stripAnsi(result.text);
+
+    // The whole failure this fixes: valid YAML reported as unparseable and dumped raw.
+    expect(plain).not.toContain("could not parse");
+    // The raw echo would carry the source's own quoting; the meta block does not.
+    expect(plain).not.toContain('description: "Validation');
+    expect(plain).toMatch(/^name\s+: example-skill$/m);
+    expect(plain).toMatch(/^ {2}version\s*: 1\.2\.1$/m);
+    // A parsed block is our layout, so it is *not* exempt and must fit.
+    expect(result.verbatimRanges).toEqual([]);
+    for (const line of plain.split("\n")) expect(stringWidth(line)).toBeLessThanOrEqual(100);
+  });
+});
+
+// `{a: b} c` is a compact mapping followed by a scalar — a real, deterministic `yaml`
+// error ("Nested mappings are not allowed in compact mappings") that carries the
+// summary/excerpt/caret shape the diagnostic has to handle.
+const BROKEN_META = [
+  "name: example-skill",
+  `description: ${"a long description that has to be folded somewhere ".repeat(6)}{a: b} c`,
+  "author: Example",
+].join("\n");
+
+describe("defect 1 — the parse diagnostic wraps, the excerpt and caret do not", () => {
+  test("our leading message is wrapped to the target; the excerpt/caret block is left verbatim", () => {
+    for (const width of [80, 40]) {
+      const lines = stripAnsi(formatMetaBlockDetailed(BROKEN_META, width).text).split("\n");
+      const blank = lines.indexOf("");
+      expect(blank).toBeGreaterThan(0);
+      // Everything above the blank line is the message we prefixed, and all of it fits.
+      for (const line of lines.slice(0, blank)) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+      // The location is never dropped — the whole reason a parse diagnostic exists.
+      expect(lines.slice(0, blank).join(" ")).toContain("at line 2, column");
+    }
+  });
+
+  test("the caret keeps its column at every target — proof the excerpt is not re-folded", () => {
+    const caretColumn = (width: number): number => {
+      const lines = stripAnsi(formatMetaBlockDetailed(BROKEN_META, width).text).split("\n");
+      const caret = lines.find((line) => line.trim() === "^");
+      expect(caret).toBeDefined();
+      return (caret as string).indexOf("^");
+    };
+    // `yaml` folds its own excerpt to 80 characters and ellipsizes it, so the caret is
+    // positioned against *that* excerpt, not against our target width. Re-folding it
+    // here would slide the caret off the column it points at.
+    expect(caretColumn(40)).toBe(caretColumn(80));
+    expect(caretColumn(160)).toBe(caretColumn(80));
+  });
+
+  // A documented limitation, pinned so it is a measurement rather than an assumption.
+  // `yaml` folds its excerpt to 80 *characters*; with CJK content that is up to 160
+  // columns. Measured: zero of the 24 unparseable frontmatter blocks on disk hit this
+  // at any swept target, so it is left alone rather than folded — the excerpt is not
+  // exempt, so a file that does hit it turns the gate red instead of shipping an
+  // over-width line silently. If this test fails, that case has arrived.
+  test("a CJK excerpt can exceed the target — the excerpt is left un-exempt so the gate says so", () => {
+    const cjkMeta = `title: ${"漢".repeat(120)} {a: b} c\nother: 1`;
+    const result = formatMetaBlockDetailed(cjkMeta, 80);
+    const lines = stripAnsi(result.text).split("\n");
+    const [start] = result.verbatimRanges[0] as [number, number];
+    const diagnostic = lines.slice(0, start - 1);
+    expect(diagnostic.some((line) => stringWidth(line) > 80)).toBe(true);
+    // Not swept under the exemption: the exempt range starts at the echo, not earlier.
+    expect(start).toBe(diagnostic.length + 1);
+  });
+});
+
+describe("defect 2 — only the verbatim echo is exempt from the width check", () => {
+  test("the exempt range is exactly the echoed block, and it is the file's own bytes", () => {
+    const result = formatMetaBlockDetailed(BROKEN_META, 80);
+    const lines = stripAnsi(result.text).split("\n");
+    expect(result.verbatimRanges).toHaveLength(1);
+    const [start, end] = result.verbatimRanges[0] as [number, number];
+    expect(end).toBe(lines.length);
+    expect(lines.slice(start - 1, end).join("\n")).toBe(BROKEN_META.trimEnd());
+    // Nothing above the echo is exempt, and nothing above it overflows either.
+    for (const line of lines.slice(0, start - 1)) expect(stringWidth(line)).toBeLessThanOrEqual(80);
+  });
+
+  test("renderDocumentDetailed hands the echo's line range to the width check as a code range", () => {
+    const source = `---\n${BROKEN_META}\n---\n\n# Body\n`;
+    const { text, codeRanges } = renderDocumentDetailed(source, 80);
+    const overWide = text
+      .split("\n")
+      .map((line, index): [number, number] => [index + 1, stringWidth(line)])
+      .filter(([, width]) => width > 80);
+    expect(overWide.length).toBeGreaterThan(0);
+    for (const [lineNumber] of overWide) {
+      expect(codeRanges.some(([rangeStart, rangeEnd]) => lineNumber >= rangeStart && lineNumber <= rangeEnd)).toBe(true);
+    }
+  });
+
+  // The scoping test. Exempting all of `formatMetaBlock`'s output would blind the gate
+  // to the path that currently works and is likeliest to regress, so this asserts the
+  // success path is still measured. A key longer than the key budget is emitted
+  // untruncated — pre-existing behaviour, used here purely as a reproducible way to
+  // make a *parsed* block exceed the target.
+  test("a successfully parsed, over-width meta block is still caught", () => {
+    const meta = `${"k".repeat(200)}: value`;
+    const result = formatMetaBlockDetailed(meta, 80);
+    expect(result.verbatimRanges).toEqual([]);
+    expect(Math.max(...stripAnsi(result.text).split("\n").map((line) => stringWidth(line)))).toBeGreaterThan(80);
+
+    const { text, codeRanges } = renderDocumentDetailed(`---\n${meta}\n---\n\n# Body\n`, 80);
+    const overWide = text
+      .split("\n")
+      .map((line, index): [number, number] => [index + 1, stringWidth(line)])
+      .filter(([, width]) => width > 80);
+    expect(overWide.length).toBeGreaterThan(0);
+    for (const [lineNumber] of overWide) {
+      expect(codeRanges.some(([rangeStart, rangeEnd]) => lineNumber >= rangeStart && lineNumber <= rangeEnd)).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe("defect 3 — a nested mapping at depth >= 1 respects targetWidth", () => {
+  const NESTED_META = [
+    "name: example-skill",
+    "metadata:",
+    "  priority: 6",
+    "  promptSignals:",
+    "    phrases:",
+    ...["agentic harness", "agent harness", "harness architecture", "agent architecture", "tool registry"].map(
+      (phrase) => `      - ${phrase}`,
+    ),
+    "    weights:",
+    "      high: 3",
+    "      low: 1",
+  ].join("\n");
+
+  for (const width of [80, 40]) {
+    test(`the JSON.stringify'd subtree wraps at ${width}`, () => {
+      const result = formatMetaBlockDetailed(NESTED_META, width);
+      expect(result.verbatimRanges).toEqual([]);
+      const plain = stripAnsi(result.text);
+      // Still stringified rather than recursed — the fix is that it wraps, not that
+      // the depth rule changed.
+      expect(plain).toContain('{"phrases":');
+      for (const line of plain.split("\n")) expect(stringWidth(line)).toBeLessThanOrEqual(width);
+    });
+  }
 });
