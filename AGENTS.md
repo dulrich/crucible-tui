@@ -4,6 +4,25 @@ Terminal markdown viewer for this repo's plans, execution briefs, and `INITIATIV
 files: renders frontmatter as a metadata block and wraps wide tables losslessly instead
 of overflowing or truncating them.
 
+## Two names, on purpose
+
+The repository and project are **`crucible-tui`**; the command, the package, the
+`MDVIEW_*` environment variables and the `~/.config/mdview/` directory are all
+**`mdview`**, and that is a **settled decision, not an unfinished rename** (2026-07-28).
+
+`mdview` describes what the tool does — it views markdown. It will stop being accurate
+if editing, a file tree, or the other TUI-application functions arrive, and *that* is the
+event that would justify renaming the command; shipping churn before then would cost every
+user their config path and muscle memory to buy nothing. `crucible-tui` is the name of the
+project those functions would belong to. The split follows `ripgrep`/`rg` and
+`the-silver-searcher`/`ag`: repo name and command name are allowed to differ.
+
+Concretely: the man page source is `man/crucible-tui.1` and installs as `mdview.1` so
+`man mdview` resolves. **Do not "fix" this to agree.** If a future WP does rename the
+command, it owns the whole set at once — binary, package, env vars, config dir, and a
+compatibility shim for the old config path — and it updates this section rather than
+deleting it.
+
 ## Stack
 
 - Bun + TypeScript, single flat package (no workspaces).
@@ -481,7 +500,8 @@ this module doesn't know about the first time the subcommand ran.
 `~/.local/share/man/man1/mdview.1` — symlinked, matching the `dist/mdview` PATH convention,
 so edits take effect without reinstalling. Installed under the *binary's* name so `man
 mdview` resolves today; the source keeps the repo's name. That split disappears when
-WP-6b settles the rename.
+That split is deliberate and settled — see "Two names, on purpose" at the top of this
+file. Do not reconcile the two names.
 
 ### Corpus sweep
 
