@@ -587,31 +587,62 @@ mechanism that is actually real:
 | urxvt | `rxvt-unicode-256color` | `TERM` |
 | kitty | `xterm-kitty` | `TERM` |
 | gnome-terminal | **`xterm-256color`** | **`VTE_VERSION=7600`** |
-| anything + tmux | `tmux-256color` | *(deliberately collapsed — see below)* |
+| anything + tmux | `tmux-256color` | *(the host that started the server — see below)* |
 
 **`TERM` is a terminfo name, not an identity, and this machine already proves it**:
 gnome-terminal reports the *generic* `xterm-256color`, the value plain xterm, alacritty
 and terminator also claim. `VTE_VERSION` is what separates it. That is the real
 justification; the multiplexer-rewrite story was speculation that happened to be wrong.
 
-**Under a multiplexer the key collapses to the multiplexer's own fields, and that is
-correct rather than a collision.** tmux rewrites `TERM` to `tmux-256color`, sets
-`TERM_PROGRAM=tmux`, and strips `VTE_VERSION`, so every host collapses to one key —
-kitty-under-tmux and a **fully detached** tmux session with no host terminal attached
-produce byte-identical identity strings. That is right, because **tmux answers DSR from
-its own grid model rather than relaying to the host**: measured by running the probe in a
-detached session, which replied `\e[1;2R` in 5 ms with nothing attached to render
-anything. mdview's output is laid into tmux's grid and *tmux* decides the wrapping, so
-tmux's opinion is the one that governs and sharing it across hosts is the desired
-behaviour. A host that disagrees with its own multiplexer is already rendering corrupt
-output for every program, and is not mdview's to reconcile.
+**Under tmux the key is dominated by tmux's own fields, and that is correct rather than a
+collision.** The reason it is correct is **not** that the host fields vanish — it is that
+**tmux answers DSR from its own grid model rather than relaying to the host**, measured by
+running the probe in a fully detached session with nothing attached to render anything,
+which still replied `\e[1;2R` in 5 ms. mdview's output is laid into tmux's grid and *tmux*
+decides the wrapping, so tmux's opinion is the one that governs and sharing an answer
+across hosts is the desired behaviour. A host that disagrees with its own multiplexer is
+already rendering corrupt output for every program, and is not mdview's to reconcile.
 
-The residual is benign and worth knowing: `COLORTERM` still leaks the host through under
-tmux (`truecolor` for kitty and ghostty, `rxvt-xpm` for urxvt), so urxvt-under-tmux gets a
-*different* key from kitty-under-tmux despite both being tmux. That costs one spurious
-re-probe and nothing else. Over-specifying costs a re-probe; under-specifying hands
-ghostty urxvt's answer. **Keep the claim sized to the evidence** — this paragraph was
-wrong twice while the code was right throughout.
+**What tmux actually does to the environment** (measured 2026-07-28 by injecting known
+values at server start and reading them back inside a pane): it overrides exactly the two
+variables it owns — `TERM` → `tmux-256color`, `TERM_PROGRAM` → `tmux` — and **passes
+everything else through unchanged, frozen at server-start time**. `COLORTERM` and
+`VTE_VERSION` both survive; the default `update-environment` list carries neither, so an
+*attaching* client contributes nothing. The consequence is that a pane's identity records
+**whichever host started the server**, not whoever is looking at it:
+
+| tmux server started from | identity under tmux | how |
+|---|---|---|
+| kitty / ghostty | `…\|colorterm=truecolor\|vte=\|mux=tmux` | field |
+| urxvt | `…\|colorterm=rxvt-xpm\|vte=\|mux=tmux` | field |
+| gnome-terminal | `…\|colorterm=truecolor\|vte=7600\|mux=tmux` | lab, **then field** |
+
+The last row is worth its own note: it was **predicted from the injection experiment and
+then confirmed live**, byte-for-byte, in a real gnome-terminal + tmux session. That is the
+difference between this version of the paragraph and the three wrong ones — the rule was
+stated first and the observation arrived afterwards to match it.
+
+So tmux keys split **per server origin**, not per host and not into one bucket, and the
+split persists for every client that ever attaches. The cost is bounded at one spurious
+re-probe per origin, all of them agreeing, because tmux gives the same answer regardless.
+Over-specifying costs a re-probe; under-specifying hands ghostty urxvt's answer.
+
+**zellij is the opposite and overrides nothing.** Measured on two different hosts:
+ghostty under zellij keeps `TERM=xterm-ghostty`, kitty under zellij keeps
+`TERM=xterm-kitty`, and neither gains a `TERM_PROGRAM` it did not already have — kitty
+sets none, so the field stays empty where tmux would have stamped `tmux`. Under zellij the
+key therefore still identifies the **host**, correctly. This is also the cleanest argument
+for keeping `mux` in the key at all: kitty bare and kitty-under-zellij differ in **exactly
+one field**, and it is that one. **Do not generalise from one multiplexer to another** —
+the two behave oppositely on environment, and `screen` differs from both again (it does
+not strip `ZELLIJ`, which is why `detectMultiplexer` needs `TERM` as a tiebreaker).
+
+**Keep the claim sized to the evidence.** This paragraph has now been wrong three times
+while the code was right throughout: first "a multiplexer rewrites `TERM`" (zellij does
+not), then "every host collapses to one key" and "tmux strips `VTE_VERSION`" (it strips
+nothing — it overrides two variables and freezes the rest). Each wrong version was an
+observation generalised into a mechanism. The rule above is stated as a rule because it
+was measured as one.
 
 Writes are atomic (temp file +
 `rename`, `src/config.ts`'s pattern); every corrupt, truncated, wrong-version or
