@@ -1234,43 +1234,85 @@ so the staleness is a known, deliberate deferral, not something a future pass
 rediscovers and "fixes" by bumping a major version with no compatibility check against
 this tool's fence-language handling (`src/lang.ts`).
 
-**`emoji: false` was investigated and rejected — but read *which* evidence rejected it.**
-`marked-terminal` ships a `:shortcode:` → emoji-glyph pass (`insertEmojis`, gated by
-its own `emoji` option, default `true`); turning it off saves ~468 KB in the compiled
-binary, which is why it was investigated at all. **Measured 2026-07-28, and the answer
-depends entirely on which walk you use — which is the part worth remembering.**
+**`emoji` stays at its default `true` — re-decided 2026-07-29, and the reason to turn it
+off turned out not to exist.**
+`marked-terminal` ships a `:shortcode:` → emoji-glyph pass (`insertEmojis`, gated by its
+own `emoji` option, default `true`). It was investigated once before (2026-07-28) and
+rejected on 392 prose shortcodes across 59 files — but that test was a throwaway
+subagent invocation nothing in the repo could re-run, and its 59 files were reachable
+**only** by following symlinked subtrees the corpus was never meant to include. That is
+a corpus-*membership* bug (`plans/corpus-symlink-membership.md`, WP-1/WP-2), not a
+property of the user's real documents, and it has since been fixed by adding the two
+roots that actually matter as **explicit** corpus members instead of symlink-following
+into everything reachable.
 
-Method: render each candidate token twice, `emoji` on vs off, and keep only tokens whose
-rendered bytes actually *differ*. A behavioural test rather than a `node-emoji` lookup,
-so it cannot drift from what the library really substitutes. Fence-aware, since
-`marked-terminal`'s `code` renderer never applies the transform.
+The test itself is now committed: `scripts/emoji-audit.ts`. Method, unchanged and
+non-negotiable: render each candidate token twice, `emoji` on vs off, and keep only
+tokens whose rendered bytes actually *differ* — a behavioural test, never a `node-emoji`
+lookup, so it cannot drift from what the library really substitutes. Fence-aware, since
+`marked-terminal`'s `code` renderer never applies the transform, and table-aware for the
+identical reason: this tool's own `renderTable` (`src/table.ts`) never dispatches inline
+tokens either, so a shortcode inside a table cell is inert *here* regardless of the
+`emoji` option. Both exemptions are verified per token, against the real renderer, not
+assumed.
 
-| Walk | Files | Prose shortcodes that change rendering |
-|---|---|---|
-| What `scripts/sweep.ts` actually sweeps | 45,129 | **0** — all 19 hits sit inside fences, inert |
-| Following symlinked subtrees as well | +12,363 | **392**, across 59 files; 282 whitespace-isolated |
+**Re-run over the corrected corpus (~44.7k files, unsampled, explicit roots, no
+symlink-following): zero authored prose shortcodes in the user's own documents.** The
+only hits anywhere — 10 tokens across 2 files — sit inside third-party repositories
+cloned for reference into one research-collection root, each its own separate `.git`
+checkout (an open-source CLI's changelog and an agent-persona doc from a cloned
+agent-collection repo). That is vendored material the user did not author, and vendored
+content is not grounds to keep this on. (A third cloned repo in the same root carries two
+more shortcode-shaped tokens, but they sit in a table cell and are inert by construction
+either way — not counted as prose.) Every other root — including a
+personal notes archive of ~44k files, scanned in full, not sampled — shows **0** prose
+shortcodes; the only occurrences elsewhere are already-fenced and already inert
+(matching the original 19-fenced-hit finding, now reproduced against a corpus with two
+more roots in it).
 
-The 392 are `star`×117, `wrench`×69, `bulb`×41, `thread`×31, `warning`×18 and a long
-tail — unmistakably authored, not colon-delimited accidents.
+**The ~468 KB figure was asserted, never measured, and does not hold up.** Compiling
+both ways (`bun build --compile`) and diffing the resulting binaries shows a delta in
+the tens of bytes on a ~97 MB binary — noise, not savings, and two orders of magnitude
+smaller than claimed. `emoji: false` is a runtime option read by `insertEmojis`, not a
+build-time flag; `bun build --compile` bundles the whole dependency closure regardless
+of which branch a runtime option takes, so there was never a binary-size case for this
+either way.
 
-**Every one of them is invisible to the sweep.** `walkMarkdown` gates on
-`Dirent.isDirectory()`, which is `false` for a symlinked directory, so a symlinked
-subtree is silently never swept — `scripts/sweep.ts` documents this itself and flags it
-as an open question. The swept corpus therefore reports `emoji: false` as perfectly safe,
-and it is not.
+**That is what settles it, and it is worth being precise about the shape of the
+argument.** The corpus evidence above establishes only that turning substitution off
+would be *harmless on today's corpus* — an absence of harm, not a benefit. With the
+binary saving gone there is no benefit left to weigh against it, and a change with no
+upside is not a change. The positive case runs the other way: in a modern terminal the
+default expectation is that `:rocket:` renders as a glyph, and the planned
+GitHub-README corpus (`README.md` files are dense with shortcodes) is about to make that
+the common case rather than the rare one.
 
-**`emoji: false` is therefore not set** — see the comment at `src/render.ts`'s
-`markedTerminal()` construction, which points back here. The decision follows the files
-the user actually reads, not the files the gate happens to walk: flipping it would strip
-glyphs from 59 real documents to save ~468 KB of a ~98 MB binary (**0.5%**). No gate here
-would catch that regression — neither sweep measures *content*, only width. **If you
-re-open this, re-run the behavioural test over the symlink-following walk**; the sweep
-corpus alone will tell you it is safe.
+**The real conclusion is that this does not belong in a constant at all.** Substitution
+is a *terminal capability* question, so it should follow the glyph tier the tool already
+models: `--unicode` renders glyphs, `--ascii` cannot and must leave the literal
+shortcode, with a user-config override. That is planned work, not done here. Two defects
+to fix when it lands, both measured: `insertEmojis` returns `emojiSign + ' '`, appending
+a space that was never in the source — reflow absorbs it mid-line, but it survives as
+trailing whitespace at the end of a paragraph or heading (list items trim it) — and it
+therefore changes rendered width, which is the one thing this tool exists to control.
+Shortcodes inside fences stay literal regardless, because `marked-terminal`'s `code`
+renderer never runs the transform; the glyph-tier work needs no special case for them.
 
-**Corollary, and it deserves its own WP:** those 12,363 symlink-reachable files are real
-user markdown that no gate in this repo has ever rendered. The effective corpus is ~21%
-smaller than the manifest implies, and every "verified across the whole corpus" claim
-made before 2026-07-28 — including this file's — carries that hole.
+**Corollary, corrected:** the file count from the prior measurement stands (12,363,
+re-measured 12,385 a day later — corpus drift, not a method error), but the
+characterisation "real user markdown that no gate in this repo has ever rendered" does
+not: composition of that symlink-reachable set is **~73% agent scratch directories and
+third-party package caches**, reachable only because a tracked root symlinks into a home
+directory, and formally out of this corpus's scope (`plans/corpus-symlink-membership.md`,
+"Decisions locked"). The remaining plausibly-real markdown in that set was not pulled in
+by following symlinks — it was added properly, as the two explicit roots this section
+now measures against. Any "verified across the whole corpus" claim made before
+2026-07-29 still carries the hole that the swept corpus was missing those two roots; it
+does not carry a hole shaped like "12,363 files of real markdown no gate has ever
+rendered," because most of that set was never real markdown in the first place. See
+`tests/render.test.ts`'s emoji-pin block for what fails if anyone sets `emoji: false`
+without doing the glyph-tier work — including the pinned trailing-space defect, which
+that work should make fail and then fix.
 
 **Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
 installed and exercised by this test suite — `marked@14.1.4`, `marked-terminal@7.3.0`,

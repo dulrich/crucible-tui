@@ -1059,29 +1059,32 @@ export function renderDocumentDetailed(
   const processedBody = preprocessBody(body, glyphs);
 
   const instance = new Marked();
-  // WP-5 (dependency decisions): `emoji: false` is deliberately NOT set here.
-  // `marked-terminal`'s default `emoji: true` runs `insertEmojis` over every
-  // `:shortcode:`-shaped span in paragraph/heading/link/listitem text; disabling it
-  // saves ~468 KB in the compiled binary and was investigated on exactly that basis.
-  // **Rejected on evidence, not assumed safe — but read which evidence.** Measured
-  // 2026-07-28 by rendering each candidate token twice, `emoji` on vs off, and keeping
-  // only tokens whose rendered bytes actually differ (a behavioural test, not a
-  // `node-emoji` lookup):
-  //   - Across the 45,129 files `scripts/sweep.ts` actually sweeps: **zero** prose
-  //     shortcodes. All 19 hits sit inside fences, where `marked-terminal`'s `code`
-  //     renderer never applies the transform, so they are inert either way.
-  //   - Across the 12,363 further files reachable only through **symlinked subtrees**:
-  //     **392** prose shortcodes in 59 files, 282 of them whitespace-isolated —
-  //     `star`×117, `wrench`×69, `bulb`×41. Unmistakably authored.
-  // The sweep corpus does not see those files: `walkMarkdown` gates on
-  // `Dirent.isDirectory()`, false for a symlinked directory (see `scripts/sweep.ts`'s
-  // note on this, which flags it as an open question). So the *swept* corpus would
-  // permit `emoji: false`, and the user's *actual* markdown would not. The decision
-  // follows the files the user reads, not the files the gate happens to walk — flipping
-  // this would silently strip glyphs from 59 real documents to save ~468 KB of a ~98 MB
-  // binary (0.5%). Do not re-flip without re-running the behavioural test **over the
-  // symlink-following walk**; the sweep corpus alone will tell you it is safe, and it
-  // is not. See `AGENTS.md`'s "Dependencies (WP-5)" section.
+  // WP-3 (corpus-symlink-membership): `emoji` is left at its default `true`, and
+  // that is now a decision rather than an omission.
+  //
+  // It was twice proposed to set `emoji: false` to save ~468 KB in the compiled
+  // binary. **That saving does not exist.** `marked-terminal` imports `node-emoji`
+  // at module top level and the option only picks a function at runtime
+  // (`this.emoji = this.o.emoji ? insertEmojis : identity`), so the dependency is
+  // bundled either way; compiling both ways differs by tens of bytes on a ~97 MB
+  // binary. There was never a binary-size case for this, in either direction.
+  //
+  // The corpus evidence says only that turning it off would be *harmless here*:
+  // `scripts/emoji-audit.ts` (committed, re-runnable, behavioural — render each
+  // candidate token twice and keep only tokens whose bytes differ) finds zero
+  // authored prose shortcodes across ~44.7k files; the prior "392 in 59 files"
+  // came from symlink-reachable machine junk, a corpus-membership bug WP-1 fixed.
+  // Harmless is not a reason. In a modern terminal the default expectation is that
+  // `:rocket:` renders as a glyph, and the planned GitHub-README corpus is expected
+  // to be dense with exactly that.
+  //
+  // So this belongs in config, not in a constant: shortcode substitution should
+  // follow the glyph tier (`--unicode` renders glyphs, `--ascii` cannot and must
+  // leave the literal shortcode), which is the next sprint's work. Two known
+  // defects to fix when it lands: `insertEmojis` appends a stray space after the
+  // glyph (`emojiSign + ' '`), and it therefore changes text width — which this
+  // tool exists to control. Shortcodes inside fences stay literal regardless;
+  // `marked-terminal`'s `code` renderer never runs the transform.
   const extension = markedTerminal({ width: targetWidth, reflowText: true });
   const renderer = extension.renderer;
   if (renderer) {
