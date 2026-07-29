@@ -2,7 +2,7 @@ import { Marked } from "marked";
 import type { Token, Tokens } from "marked";
 import { markedTerminal } from "marked-terminal";
 import { renderTable } from "./table";
-import { formatMetaBlock, splitFrontmatter } from "./frontmatter";
+import { formatMetaBlockDetailed, splitFrontmatter } from "./frontmatter";
 import { wrapAnsi } from "./wrap";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
 import { resolveFenceLanguage } from "./lang";
@@ -783,7 +783,16 @@ function renderRule(glyphs: GlyphSet, targetWidth: number, measure: Measure): st
 
 export interface RenderResult {
   text: string;
-  /** 1-based, inclusive [start, end] line ranges that `--check` must not flag. */
+  /**
+   * 1-based, inclusive [start, end] line ranges that `--check` must not flag.
+   *
+   * Two sources feed this, on the same principle: a range covers output this renderer
+   * reproduces **verbatim from the file** and therefore may not reflow. Fenced code
+   * blocks are the original case; a frontmatter block that failed to parse and is being
+   * echoed raw is the second (`frontmatter.ts`, `MetaBlockResult.verbatimRanges`).
+   * A frontmatter block that *did* parse contributes nothing — that output is our own
+   * layout and stays under the gate.
+   */
   codeRanges: Array<[number, number]>;
 }
 
@@ -1051,10 +1060,9 @@ export function renderDocumentDetailed(
   // Matches the same rule text a `---` in the body would produce at this width/tier
   // (`renderRule`, shared with the `hr` override below) — present only when frontmatter
   // is present, so a document with none renders byte-identical to before this WP.
+  const metaResult = meta !== null ? formatMetaBlockDetailed(meta, targetWidth, measure) : null;
   const metaBlock =
-    meta !== null
-      ? `${formatMetaBlock(meta, targetWidth, measure)}\n${renderRule(glyphs, targetWidth, measure)}\n\n`
-      : "";
+    metaResult !== null ? `${metaResult.text}\n${renderRule(glyphs, targetWidth, measure)}\n\n` : "";
 
   const processedBody = preprocessBody(body, glyphs);
 
@@ -1443,10 +1451,12 @@ export function renderDocumentDetailed(
   // either sentinel; its own line count is a fixed offset onto the body's ranges once
   // the two are joined.
   const metaLineOffset = metaBlock === "" ? 0 : metaBlock.split("\n").length - 1;
-  const codeRanges: Array<[number, number]> = bodyRanges.map(([start, end]) => [
-    start + metaLineOffset,
-    end + metaLineOffset,
-  ]);
+  // The meta block's own ranges need no offset — it is emitted first, so its line
+  // numbering is already the document's. They are listed first for the same reason.
+  const codeRanges: Array<[number, number]> = [
+    ...(metaResult?.verbatimRanges ?? []),
+    ...bodyRanges.map(([start, end]): [number, number] => [start + metaLineOffset, end + metaLineOffset]),
+  ];
 
   return { text: `${metaBlock}${cleanedBody}`, codeRanges };
 }

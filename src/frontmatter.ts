@@ -22,11 +22,42 @@ function looksLikeYamlBlock(candidate: string): boolean {
 }
 
 /**
+ * Normalize CRLF (and a lone trailing CR) to LF inside a frontmatter block.
+ *
+ * **The delimiter scan already tolerates CRLF; the payload handed to the parser did
+ * not — and that was a silent correctness failure, not a cosmetic one.** `---\r\n` is
+ * recognized as a fence because the loop above strips `\r$` before comparing, but the
+ * *candidate* slice keeps every `\r`, so a fully CRLF-authored file reached `yaml`
+ * with a carriage return riding the end of every key. The parser rejects that as
+ * `Unexpected scalar at node end`, `formatMetaBlock` falls into its degraded path, and
+ * a file whose YAML is perfectly valid gets its frontmatter dumped raw at source width
+ * — measured at 650 columns on a real Windows-authored `SKILL.md` (738 bytes with the
+ * carriage returns, does not parse; 732 without, parses and renders at 100 clean).
+ *
+ * Line terminators are not content. Stripping them here is the one place that keeps
+ * "show what the file says" (this module's contract) and "hand the parser bytes that
+ * parse" from contradicting each other: the raw echo the degraded path prints is also
+ * better off without bare `\r` bytes, which a terminal would act on rather than show.
+ *
+ * The **body** is deliberately left alone. Measured on a fully CRLF README with a
+ * 10-column table: rendering the raw source and rendering a CRLF-normalized copy
+ * produce byte-identical output at width 80 and 100, because `marked` normalizes line
+ * endings itself. Normalizing the body here would be an unverifiable change to every
+ * CRLF document's rendering path in exchange for nothing.
+ */
+function normalizeLineEndings(block: string): string {
+  return block.replace(/\r\n/g, "\n").replace(/\r$/, "");
+}
+
+/**
  * Split a leading `---`-delimited YAML block from the rest of the document.
  * Only recognizes the block when it starts at byte 0. Returns `meta: null` (body
  * unchanged) when the document doesn't open with `---`, when there is no closing
  * `---`, or when the candidate block doesn't look like YAML key/value lines (a
  * thematic break used as the first line, not frontmatter).
+ *
+ * `meta` comes back with LF line endings regardless of how the file was authored —
+ * see `normalizeLineEndings`. `body` is returned exactly as it appeared in `source`.
  */
 export function splitFrontmatter(source: string): { meta: string | null; body: string } {
   const firstNewline = source.indexOf("\n");
@@ -46,7 +77,7 @@ export function splitFrontmatter(source: string): { meta: string | null; body: s
       const candidate = source.slice(yamlStart, yamlEnd);
       if (!looksLikeYamlBlock(candidate)) break;
       return {
-        meta: candidate,
+        meta: normalizeLineEndings(candidate),
         body: nextNewline === -1 ? "" : source.slice(nextNewline + 1),
       };
     }
@@ -161,17 +192,21 @@ function formatMapping(
     const value = record[key];
     const paddedKey = key.padEnd(maxKeyWidth, " ");
 
-    if (isPlainRecord(value)) {
-      if (depth >= 1) {
-        lines.push(`${indent}${dim(paddedKey)}: ${JSON.stringify(value)}`);
-      } else {
-        lines.push(`${indent}${dim(paddedKey)}:`);
-        lines.push(formatMapping(value, targetWidth, depth + 1, measure));
-      }
+    if (isPlainRecord(value) && depth < 1) {
+      lines.push(`${indent}${dim(paddedKey)}:`);
+      lines.push(formatMapping(value, targetWidth, depth + 1, measure));
       continue;
     }
 
-    const formatted = formatValue(value);
+    // A nested mapping at depth >= 1 stops recursing and is stringified instead, so the
+    // whole subtree stays on one logical value rather than growing another indent level.
+    // **It still has to fit.** This was the single branch in this function that emitted a
+    // line without ever consulting `targetWidth` — `JSON.stringify` of a deep mapping is
+    // unbounded, and it went straight to `lines.push`. It now goes through `wrapValue`
+    // exactly like every scalar sibling below; the discriminator that identified it was
+    // that its rendered line number *moved* as the target narrowed, proving every other
+    // value in the same block was already wrapping and only this one was not.
+    const formatted = isPlainRecord(value) ? JSON.stringify(value) : formatValue(value);
     const wrapped = wrapValue(formatted, valueWidth, measure);
     wrapped.forEach((line, index) => {
       if (index === 0) {
@@ -185,13 +220,42 @@ function formatMapping(
   return lines.join("\n");
 }
 
+export interface MetaBlockResult {
+  text: string;
+  /**
+   * 1-based, inclusive line ranges **within `text`** that reproduce the file's own
+   * bytes verbatim and must therefore be exempt from the width check, exactly as a
+   * fenced code block's lines are (`render.ts` merges these into its `codeRanges`).
+   *
+   * Empty on the success path, and that is the whole point of the field existing
+   * rather than the call site exempting `formatMetaBlock`'s output wholesale: a meta
+   * block that parses is *our* layout, we chose every column of it, and a width bug
+   * there must still turn the gate red. Only the degraded path — where the module's
+   * contract is "show what the file says, never invent" — is exempt.
+   */
+  verbatimRanges: Array<[number, number]>;
+}
+
+const lineSpan = (block: string, offset: number): [number, number] => [
+  offset + 1,
+  offset + block.split("\n").length,
+];
+
 /**
  * Render parsed frontmatter as a readable, dimmed metadata block instead of
  * stripping it (the thing `glow` fails by design). Degrades gracefully — a
  * malformed YAML block is shown raw with a parse-error note rather than
  * throwing, since the corpus is hand-edited and will contain broken blocks.
+ *
+ * Returns the raw block's line span alongside the text so the caller can exempt it
+ * from the width check; see `MetaBlockResult.verbatimRanges`. `formatMetaBlock` is the
+ * text-only wrapper for callers (and tests) that do not need the spans.
  */
-export function formatMetaBlock(meta: string, targetWidth: number, measure: Measure = NARROW_MEASURE): string {
+export function formatMetaBlockDetailed(
+  meta: string,
+  targetWidth: number,
+  measure: Measure = NARROW_MEASURE,
+): MetaBlockResult {
   let data: unknown;
   try {
     // Deliberately the default ("core", YAML 1.2) schema. The "yaml-1.1" schema does
@@ -219,12 +283,49 @@ export function formatMetaBlock(meta: string, targetWidth: number, measure: Meas
     data = parse(meta, { logLevel: "error" });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return [dim(`! could not parse frontmatter: ${reason}`), dim(meta.trimEnd())].join("\n");
+    // `reason` is two things joined: a one-line summary ending in `at line N, column M`,
+    // and — optionally — a blank line, an excerpt of the offending source line, and a
+    // caret under the offending column.
+    //
+    // **The summary is ours to wrap; the excerpt is not.** The summary is prose we
+    // prefixed and it was the only part measured over budget (105 columns at target 80
+    // in the real case). The excerpt/caret pair is a two-line unit whose second line is
+    // positional — re-folding it would slide the caret off the column it points at, and
+    // there is little to gain: `yaml` already folds its own excerpt and ellipsizes the
+    // remainder. Measured across every unparseable frontmatter block on disk (24 files,
+    // targets 80/100/116/160/346): zero non-exempt over-width lines.
+    //
+    // **That fold is 80 *characters*, not 80 columns**, which is a known and deliberate
+    // gap rather than a claim of safety: a frontmatter block whose offending line is CJK
+    // renders the excerpt at up to 152 columns against a target of 80. No corpus file
+    // does this today. It is left un-exempt on purpose — if such a file appears the gate
+    // goes red and someone decides, instead of the tool silently emitting an over-width
+    // line forever.
+    //
+    // Truncating the summary instead of wrapping it was considered and rejected: at
+    // width 80 it drops `at line 2, column 14`, which is the only reason a parse
+    // diagnostic exists at all.
+    const breakAt = reason.indexOf("\n");
+    const summary = breakAt === -1 ? reason : reason.slice(0, breakAt);
+    const detail = breakAt === -1 ? "" : reason.slice(breakAt);
+    const diagnostic = dim(
+      wrapValue(`! could not parse frontmatter: ${summary}`, targetWidth, measure).join("\n") + detail,
+    );
+    const echo = dim(meta.trimEnd());
+    return {
+      text: `${diagnostic}\n${echo}`,
+      verbatimRanges: [lineSpan(echo, diagnostic.split("\n").length)],
+    };
   }
 
   if (!isPlainRecord(data)) {
-    return dim(meta.trimEnd());
+    const echo = dim(meta.trimEnd());
+    return { text: echo, verbatimRanges: [lineSpan(echo, 0)] };
   }
 
-  return formatMapping(data, targetWidth, 0, measure);
+  return { text: formatMapping(data, targetWidth, 0, measure), verbatimRanges: [] };
+}
+
+export function formatMetaBlock(meta: string, targetWidth: number, measure: Measure = NARROW_MEASURE): string {
+  return formatMetaBlockDetailed(meta, targetWidth, measure).text;
 }
