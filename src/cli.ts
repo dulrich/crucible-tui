@@ -3,7 +3,23 @@ import { readFile } from "node:fs/promises";
 import stringWidth from "string-width";
 import { renderDocumentDetailed } from "./render";
 import { resolveGlyphs, type GlyphTier } from "./glyphs";
+import { loadConfig, writeHighlightAlias } from "./config";
+import { isSupportedLanguage, setHighlightAliases } from "./lang";
 
+/**
+ * `mdview`'s command-line surface (WP-4).
+ *
+ * The one non-negotiable shape: `mdview <file.md>` must keep working with no
+ * subcommand — that invocation predates subcommands and is the one the user
+ * runs daily. Subcommands (`highlight-as`, `help`, and the `view` alias for
+ * the default itself) sit *alongside* it, not in front of it: `main` only
+ * dispatches to a named subcommand handler when the first argument is
+ * exactly one of those names; anything else — including every existing flag,
+ * which all start with `-` — falls through to the same view path a bare file
+ * argument always used. `--probe` (WP-3) is expected to slot in here as a
+ * fourth subcommand name; nothing about this dispatch needs to change to add
+ * it.
+ */
 const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--help]
 
   <file.md>       markdown file to render (required)
@@ -19,6 +35,30 @@ const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--asc
 Glyph tier resolution (highest precedence first): --ascii/--unicode, then
 MDVIEW_GLYPHS=ascii|unicode in the environment, then auto-detection from the
 locale and TERM.
+
+Subcommands (a bare <file.md> above is still valid on its own — no subcommand
+is required to view a file):
+  highlight-as <fence> <language>   map a fence language to a highlighter
+                                     language and save it to the config file
+  view <file.md> [options]          same as the bare form above, spelled out
+  help [subcommand]                 print this message, or a subcommand's own
+
+Run \`mdview <subcommand> --help\` or \`mdview help <subcommand>\` for a
+subcommand's own usage.
+`;
+
+const HIGHLIGHT_AS_USAGE = `usage: mdview highlight-as <fence> <language>
+
+  <fence>       fence info-string language to alias (e.g. dataviewjs)
+  <language>    highlighter language to render it as — validated against
+                cli-highlight's supported list before anything is written
+  --help, -h    print this message and exit
+
+Records "<fence> -> <language>" into the user config (the XDG config path;
+see \`mdview help\` for its precedence), layered over the built-in aliases
+(dataviewjs -> javascript, dataview -> sql). A user entry for a fence that
+also has a built-in default wins. The write only ever touches this one entry:
+every other config key, and every other highlight-as mapping, is left as-is.
 `;
 
 export interface CliOptions {
@@ -150,7 +190,14 @@ function checkOverflow(
   return null;
 }
 
-export async function main(args = Bun.argv.slice(2)): Promise<void> {
+/**
+ * The default (and implicit) subcommand: render a file. Unchanged from the
+ * tool's pre-subcommand behavior, plus one addition — loading the user's
+ * `highlightAs` config and installing it (`src/lang.ts`'s `setHighlightAliases`)
+ * before the render call, so a `highlight-as` write actually takes effect on
+ * the next view.
+ */
+async function runView(args: string[]): Promise<void> {
   const options = parseArgs(args);
 
   if (options.help) {
@@ -165,6 +212,9 @@ export async function main(args = Bun.argv.slice(2)): Promise<void> {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`cannot read file: ${options.file} (${reason})`);
   }
+
+  const config = await loadConfig();
+  setHighlightAliases(config.highlightAs);
 
   const targetWidth = resolveWidth(options.width, process.stdout.columns);
   const glyphs = resolveGlyphs(process.env, options.glyphTier);
@@ -190,6 +240,87 @@ export async function main(args = Bun.argv.slice(2)): Promise<void> {
   process.stdout.write(output);
 }
 
+/** `mdview highlight-as <fence> <language>` — validates, then writes back to the config. */
+async function runHighlightAs(args: string[]): Promise<void> {
+  if (args.some((arg) => arg === "--help" || arg === "-h")) {
+    process.stdout.write(HIGHLIGHT_AS_USAGE);
+    return;
+  }
+
+  const flags = args.filter((arg) => arg.startsWith("-"));
+  if (flags.length > 0) {
+    throw new Error(`highlight-as: unknown argument: ${flags[0]} (run \`mdview highlight-as --help\`)`);
+  }
+
+  const positional = args.filter((arg) => !arg.startsWith("-"));
+  if (positional.length !== 2) {
+    throw new Error(
+      `highlight-as: expected exactly 2 arguments <fence> <language>, got ${positional.length} ` +
+        "(run `mdview highlight-as --help`)",
+    );
+  }
+
+  const [fence, language] = positional as [string, string];
+  if (!isSupportedLanguage(language)) {
+    throw new Error(
+      `highlight-as: unsupported language "${language}" — cli-highlight does not recognize it, so ` +
+        "the fence would render unhighlighted rather than mysteriously plain later. Common valid " +
+        'targets: javascript, typescript, python, bash, sql, json, yaml, plaintext ("plaintext" is ' +
+        "always accepted, if the fence should just not be highlighted).",
+    );
+  }
+
+  const result = await writeHighlightAlias(fence, language);
+  const normalizedFence = fence.trim().toLowerCase();
+  const normalizedLanguage = language.trim().toLowerCase();
+  process.stdout.write(
+    `mdview: ${result.created ? "created" : "updated"} config at ${result.path} — ` +
+      `"${normalizedFence}" now highlights as "${normalizedLanguage}"\n`,
+  );
+}
+
+/** `mdview help [subcommand]` — prints top-level help, or one subcommand's own. */
+async function runHelp(args: string[]): Promise<void> {
+  const [name] = args;
+  if (name === undefined || name === "view" || name === "help") {
+    process.stdout.write(USAGE);
+    return;
+  }
+  if (name === "highlight-as") {
+    process.stdout.write(HIGHLIGHT_AS_USAGE);
+    return;
+  }
+  throw new Error(`help: unknown subcommand: ${name} (expected one of: view, highlight-as, help)`);
+}
+
+export async function main(args = Bun.argv.slice(2)): Promise<void> {
+  const [first, ...rest] = args;
+
+  if (first === "highlight-as") return runHighlightAs(rest);
+  if (first === "help") return runHelp(rest);
+  if (first === "view") return runView(rest);
+
+  // No recognized subcommand name in the lead position — including every
+  // existing flag, which all start with "-" and therefore never match one of
+  // the three names above. This is the compatibility path: a bare
+  // `mdview FILE.md` (with flags in any position) behaves exactly as it did
+  // before subcommands existed.
+  return runView(args);
+}
+
+// Errors reach the user as one line naming the problem, never as a stack trace.
+// `main` itself still throws — tests call it directly and assert on the thrown
+// message, and that contract is what keeps the suite subprocess-free — so the
+// catch lives here, at the process boundary, and nowhere else. Without it Bun
+// prints a source excerpt, a stack, and its own version banner around every
+// message this file carefully worded, and leaks the absolute install path while
+// doing it.
 if (import.meta.main) {
-  await main();
+  try {
+    await main();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`mdview: ${message}\n`);
+    process.exit(1);
+  }
 }

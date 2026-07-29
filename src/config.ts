@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Generic config plumbing, shared by every mdview entry point that needs
@@ -8,19 +8,22 @@ import { join } from "node:path";
  * path (see `scripts/sweep.ts`).
  *
  * WP-4 extends this same file with a `highlightAs` fence-language alias map
- * (fence language -> highlight.js language, layered over the built-in
- * `dataviewjs`/`dataview` defaults in `src/lang.ts`) plus a `mdview
- * highlight-as` subcommand that writes it back. Do not build that now — this
- * is the extension point:
- *
- *   export interface MdviewConfig {
- *     corpusManifest?: string;
- *     // highlightAs?: Record<string, string>;  <- WP-4 adds this
- *   }
+ * (fence language -> highlight.js language). Layering is built-in defaults
+ * first, user entries layered over: `src/lang.ts` owns the built-in map
+ * (`dataviewjs`/`dataview`) and merges it with whatever `highlightAs` this
+ * module loads, so a user entry for a key that also has a built-in default
+ * wins. `mdview highlight-as` (`src/cli.ts`) is the write path, via
+ * `writeHighlightAlias` below.
  */
 export interface MdviewConfig {
   /** Path to a corpus manifest (see `scripts/sweep.ts`'s `CorpusManifest`). */
   corpusManifest?: string;
+  /**
+   * User-configured fence-language aliases, keyed by fence language and
+   * normalized to lowercase (matching `resolveFenceLanguage`'s own lookup).
+   * Layered over — never replacing — `src/lang.ts`'s built-in map.
+   */
+  highlightAs?: Record<string, string>;
 }
 
 const CONFIG_DEFAULTS: MdviewConfig = {};
@@ -33,6 +36,42 @@ export function resolveConfigPath(): string {
 }
 
 /**
+ * `record.highlightAs` -> a validated `Record<string, string>`, or `undefined`
+ * if nothing usable survives. Keys and values are trimmed and lowercased so a
+ * hand-edited config matches `resolveFenceLanguage`'s lookup regardless of
+ * how the user cased it. Never throws: a per-entry problem is logged (naming
+ * the path and the offending key) and that entry alone is dropped, so one bad
+ * entry does not cost every other one, and the caller is never left silently
+ * wondering why a setting had no effect.
+ */
+function validateHighlightAs(value: unknown, path: string): Record<string, string> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    console.error(
+      `mdview: ignoring malformed "highlightAs" at ${path}: expected an object mapping fence language to highlighter language`,
+    );
+    return undefined;
+  }
+
+  const valid: Record<string, string> = {};
+  const badKeys: string[] = [];
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry !== "string" || entry.trim().length === 0 || key.trim().length === 0) {
+      badKeys.push(key);
+      continue;
+    }
+    valid[key.trim().toLowerCase()] = entry.trim().toLowerCase();
+  }
+  if (badKeys.length > 0) {
+    console.error(
+      `mdview: ignoring malformed "highlightAs" entries at ${path}: non-string or empty value(s) for ${badKeys
+        .map((key) => JSON.stringify(key))
+        .join(", ")}`,
+    );
+  }
+  return Object.keys(valid).length > 0 ? valid : undefined;
+}
+
+/**
  * Load the user config.
  *
  * - Missing file -> defaults, silently. This is the common case: most
@@ -40,6 +79,9 @@ export function resolveConfigPath(): string {
  * - Malformed JSON (or a non-object) -> defaults, plus **one** single-line
  *   stderr notice naming the path and the parser's message. Never a stack
  *   trace — the viewer narrates its own state, never a parser's internals.
+ * - A malformed `highlightAs` (wrong shape, or individual bad entries) is the
+ *   same policy at finer grain: log naming the path and the problem, keep
+ *   whatever in the file is still valid, never throw.
  */
 export async function loadConfig(path = resolveConfigPath()): Promise<MdviewConfig> {
   let raw: string;
@@ -59,12 +101,104 @@ export async function loadConfig(path = resolveConfigPath()): Promise<MdviewConf
     if (typeof record.corpusManifest === "string" && record.corpusManifest.length > 0) {
       config.corpusManifest = record.corpusManifest;
     }
+    if (record.highlightAs !== undefined) {
+      const highlightAs = validateHighlightAs(record.highlightAs, path);
+      if (highlightAs) config.highlightAs = highlightAs;
+    }
     return config;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`mdview: ignoring malformed config at ${path}: ${message}`);
     return { ...CONFIG_DEFAULTS };
   }
+}
+
+export interface WriteHighlightAliasResult {
+  path: string;
+  /** Whether the config file did not exist before this write. */
+  created: boolean;
+}
+
+/**
+ * Record `fence -> language` into the user's config at `path`, alongside
+ * whatever else is already there.
+ *
+ * This edits a file the user may hand-maintain, so it is deliberately not
+ * "load, merge the typed `MdviewConfig`, write it back" — `loadConfig` only
+ * ever surfaces the keys this module knows about, and round-tripping through
+ * it would silently drop every other key (a future WP's setting, a comment-ish
+ * field the user added) the moment `highlight-as` is run once. Instead this
+ * reads the raw JSON object, touches only `highlightAs[fence]`, and leaves
+ * every other key and every other `highlightAs` entry exactly as it was.
+ *
+ * Refuses to proceed if the existing file cannot be parsed as a JSON object —
+ * merging into a file it cannot understand would either clobber content this
+ * function has no way to see, or silently discard it, both worse than
+ * stopping and naming the problem. A missing file is not this case: it is the
+ * common first-run path and starts from `{}`.
+ *
+ * Written atomically (temp file in the same directory, then `rename`), so a
+ * failure partway through can never leave a truncated config on disk.
+ */
+export async function writeHighlightAlias(
+  fence: string,
+  language: string,
+  path = resolveConfigPath(),
+): Promise<WriteHighlightAliasResult> {
+  const normalizedFence = fence.trim().toLowerCase();
+  const normalizedLanguage = language.trim().toLowerCase();
+  if (normalizedFence.length === 0) throw new Error("highlight-as: <fence> must not be empty");
+  if (normalizedLanguage.length === 0) throw new Error("highlight-as: <language> must not be empty");
+
+  let existingText: string | undefined;
+  try {
+    existingText = await readFile(path, "utf8");
+  } catch {
+    existingText = undefined; // missing file: start fresh, the common case
+  }
+
+  let raw: Record<string, unknown> = {};
+  if (existingText !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(existingText);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `refusing to update config at ${path}: existing file is not valid JSON (${message}). Fix or remove it, then re-run \`mdview highlight-as\`.`,
+      );
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(
+        `refusing to update config at ${path}: expected a JSON object at the top level, found ${
+          Array.isArray(parsed) ? "an array" : typeof parsed
+        }.`,
+      );
+    }
+    raw = parsed as Record<string, unknown>;
+  }
+
+  const existingHighlightAs = raw.highlightAs;
+  const highlightAs: Record<string, string> =
+    typeof existingHighlightAs === "object" && existingHighlightAs !== null && !Array.isArray(existingHighlightAs)
+      ? Object.fromEntries(
+          Object.entries(existingHighlightAs as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        )
+      : {};
+  highlightAs[normalizedFence] = normalizedLanguage;
+
+  const merged = { ...raw, highlightAs };
+  const serialized = `${JSON.stringify(merged, null, 2)}\n`;
+
+  const dir = dirname(path);
+  await mkdir(dir, { recursive: true });
+  const tempPath = join(dir, `.config.json.tmp-${process.pid}-${Date.now()}`);
+  await writeFile(tempPath, serialized, "utf8");
+  await rename(tempPath, path);
+
+  return { path, created: existingText === undefined };
 }
 
 export type ManifestSource = "env" | "config" | "bundled";
