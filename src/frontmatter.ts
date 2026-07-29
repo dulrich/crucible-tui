@@ -1,5 +1,5 @@
 import { parse } from "yaml";
-import stringWidth from "string-width";
+import { NARROW_MEASURE, type Measure } from "./width";
 
 const DIM_START = "\x1b[2m";
 const DIM_END = "\x1b[22m";
@@ -101,9 +101,9 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof Date);
 }
 
-function wrapValue(text: string, width: number): string[] {
+function wrapValue(text: string, width: number, measure: Measure): string[] {
   if (width <= 0) return [text];
-  if (stringWidth(text) <= width) return [text];
+  if (measure(text) <= width) return [text];
 
   const words = text.split(/\s+/).filter((word) => word.length > 0);
   if (words.length === 0) return [""];
@@ -112,7 +112,7 @@ function wrapValue(text: string, width: number): string[] {
   let current = "";
   for (const word of words) {
     const candidate = current ? `${current} ${word}` : word;
-    if (current && stringWidth(candidate) > width) {
+    if (current && measure(candidate) > width) {
       lines.push(current);
       current = word;
     } else {
@@ -121,17 +121,17 @@ function wrapValue(text: string, width: number): string[] {
   }
   if (current) lines.push(current);
 
-  return lines.flatMap((line) => hardSplit(line, width));
+  return lines.flatMap((line) => hardSplit(line, width, measure));
 }
 
-function hardSplit(line: string, width: number): string[] {
-  if (width <= 0 || stringWidth(line) <= width) return [line];
+function hardSplit(line: string, width: number, measure: Measure): string[] {
+  if (width <= 0 || measure(line) <= width) return [line];
 
   const out: string[] = [];
   let remaining = line;
-  while (stringWidth(remaining) > width) {
+  while (measure(remaining) > width) {
     let cut = width;
-    while (cut > 1 && stringWidth(remaining.slice(0, cut)) > width) cut -= 1;
+    while (cut > 1 && measure(remaining.slice(0, cut)) > width) cut -= 1;
     out.push(remaining.slice(0, cut));
     remaining = remaining.slice(cut);
   }
@@ -139,13 +139,18 @@ function hardSplit(line: string, width: number): string[] {
   return out;
 }
 
-function formatMapping(record: Record<string, unknown>, targetWidth: number, depth: number): string {
+function formatMapping(
+  record: Record<string, unknown>,
+  targetWidth: number,
+  depth: number,
+  measure: Measure,
+): string {
   const keys = Object.keys(record);
   if (keys.length === 0) return dim("—");
 
   const indent = "  ".repeat(depth);
-  const indentWidth = stringWidth(indent);
-  const rawMaxKeyWidth = Math.max(...keys.map((key) => stringWidth(key)));
+  const indentWidth = measure(indent);
+  const rawMaxKeyWidth = Math.max(...keys.map((key) => measure(key)));
   const keyBudget = Math.max(4, Math.floor((targetWidth - indentWidth) / 2) - 2);
   const maxKeyWidth = Math.min(rawMaxKeyWidth, keyBudget);
   const keyColWidth = maxKeyWidth + 2; // ": "
@@ -161,13 +166,13 @@ function formatMapping(record: Record<string, unknown>, targetWidth: number, dep
         lines.push(`${indent}${dim(paddedKey)}: ${JSON.stringify(value)}`);
       } else {
         lines.push(`${indent}${dim(paddedKey)}:`);
-        lines.push(formatMapping(value, targetWidth, depth + 1));
+        lines.push(formatMapping(value, targetWidth, depth + 1, measure));
       }
       continue;
     }
 
     const formatted = formatValue(value);
-    const wrapped = wrapValue(formatted, valueWidth);
+    const wrapped = wrapValue(formatted, valueWidth, measure);
     wrapped.forEach((line, index) => {
       if (index === 0) {
         lines.push(`${indent}${dim(paddedKey)}: ${line}`);
@@ -186,7 +191,7 @@ function formatMapping(record: Record<string, unknown>, targetWidth: number, dep
  * malformed YAML block is shown raw with a parse-error note rather than
  * throwing, since the corpus is hand-edited and will contain broken blocks.
  */
-export function formatMetaBlock(meta: string, targetWidth: number): string {
+export function formatMetaBlock(meta: string, targetWidth: number, measure: Measure = NARROW_MEASURE): string {
   let data: unknown;
   try {
     // Deliberately the default ("core", YAML 1.2) schema. The "yaml-1.1" schema does
@@ -221,5 +226,5 @@ export function formatMetaBlock(meta: string, targetWidth: number): string {
     return dim(meta.trimEnd());
   }
 
-  return formatMapping(data, targetWidth, 0);
+  return formatMapping(data, targetWidth, 0, measure);
 }

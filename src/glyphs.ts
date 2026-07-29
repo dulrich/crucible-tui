@@ -27,6 +27,12 @@ export interface GlyphSet {
 // `chromeWidth`-stays-`3N+1` invariant this WP exists to preserve. The user was asked
 // and chose `‣` (U+2023 TRIANGULAR BULLET) instead, which measures 1 column exactly
 // like `•` and `◦`. See the WP-2 execution brief for the measurement.
+//
+// **"Exactly 1 column" is a narrow-measurement statement, and WP-3 found out how narrow.**
+// `•` and `─` and the whole box-drawing charset below are East Asian *Ambiguous*: under
+// `MDVIEW_AMBIGUOUS=wide` they measure 2 and this tier's width contract collapses. That
+// is why `resolveGlyphs` refuses to hand this set out in wide mode — see
+// `wideForcesAscii`. Of this whole tier only `◦`, `‣` and `✓` are 1 column either way.
 export const UNICODE_GLYPHS: GlyphSet = {
   tier: "unicode",
   bullets: ["•", "◦", "‣"],
@@ -85,6 +91,8 @@ function detectTier(env: Record<string, string | undefined>): GlyphTier {
  * Resolve the active `GlyphSet`.
  *
  * Precedence, highest first:
+ * 0. **`ambiguous === "wide"` forces ASCII, ahead of everything including the flags.**
+ *    See `wideForcesAscii` below — this is arithmetic, not taste.
  * 1. `override` (the CLI's `--ascii` / `--unicode`).
  * 2. `env.MDVIEW_GLYPHS` when it is exactly `"ascii"` or `"unicode"`. Any other value
  *    (including unset) is ignored and falls through to detection — this never throws
@@ -95,7 +103,10 @@ function detectTier(env: Record<string, string | undefined>): GlyphTier {
 export function resolveGlyphs(
   env: Record<string, string | undefined>,
   override?: GlyphTier,
+  ambiguous?: "narrow" | "wide",
 ): GlyphSet {
+  if (ambiguous === "wide") return ASCII_GLYPHS;
+
   if (override === "ascii") return ASCII_GLYPHS;
   if (override === "unicode") return UNICODE_GLYPHS;
 
@@ -103,4 +114,50 @@ export function resolveGlyphs(
   if (env.MDVIEW_GLYPHS === "unicode") return UNICODE_GLYPHS;
 
   return detectTier(env) === "unicode" ? UNICODE_GLYPHS : ASCII_GLYPHS;
+}
+
+/**
+ * Whether the resolved ambiguous-width setting has taken the tier out of the caller's
+ * hands — so `cli.ts` can say so on stderr rather than silently ignoring `--unicode`.
+ *
+ * **Deliberately the flag only, not `MDVIEW_GLYPHS=unicode`.** A flag is a request made
+ * about *this* invocation and going unmet is news; an exported environment variable is
+ * ambient, and a notice for it would print on every single render for the rest of that
+ * shell's life. The env var's own resolution is documented in `AGENTS.md` and in the
+ * probe's output, which is where an ambient setting belongs.
+ *
+ * **Why wide mode forces ASCII (WP-3).** This tier's whole width contract, stated at
+ * the top of this file and depended on by `chromeWidth()`'s `3N+1`, is *"every Unicode
+ * substitute is exactly 1 column, so the tier has no width impact"*. That sentence is
+ * true only under narrow measurement. Under wide measurement it is false for **most of
+ * the set**: `•` (U+2022), `─` (U+2500) and the entire box-drawing charset `│ ┌ ┬ ┼ …`
+ * are East Asian *Ambiguous* and measure 2. Only `◦`, `‣` and `✓` survive.
+ *
+ * The consequence is not cosmetic and it is not repairable in the allocator:
+ *
+ * - **A table's border row cannot be made to fit.** `cli-table3` draws a horizontal rule
+ *   as one `─` per column of cell width, so the border row is exactly *twice* the
+ *   content rows. `renderTable`'s re-render loop reduces the budget by the observed
+ *   overage, but that overage is the entire budget, `allocateWidths` reports
+ *   `fits: false`, and the loop correctly declines to collapse the table. Measured on
+ *   `tests/fixtures/wide-table.md`: 160 columns rendered at a target of 80, 200 at 100 —
+ *   exactly 2x, at every width tried.
+ * - **A substituted bullet silently widens its own item.** `substituteBullets` swaps
+ *   `"* "` for `"• "` *after* the budget arithmetic has run on the source marker, so
+ *   every unordered item is one column over budget per level.
+ *
+ * Measured over the bundled corpus at all five sweep widths: **wide + Unicode tier =
+ * 35 overflows of 60 combos; wide + ASCII tier = 0.**
+ *
+ * So this is not "we think ASCII looks better in a CJK locale". It is: in a terminal
+ * that draws ambiguous characters at two columns, this tool cannot lay out a table with
+ * box-drawing characters at all, and the ASCII charset — every glyph of which is
+ * unambiguously 1 column in both modes — is the one that works. It outranks `--unicode`
+ * because `--unicode` asserts a *capability* ("this terminal can draw these"), which is
+ * still true and is simply not the constraint that binds. `MDVIEW_AMBIGUOUS=narrow` is
+ * the escape hatch for anyone who wants the box drawing back and will accept the
+ * overflow.
+ */
+export function wideForcesAscii(override: GlyphTier | undefined, ambiguous: "narrow" | "wide"): boolean {
+  return ambiguous === "wide" && override === "unicode";
 }

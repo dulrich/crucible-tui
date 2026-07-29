@@ -1,5 +1,5 @@
-import stringWidth from "string-width";
 import { graphemes, splitToken } from "./table";
+import { NARROW_MEASURE, type Measure } from "./width";
 
 /**
  * ANSI-safe text wrapping for content that `marked-terminal` never reflows: list items
@@ -70,7 +70,7 @@ function tokenize(text: string): Entry[] {
  * is split with `splitToken` (grapheme-correct, so CJK/emoji are never cut), so the
  * only new logic here is stitching those runs back together around the escapes.
  */
-function splitStyledWord(word: string, limit: number): string[] {
+function splitStyledWord(word: string, limit: number, measure: Measure): string[] {
   const chunks: string[] = [];
   let current = "";
   let currentWidth = 0;
@@ -87,9 +87,9 @@ function splitStyledWord(word: string, limit: number): string[] {
       current += part;
       continue;
     }
-    const pieces = splitToken(part, limit);
+    const pieces = splitToken(part, limit, measure);
     pieces.forEach((piece, index) => {
-      const pieceWidth = stringWidth(piece);
+      const pieceWidth = measure(piece);
       if (index === 0 && currentWidth > 0 && currentWidth + pieceWidth <= limit) {
         current += piece;
         currentWidth += pieceWidth;
@@ -111,7 +111,7 @@ function splitStyledWord(word: string, limit: number): string[] {
  * Never ellipsizes: `wrapAnsi(t, w).join(" ")` with ANSI stripped reproduces every
  * visible character of `t`, in order.
  */
-export function wrapAnsi(text: string, width: number): string[] {
+export function wrapAnsi(text: string, width: number, measure: Measure = NARROW_MEASURE): string[] {
   const limit = Math.max(1, width);
   const entries = tokenize(text);
   if (entries.length === 0) return [""];
@@ -150,13 +150,13 @@ export function wrapAnsi(text: string, width: number): string[] {
       if (currentWidth > 0) pendingSpace = true;
       continue;
     }
-    const wordWidth = stringWidth(entry.text);
+    const wordWidth = measure(entry.text);
     if (wordWidth <= limit) {
       place(entry.text, wordWidth);
       continue;
     }
-    for (const piece of splitStyledWord(entry.text, limit)) {
-      place(piece, stringWidth(piece));
+    for (const piece of splitStyledWord(entry.text, limit, measure)) {
+      place(piece, measure(piece));
     }
   }
   lines.push(current);

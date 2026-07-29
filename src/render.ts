@@ -1,13 +1,13 @@
 import { Marked } from "marked";
 import type { Token, Tokens } from "marked";
 import { markedTerminal } from "marked-terminal";
-import stringWidth from "string-width";
 import { renderTable } from "./table";
 import { formatMetaBlock, splitFrontmatter } from "./frontmatter";
 import { wrapAnsi } from "./wrap";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
 import { resolveFenceLanguage } from "./lang";
 import { stripAnsi, trackListLine, type OpenListItem } from "./detectors";
+import { NARROW_MEASURE, type Measure } from "./width";
 
 // Obsidian wiki-links aren't markdown; style them before parsing so they render as
 // recognizable links-to-nowhere instead of literal brackets. This regex is deliberately
@@ -589,7 +589,7 @@ const LIBRARY_POINTED_LINE = new RegExp(`^(?: {${LIST_INDENT_PER_LEVEL}})*(?:\\*
  * are (`4d + 4`), so the case is live. Guarded the same way both wrapping overrides
  * guard it: one extra leading space, which the grid cannot match.
  */
-function realignNestedContinuations(body: string): string {
+function realignNestedContinuations(body: string, measure: Measure): string {
   const open: OpenListItem[] = [];
   let insideCode = false;
 
@@ -607,7 +607,7 @@ function realignNestedContinuations(body: string): string {
       if (startedInsideCode || carriesSentinel) return line;
 
       const bare = stripAnsi(line);
-      const item = trackListLine(bare, open);
+      const item = trackListLine(bare, open, measure);
       if (item === null) return line;
 
       // This level's own items sit at `LIST_INDENT_PER_LEVEL`; anything deeper came from
@@ -690,7 +690,13 @@ function realignNestedContinuations(body: string): string {
  * the line from column 7 to column 8. So the guard fires only when the composed
  * continuation would land on the grid.
  */
-function rewrapListBody(body: string, depth: number, targetWidth: number, outerColumns: number): string {
+function rewrapListBody(
+  body: string,
+  depth: number,
+  targetWidth: number,
+  outerColumns: number,
+  measure: Measure,
+): string {
   const budget = currentListBudget(depth, targetWidth, outerColumns);
   let insideCode = false;
   return body
@@ -705,15 +711,15 @@ function rewrapListBody(body: string, depth: number, targetWidth: number, outerC
         }
       }
       if (startedInsideCode || carriesSentinel) return line;
-      if (stringWidth(line) <= budget) return line;
+      if (measure(line) <= budget) return line;
 
       const match = LIST_LINE_PREFIX.exec(line);
       const prefix = match ? `${match[1] ?? ""}${match[2] ?? ""}` : "";
-      const prefixWidth = stringWidth(prefix);
+      const prefixWidth = measure(prefix);
       const rest = line.slice(prefix.length);
       const continuationPrefix = " ".repeat(prefixWidth);
 
-      const wrapAt = (width: number): string[] => wrapAnsi(rest, Math.max(1, width));
+      const wrapAt = (width: number): string[] => wrapAnsi(rest, Math.max(1, width), measure);
       const onGrid = prefixWidth % LIST_INDENT_PER_LEVEL === 0;
       const collides = (lines: string[]): boolean => onGrid && lines.slice(1).some((l) => MARKER_SHAPED_LINE.test(l));
 
@@ -759,8 +765,20 @@ function wrapCode(rendered: string): string {
 // the `hr` override (which post-processes marked-terminal's own dash run — there is
 // library output to rewrite) and the divider (which has no library output to
 // post-process and must construct the rule from nothing) can never drift apart.
-function renderRule(glyphs: GlyphSet, targetWidth: number): string {
-  return glyphs.rule.repeat(Math.max(0, targetWidth - 1));
+// **The repeat count is a column count divided by the glyph's width, not a character
+// count** (WP-3). `─` (U+2500) is East Asian *Ambiguous*, so in wide mode it occupies 2
+// columns and `repeat(targetWidth - 1)` would emit a rule twice the width of the
+// document — over budget on every single frontmatter-carrying file, and a `--check`
+// failure that has nothing to do with the prose. AGENTS.md's "every Unicode substitute
+// is exactly 1 column, so the tier has no width impact" was a narrow-mode statement;
+// the box-drawing set is ambiguous almost in its entirety.
+//
+// In narrow mode, and in the ASCII tier at either setting, `measure(rule)` is 1 and this
+// is `repeat(targetWidth - 1)` exactly as before — byte-identical by construction rather
+// than by measurement.
+function renderRule(glyphs: GlyphSet, targetWidth: number, measure: Measure): string {
+  const glyphColumns = Math.max(1, measure(glyphs.rule));
+  return glyphs.rule.repeat(Math.max(0, Math.floor((targetWidth - 1) / glyphColumns)));
 }
 
 export interface RenderResult {
@@ -944,7 +962,7 @@ function restoreFirstLineIndent(rendered: string, columns: number): string {
  * closes the sentinel pair, where "started inside a fence" is false. Reproduced on both
  * shapes before the walk went in; both are covered by `tests/fixtures/blockquote-list.md`.
  */
-function wrapOverBudgetLines(rendered: string, targetWidth: number): string {
+function wrapOverBudgetLines(rendered: string, targetWidth: number, measure: Measure): string {
   let insideCode = false;
   return rendered
     .split("\n")
@@ -958,7 +976,7 @@ function wrapOverBudgetLines(rendered: string, targetWidth: number): string {
         }
       }
       if (startedInsideCode || carriesSentinel) return line;
-      if (stringWidth(line) <= targetWidth) return line;
+      if (measure(line) <= targetWidth) return line;
 
       const match = LIST_LINE_PREFIX.exec(line);
       const indent = match?.[1] ?? "";
@@ -971,11 +989,11 @@ function wrapOverBudgetLines(rendered: string, targetWidth: number): string {
       // opening `"1. "` as a marker. And a line that is nothing but indent has no text
       // to hang a continuation under, so preserving its prefix would just leave the
       // whitespace over budget where the old path collapsed it away.
-      if (indent === "" || rest === "") return wrapAnsi(line, targetWidth).join("\n");
+      if (indent === "" || rest === "") return wrapAnsi(line, targetWidth, measure).join("\n");
 
-      const prefixWidth = stringWidth(prefix);
+      const prefixWidth = measure(prefix);
       const continuationPrefix = " ".repeat(prefixWidth);
-      return wrapAnsi(rest, Math.max(1, targetWidth - prefixWidth))
+      return wrapAnsi(rest, Math.max(1, targetWidth - prefixWidth), measure)
         .map((wrapped, index) => (index === 0 ? `${prefix}${wrapped}` : `${continuationPrefix}${wrapped}`))
         .join("\n");
     })
@@ -1009,6 +1027,13 @@ function wrapOverBudgetLines(rendered: string, targetWidth: number): string {
  * `scripts/sweep.ts` and every test) stays deterministic regardless of the machine's
  * `TERM` or locale.
  *
+ * **`measure` is threaded on exactly that channel and for exactly that reason** (WP-3).
+ * East Asian Ambiguous characters render at 1 or 2 columns depending on the terminal,
+ * and `src/width.ts` is now the only module that decides which — by env var, cache or
+ * DSR probe, all of it resolved in `cli.ts` and handed down as a value. It defaults to
+ * `NARROW_MEASURE`, which is both `string-width`'s own default and rule 4 of that
+ * resolution order, so every existing caller renders exactly as it did before.
+ *
  * `renderDocument` is a thin wrapper over `renderDocumentDetailed` for callers that
  * only need the final text (every existing caller and test).
  */
@@ -1016,6 +1041,7 @@ export function renderDocumentDetailed(
   source: string,
   targetWidth: number,
   glyphs: GlyphSet = UNICODE_GLYPHS,
+  measure: Measure = NARROW_MEASURE,
 ): RenderResult {
   const { meta, body } = splitFrontmatter(source);
   // The divider is appended *into* `metaBlock` itself, before `metaLineOffset` below is
@@ -1026,7 +1052,9 @@ export function renderDocumentDetailed(
   // (`renderRule`, shared with the `hr` override below) — present only when frontmatter
   // is present, so a document with none renders byte-identical to before this WP.
   const metaBlock =
-    meta !== null ? `${formatMetaBlock(meta, targetWidth)}\n${renderRule(glyphs, targetWidth)}\n\n` : "";
+    meta !== null
+      ? `${formatMetaBlock(meta, targetWidth, measure)}\n${renderRule(glyphs, targetWidth, measure)}\n\n`
+      : "";
 
   const processedBody = preprocessBody(body, glyphs);
 
@@ -1057,7 +1085,7 @@ export function renderDocumentDetailed(
   const extension = markedTerminal({ width: targetWidth, reflowText: true });
   const renderer = extension.renderer;
   if (renderer) {
-    renderer.table = (token: Tokens.Table) => renderTable(token, targetWidth, glyphs);
+    renderer.table = (token: Tokens.Table) => renderTable(token, targetWidth, glyphs, measure);
 
     // Columns that block renderers still owe every line of whatever is being rendered
     // *right now*, because they are glued on only after that inner render returns: a
@@ -1113,8 +1141,8 @@ export function renderDocumentDetailed(
           // *Before* `rewrapListBody`, because a line that is no longer over-indented is
           // no longer over budget, so there is nothing left to shear — the orphan goes
           // away as a consequence of the indent being right, not as a second fix.
-          const realigned = realignNestedContinuations(result);
-          const rewrapped = rewrapListBody(realigned, depth, targetWidth, outer);
+          const realigned = realignNestedContinuations(result, measure);
+          const rewrapped = rewrapListBody(realigned, depth, targetWidth, outer, measure);
           // Bullet substitution only runs once this is the outermost call for this
           // top-level list (`depth === 1`) — see `substituteBullets`'s doc comment
           // for why running it at every recursion level corrupts `marked-terminal`'s
@@ -1172,7 +1200,7 @@ export function renderDocumentDetailed(
 
         const budget = Math.max(1, targetWidth - pendingPrefixWidth());
         const wrapAt = (width: number): string =>
-          segments.map((segment) => wrapAnsi(segment, Math.max(1, width)).join("\n")).join("\n");
+          segments.map((segment) => wrapAnsi(segment, Math.max(1, width), measure).join("\n")).join("\n");
 
         const wrapped = wrapAt(budget);
         // Same landmine, same guard as `wrappedParagraph` — see `MARKER_SHAPED_LINE`.
@@ -1226,7 +1254,7 @@ export function renderDocumentDetailed(
         if (result === false || glyphs.rule === "-") return result;
         const dashes = "-".repeat(Math.max(0, targetWidth - 1));
         if (dashes === "") return result;
-        return result.split(dashes).join(renderRule(glyphs, targetWidth));
+        return result.split(dashes).join(renderRule(glyphs, targetWidth, measure));
       };
     }
 
@@ -1249,7 +1277,7 @@ export function renderDocumentDetailed(
     if (originalHtml) {
       renderer.html = function wrappedHtml(token: Tokens.HTML | Tokens.Tag) {
         const result = originalHtml.call(this, token);
-        return result === false ? false : wrapOverBudgetLines(result, targetWidth);
+        return result === false ? false : wrapOverBudgetLines(result, targetWidth, measure);
       };
     }
 
@@ -1298,7 +1326,7 @@ export function renderDocumentDetailed(
           // will actually occupy and the net goes back to being a no-op.
           if (pendingPrefixWidth() === 0) {
             const result = originalParagraph.call(this, token);
-            return result === false ? false : wrapOverBudgetLines(result, targetWidth);
+            return result === false ? false : wrapOverBudgetLines(result, targetWidth, measure);
           }
 
           const budget = Math.max(1, targetWidth - pendingPrefixWidth());
@@ -1307,7 +1335,7 @@ export function renderDocumentDetailed(
           const renderAt = (width: number): string | false => {
             const render = paragraphRendererAt(width) ?? originalParagraph;
             const rendered = render.call(this, token);
-            return rendered === false ? false : wrapOverBudgetLines(rendered, width);
+            return rendered === false ? false : wrapOverBudgetLines(rendered, width, measure);
           };
 
           const result = renderAt(budget);
@@ -1361,7 +1389,7 @@ export function renderDocumentDetailed(
         } finally {
           inlineDepth -= 1;
         }
-        return result === false ? false : wrapOverBudgetLines(result, budget);
+        return result === false ? false : wrapOverBudgetLines(result, budget, measure);
       };
     }
 
@@ -1391,7 +1419,7 @@ export function renderDocumentDetailed(
         if (result === false) return false;
         // Restore *before* the width pass, so a first line that the restored columns
         // push over budget is re-wrapped like any other rather than left overflowing.
-        return wrapOverBudgetLines(restoreFirstLineIndent(result, lost), targetWidth);
+        return wrapOverBudgetLines(restoreFirstLineIndent(result, lost), targetWidth, measure);
       };
     }
   }
@@ -1424,6 +1452,7 @@ export function renderDocument(
   source: string,
   targetWidth: number,
   glyphs: GlyphSet = UNICODE_GLYPHS,
+  measure: Measure = NARROW_MEASURE,
 ): string {
-  return renderDocumentDetailed(source, targetWidth, glyphs).text;
+  return renderDocumentDetailed(source, targetWidth, glyphs, measure).text;
 }

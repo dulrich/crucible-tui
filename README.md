@@ -48,6 +48,7 @@ A roff man page ships at `man/crucible-tui.1`; `bun run install:man` symlinks it
 mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--help] [--licenses]
 mdview view <file.md> [options...]        # spelled-out form of the bare invocation above
 mdview highlight-as <fence> <language>    # map a fence's declared language to a highlighter language
+mdview probe [--refresh]                  # how does this terminal draw ambiguous-width characters?
 mdview help [subcommand]
 ```
 
@@ -61,6 +62,8 @@ straight through to it.
   target width. This is the tool's own self-smoke gate.
 - `--ascii` / `--unicode` — force the glyph tier (below), overriding auto-detection.
   Mutually exclusive.
+- `--probe` — run the ambiguous-width diagnostic (below) and exit; the flag spelling of
+  `mdview probe`. Takes no file argument.
 - `--help`, `-h` — print usage (top-level, or a subcommand's own) and exit.
 - `--licenses` — print the aggregated third-party notices (below) and exit. Takes no
   file argument.
@@ -107,8 +110,45 @@ Unicode; otherwise ASCII):
 | Task states | `○` / `✓` | `[ ]` / `[x]` |
 
 Override with `--ascii` / `--unicode`, or `MDVIEW_GLYPHS=ascii|unicode` in the
-environment (flags win). Every Unicode substitute occupies exactly one column, so the
-tier choice never changes layout.
+environment (flags win). Every Unicode substitute occupies exactly one column *under
+narrow ambiguous-width measurement*, so the tier choice never changes layout — see the
+next section for the case where that stops being true.
+
+### Ambiguous width, and `mdview probe`
+
+Almost every non-ASCII character in ordinary prose — `—` `–` `→` `←` `…` `≥` `×` `•`
+`○`, and the entire box-drawing set — is East Asian **Ambiguous**: Unicode says it
+renders at *either* one or two columns depending on the terminal, and there is no way
+to tell from the character. Guess wrong and every line carrying one wraps a column or
+two off.
+
+`mdview probe` asks. It writes one test character, queries the cursor position before
+and after it (DSR, `ESC[6n`), and takes the difference. The reply is read in raw mode
+with a short timeout; cooked mode is restored on every exit path, the test character is
+erased, and the probe only runs when stdin and stdout are both TTYs — never under
+`--check` and never when piped. The answer is cached at
+`$XDG_CACHE_HOME/mdview/ambiguous-width.json` (else `~/.cache/...`), keyed by terminal
+identity — `TERM`, `TERM_PROGRAM`, `COLORTERM`, `VTE_VERSION`, the multiplexer, and the
+locale — so a second terminal never inherits the first one's answer. `--refresh`
+re-probes; delete the file and the next probe recreates it.
+
+Resolution order, highest first:
+
+1. `MDVIEW_AMBIGUOUS=narrow|wide` in the environment (any other value is ignored, never
+   an error — same contract as `MDVIEW_GLYPHS`).
+2. A cached probe result for this terminal.
+3. A live probe, when stdin and stdout are both TTYs.
+4. **Narrow** — every headless, redirected, piped, timed-out and unparseable case, and
+   what [Unicode TR11](https://www.unicode.org/reports/tr11/) itself recommends when
+   the context cannot be established.
+
+**`wide` forces the ASCII glyph tier**, overriding `--unicode` and `MDVIEW_GLYPHS` (with
+a notice on stderr if you asked for Unicode explicitly). That is arithmetic rather than
+taste: the Unicode tier's bullet, rule and box-drawing characters are themselves
+ambiguous, so under `wide` a table's horizontal border comes out at exactly twice the
+width its columns were allocated for and no re-allocation can recover it. Every ASCII
+substitute is unambiguously one column. `MDVIEW_AMBIGUOUS=narrow` gets the box drawing
+back if you would rather have it and accept the overflow.
 
 Out of scope by design: images, callouts, block LaTeX, raw HTML.
 

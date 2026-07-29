@@ -1,7 +1,7 @@
 import Table from "cli-table3";
 import type { Token, Tokens } from "marked";
-import stringWidth from "string-width";
 import type { GlyphSet } from "./glyphs";
+import { NARROW_MEASURE, type Measure } from "./width";
 
 /**
  * The wide-table allocator — the reason `mdview` exists.
@@ -157,14 +157,16 @@ export function tableGrid(token: Tokens.Table): TableGrid {
 // ---------------------------------------------------------------------------
 
 /**
- * Widest cell per column, measured with `string-width` so CJK (2 columns per
- * character) and emoji are counted in display columns rather than code units.
+ * Widest cell per column, measured with the resolved `Measure` (`src/width.ts`) so CJK
+ * (2 columns per character) and emoji are counted in display columns rather than code
+ * units, and so East Asian Ambiguous characters are counted the way the terminal this
+ * render is destined for actually draws them.
  */
-export function naturalWidths(header: string[], rows: string[][]): number[] {
+export function naturalWidths(header: string[], rows: string[][], measure: Measure = NARROW_MEASURE): number[] {
   return header.map((cell, index) => {
-    let widest = stringWidth(cell);
+    let widest = measure(cell);
     for (const row of rows) {
-      const width = stringWidth(row[index] ?? "");
+      const width = measure(row[index] ?? "");
       if (width > widest) widest = width;
     }
     return Math.max(ABSOLUTE_MIN_COLUMN_WIDTH, widest);
@@ -331,14 +333,14 @@ export function graphemes(text: string): string[] {
  * `rich-cli` and `cli-table3`'s own behaviour, both of which would ellipsize here.
  * `splitToken(t, w).join("") === t` for every `t` — nothing is ever dropped.
  */
-export function splitToken(token: string, width: number): string[] {
+export function splitToken(token: string, width: number, measure: Measure = NARROW_MEASURE): string[] {
   const limit = Math.max(1, width);
   const chunks: string[] = [];
   let current = "";
   let currentWidth = 0;
 
   for (const grapheme of graphemes(token)) {
-    const graphemeWidth = stringWidth(grapheme);
+    const graphemeWidth = measure(grapheme);
     if (currentWidth > 0 && currentWidth + graphemeWidth > limit) {
       chunks.push(current);
       current = "";
@@ -355,7 +357,7 @@ export function splitToken(token: string, width: number): string[] {
  * Wrap cell text to `width` display columns: greedy fill on word boundaries, with
  * any word too wide for the column hard-split first. Never ellipsizes.
  */
-export function wrapText(text: string, width: number): string[] {
+export function wrapText(text: string, width: number, measure: Measure = NARROW_MEASURE): string[] {
   const limit = Math.max(1, width);
   const words = text.split(/\s+/).filter((word) => word.length > 0);
   if (words.length === 0) return [""];
@@ -364,13 +366,13 @@ export function wrapText(text: string, width: number): string[] {
   let current = "";
 
   for (const word of words) {
-    const pieces = stringWidth(word) > limit ? splitToken(word, limit) : [word];
+    const pieces = measure(word) > limit ? splitToken(word, limit, measure) : [word];
     for (const piece of pieces) {
       if (current === "") {
         current = piece;
         continue;
       }
-      if (stringWidth(current) + 1 + stringWidth(piece) <= limit) {
+      if (measure(current) + 1 + measure(piece) <= limit) {
         current = `${current} ${piece}`;
       } else {
         lines.push(current);
@@ -394,11 +396,11 @@ export function wrapText(text: string, width: number): string[] {
  * width instead of being truncated or thrown away. `allocateWidths(...).fits` reports
  * that case for callers that need to know.
  */
-/** Widest rendered line, measured with *our* `string-width` — the one `--check` uses. */
-function maxRenderedWidth(text: string): number {
+/** Widest rendered line, measured with *our* `Measure` — the one `--check` uses. */
+function maxRenderedWidth(text: string, measure: Measure): number {
   let max = 0;
   for (const line of text.split("\n")) {
-    const width = stringWidth(line);
+    const width = measure(line);
     if (width > max) max = width;
   }
   return max;
@@ -409,10 +411,11 @@ function buildTable(
   natural: number[],
   budget: number,
   glyphs: GlyphSet,
+  measure: Measure,
 ): { text: string; fits: boolean } {
   const { widths, fits } = allocateWidths(natural, budget);
   const layout = (row: string[]): string[] =>
-    row.map((cell, index) => wrapText(cell, widths[index] ?? ABSOLUTE_MIN_COLUMN_WIDTH).join("\n"));
+    row.map((cell, index) => wrapText(cell, widths[index] ?? ABSOLUTE_MIN_COLUMN_WIDTH, measure).join("\n"));
 
   const table = new Table({
     head: layout(grid.header),
@@ -465,22 +468,27 @@ const MAX_FIT_PASSES = 3;
  * we measure the *finished* table the same way `--check` will and re-allocate against a
  * budget reduced by the observed overage. Found by the vault corpus sweep, 2026-07-27.
  */
-export function renderTable(token: Tokens.Table, targetWidth: number, glyphs: GlyphSet): string {
+export function renderTable(
+  token: Tokens.Table,
+  targetWidth: number,
+  glyphs: GlyphSet,
+  measure: Measure = NARROW_MEASURE,
+): string {
   const grid = tableGrid(token);
   if (grid.columnCount === 0) return "";
 
-  const natural = naturalWidths(grid.header, grid.rows);
+  const natural = naturalWidths(grid.header, grid.rows, measure);
 
   let budget = targetWidth;
-  let result = buildTable(grid, natural, budget, glyphs);
+  let result = buildTable(grid, natural, budget, glyphs, measure);
 
   // Only reconcile when the table is supposed to fit; the >= 9-column case overflows
   // by design and shrinking it further would just churn.
   for (let pass = 0; pass < MAX_FIT_PASSES && result.fits; pass += 1) {
-    const overage = maxRenderedWidth(result.text) - targetWidth;
+    const overage = maxRenderedWidth(result.text, measure) - targetWidth;
     if (overage <= 0) break;
 
-    const retry = buildTable(grid, natural, budget - overage, glyphs);
+    const retry = buildTable(grid, natural, budget - overage, glyphs, measure);
     // If shrinking pushes the table below its own floor, keep the wider-but-structured
     // rendering rather than emitting a collapsed one.
     if (!retry.fits) break;

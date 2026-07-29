@@ -18,6 +18,11 @@ crucible\-tui \- terminal markdown viewer (installed command: \fBmdview\fR)
 .I fence
 .I language
 .br
+.B mdview probe
+[\fB\-\-refresh\fR]
+[\fB\-\-no\-cache\fR]
+[\fB\-\-timeout\fR \fIMS\fR]
+.br
 .B mdview help
 [\fIsubcommand\fR]
 .SH DESCRIPTION
@@ -74,6 +79,40 @@ touched; every other key in the config file, and every other
 .B highlight\-as
 mapping already recorded, is left exactly as it was.
 .TP
+.BI probe " [\-\-refresh] [\-\-no\-cache] [\-\-timeout " "MS" "]"
+Report how this terminal renders East Asian
+.B Ambiguous
+characters, and exit. Almost every non\-ASCII character in ordinary prose
+belongs to that class \(em the dashes \(en \(em, the arrows, the ellipsis, the
+comparison signs, the bullet, and the whole box\-drawing set \(em and Unicode
+defines it as rendering at either one or two columns depending on the
+terminal, with no way to tell from the character itself. A viewer that
+guesses wrong wraps every line one or two columns off.
+.IP
+The probe writes one test character at the cursor, asks the terminal for the
+cursor position before and after it with a Device Status Report
+.RB ( "ESC [ 6 n" ),
+and takes the difference. The reply is read in raw mode with a short timeout;
+cooked mode is restored on every exit path, including an interrupt or a
+.BR kill (1),
+and the test character is erased afterwards, so the probe leaves nothing on
+screen. It runs only when standard input and standard output are both
+terminals \(em never under
+.BR \-\-check ,
+never in developer tooling, never when piped.
+.IP
+The answer is cached per terminal identity (see FILES), so it is measured once
+per terminal rather than once per invocation, and a second terminal never
+inherits the first one's answer.
+.B \-\-refresh
+ignores the cached answer and probes again;
+.B \-\-no\-cache
+probes without recording the result;
+.B \-\-timeout
+sets how long to wait for the reply, in milliseconds (default 200).
+.B \-\-probe
+on the default action is an accepted spelling of the same thing.
+.TP
 .BI "help " "[subcommand]"
 Print this usage information, or \(em given a subcommand name \(em that
 subcommand's own usage. Equivalent to
@@ -109,6 +148,16 @@ regardless of what auto\-detection would otherwise choose.
 .B \-\-unicode
 Force the Unicode glyph tier. Mutually exclusive with
 .BR \-\-ascii .
+Ignored, with a notice on standard error, when the ambiguous\-width setting is
+.B wide
+\(em see
+.B MDVIEW_AMBIGUOUS
+under ENVIRONMENT for why the Unicode tier cannot be laid out in that case.
+.TP
+.B \-\-probe
+Run the terminal ambiguous\-width diagnostic and exit, exactly as
+.B mdview probe
+does. Takes no file argument.
 .TP
 .BR \-\-help ", " \-h
 Print usage and exit. At the top level (no subcommand named), this includes
@@ -150,7 +199,58 @@ raw parser stack trace: the problem is named in one line on standard error
 (the file's path and what was wrong with it), and rendering continues using
 whatever in the file was still usable, falling back further to built\-in
 defaults for anything that was not.
+.TP
+.I $XDG_CACHE_HOME/mdview/ambiguous\-width.json
+(or, if
+.B XDG_CACHE_HOME
+is unset,
+.IR ~/.cache/mdview/ambiguous\-width.json )
+Cached results of
+.BR "mdview probe" ,
+one entry per terminal identity. The identity is composed from
+.BR TERM ,
+.BR TERM_PROGRAM ,
+.BR COLORTERM ,
+.BR VTE_VERSION ,
+the terminal multiplexer in use, and the locale \(em deliberately more than
+.B TERM
+alone, because a multiplexer rewrites
+.BR TERM ,
+two different terminals routinely claim the same value, and a terminal's
+ambiguous\-width behaviour is conventionally locale\-driven. Entirely derived
+state: delete the file and the next probe recreates it. A corrupt or
+unreadable cache is treated as an empty one, never as an error.
 .SH ENVIRONMENT
+.TP
+.B MDVIEW_AMBIGUOUS
+.RB ( narrow " or " wide )
+How wide East Asian
+.B Ambiguous
+characters are on this terminal. Overrides everything else, including a
+cached probe result. Any other value \(em including an empty one or a typo
+\(em is ignored rather than rejected, exactly as for
+.BR MDVIEW_GLYPHS .
+.IP
+Resolution order, highest first: this variable; a cached probe result for this
+terminal; a live probe, when standard input and standard output are both
+terminals; and otherwise
+.BR narrow ,
+which is what Unicode Standard Annex #11 itself recommends when the context
+cannot be established.
+.IP
+.B wide
+forces the ASCII glyph tier, overriding
+.B \-\-unicode
+and
+.BR MDVIEW_GLYPHS .
+This is arithmetic rather than preference: the Unicode tier's bullet, rule and
+box\-drawing characters are themselves ambiguous, so under
+.B wide
+a table's horizontal border is drawn at exactly twice the width its columns
+were allocated for, and no re\-allocation can recover it. Every ASCII
+substitute is unambiguously one column. Set
+.B MDVIEW_AMBIGUOUS=narrow
+to get the box drawing back and accept the overflow.
 .TP
 .B MDVIEW_GLYPHS
 .RB ( ascii " or " unicode )
@@ -164,6 +264,10 @@ this variable.
 .B XDG_CONFIG_HOME
 Standard XDG base\-directory variable; see FILES above for how it locates the
 config file.
+.TP
+.B XDG_CACHE_HOME
+Standard XDG base\-directory variable; see FILES above for how it locates the
+ambiguous\-width cache.
 .SH EXIT STATUS
 .TP
 .B 0
