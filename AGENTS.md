@@ -571,11 +571,18 @@ Measured anyway: **4,368 renders (21 files × 104 widths × both tiers) byte-ide
 4. **Narrow.**
 
 **The cache key is deliberately over-specified**: `TERM`, `TERM_PROGRAM`, `COLORTERM`,
-`VTE_VERSION`, the multiplexer, and the locale. `TERM` alone does not separate the two
-terminals the user actually runs — a multiplexer rewrites it and two emulators routinely
-claim the same value — and the locale is in the key because it is conventionally *the*
-thing that changes a terminal's ambiguous-width behaviour. Over-specifying costs one
-re-probe; under-specifying hands ghostty urxvt's answer. Writes are atomic (temp file +
+`VTE_VERSION`, the multiplexer, and the locale. The locale is in the key because it is
+conventionally *the* thing that changes a terminal's ambiguous-width behaviour.
+
+*This paragraph originally justified the over-specification by claiming `TERM` alone
+cannot separate the two terminals this tool is validated against, "because a multiplexer
+rewrites it". **The validation run disproved that.*** Measured 2026-07-28: ghostty under
+zellij reported `TERM=xterm-ghostty`, not a rewritten `screen`/`tmux-256color`, and urxvt
+reported `rxvt-unicode-256color` — so `TERM` alone *would* have separated these two. The
+key is still right, for the weaker and honest reason: `TERM` is a *terminfo* name, not an
+identity, two emulators can and do claim the same one, and a multiplexer rewriting it is a
+real behaviour that merely did not happen here. Over-specifying costs one re-probe;
+under-specifying hands ghostty urxvt's answer. Keep the claim sized to the evidence. Writes are atomic (temp file +
 `rename`, `src/config.ts`'s pattern); every corrupt, truncated, wrong-version or
 unreadable shape reads as a **miss** and re-probes, and an unwritable cache is a
 `false` return, never a throw — a viewer that refuses to render because a file it

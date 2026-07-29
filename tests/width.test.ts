@@ -796,17 +796,31 @@ describe("the probe subcommand", () => {
   // assertion — determinism regardless of the ambient environment is the property
   // `src/width.ts`'s header claims, and a test that inherits the environment cannot
   // demonstrate it.
+  //
+  // `XDG_CACHE_HOME` is redirected for the same reason, and that one was found the hard
+  // way: `--no-cache` suppresses cache *writes*, not cache *reads*, so once the developer
+  // has actually run `mdview probe` on this machine, rule 2 hits, the report says
+  // "decided by cache", and the "not a TTY" line this asserts is never printed. The suite
+  // was green until the tool was used for real. That is state leaking from the user's
+  // home directory into a gate — the precise failure mode `src/width.ts`'s header argues
+  // a process-global would cause, arriving instead through a cache file. Point the test
+  // at a scratch dir; do not relax the assertion, and do not reach for `--refresh`, which
+  // would hide the read path rather than isolate it.
   test("`mdview probe` is safe and honest with no terminal", async () => {
-    const saved = process.env.MDVIEW_AMBIGUOUS;
+    const savedMode = process.env.MDVIEW_AMBIGUOUS;
+    const savedCache = process.env.XDG_CACHE_HOME;
     delete process.env.MDVIEW_AMBIGUOUS;
+    process.env.XDG_CACHE_HOME = await scratch();
     try {
       const output = await captureStdout(() => main(["probe", "--no-cache"]));
       expect(output).toContain("ambiguous width  narrow");
       expect(output).toContain("not a TTY");
       expect(output).toContain("Precedence, highest first");
     } finally {
-      if (saved === undefined) delete process.env.MDVIEW_AMBIGUOUS;
-      else process.env.MDVIEW_AMBIGUOUS = saved;
+      if (savedMode === undefined) delete process.env.MDVIEW_AMBIGUOUS;
+      else process.env.MDVIEW_AMBIGUOUS = savedMode;
+      if (savedCache === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = savedCache;
     }
   });
 });
