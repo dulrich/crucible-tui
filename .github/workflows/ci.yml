@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Test
+        run: bun test tests
+
+      - name: Self-smoke (--check on a known-wide fixture)
+        run: bun run src/cli.ts --check --width 80 tests/fixtures/wide-table.md
+
+      # THIRD-PARTY-LICENSES.txt is generated, and going stale is a licence-
+      # compliance failure rather than a cosmetic one: add a dependency, forget
+      # to regenerate, and the published repo ships attribution that omits a
+      # package it actually redistributes. The generator is deterministic (no
+      # timestamps), so regenerating and diffing is a real gate. The unit tests
+      # assert that specific notices are *present*; only this catches absence.
+      - name: Third-party notices are current
+        run: |
+          bun run gen-licenses
+          git diff --exit-code -- THIRD-PARTY-LICENSES.txt \
+            || { echo "::error::THIRD-PARTY-LICENSES.txt is stale — run 'bun run gen-licenses' and commit the result."; exit 1; }
+
+      - name: Sweep (bundled public-safe corpus, Unicode tier)
+        run: bun run sweep
+
+      - name: Sweep (bundled public-safe corpus, ASCII tier)
+        run: bun run sweep -- --glyphs ascii
+
+      # Deliberately NOT run here: the fast-tier defect-detector sweep
+      # (`bun run sweep -- --corpus regressions --widths 40-360 --detect`).
+      # That corpus is a frozen regression set that lives in a private
+      # example-harness repo, addressed only via MDVIEW_CORPUS_MANIFEST
+      # (see AGENTS.md's "Corpus sweep" section) — it will never exist on a
+      # public runner. Writing a step for it here would either fail every
+      # run for a reason contributors can't fix, or silently no-op on
+      # missing data and look green while proving nothing. The two sweep
+      # steps above run for real, against the bundled public-safe manifest
+      # (`corpus/default-manifest.json`) that ships with the source; the
+      # regression sweep against real corpora is a maintainer-only,
+      # local-only verification step (see AGENTS.md), not a CI gate.

@@ -30,6 +30,7 @@ describe("parseArgs", () => {
       noPager: false,
       check: false,
       help: false,
+      licenses: false,
     });
   });
 

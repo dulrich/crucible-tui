@@ -44,7 +44,3 @@ GEMINI.local.md
 
 # --- project-specific ---
 # dist/ (the bun build --compile output) is covered by the lang-bun block above.
-
-# bun.lock came from the parent repo's root .gitignore, which did not extract.
-# See AGENTS.md — revisit in WP-5.
-bun.lock
