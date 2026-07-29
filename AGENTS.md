@@ -969,6 +969,34 @@ Four things about this are load-bearing:
   exist. A missing `node_modules` is a hard error rather than an empty package set. The
   optional supplement below either applies or says out loud that it did not.
 
+**Where a second checkout may live, and why it is not arbitrary.** The neighbour rule walks
+**every ancestor to `/`**, collecting sibling directory names at each level, and `ownNames`
+seeds itself from `basename(root)`. Two consequences that cost a sprint's worth of clones
+before they were measured:
+
+- A checkout under a **different ancestor chain** (a temp dir, say) inherits that chain's
+  unrelated directory names as forbidden tokens. Measured: a worktree in the system temp
+  directory produced nine findings naming other tools' scratch directories, none of them
+  about this repo's content.
+- A checkout whose **leaf directory is not named for the repo** loses its own name to the
+  neighbour set, so the real checkout becomes "foreign" and every self-mention is flagged.
+  Measured: 30 findings, all of them the repo's own name in its own README.
+
+**A worktree at `<code-root>/.worktrees/<label>/<repo-name>` scans clean — measured, 0
+findings.** The dot-named parent is invisible both to this rule (dot-directories are not
+collected) and to the fleet's initiative discovery, so a scratch checkout cannot register as
+a phantom initiative; the leaf keeps the repo's name; the ancestor chain matches the real
+checkout's. Prefer that over a full clone: clones parked in a plain directory inside the code
+root are discoverable as repositories, and three of them accumulated 633 MB and broke a
+downstream generator before anyone noticed.
+
+**This was blocked entirely until 2026-07-29**, because `collectFiles` tested `SKIP_DIRS`
+only inside its `isDirectory()` branch. **In a worktree `.git` is a file**, holding
+`gitdir: <absolute path to the main checkout>`, so the guard scanned it and failed on a path
+**git itself wrote** — a self-inflicted finding that made worktrees unusable and pushed
+dispatched work into clones. The skip now matches by name before type. Two regression tests
+pin it.
+
 **If you check a dependency out beside your clone, that is handled — but on evidence.**
 The neighbour rule drops a name that collides with an installed package *only* when the
 directory proves it is that package: a `package.json` naming itself. Otherwise reading

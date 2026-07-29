@@ -18,6 +18,7 @@ import { BUNDLED_DEFAULT_MANIFEST, resolveCorpusManifestPath, type MdviewConfig 
 import { renderWithForcedColor } from "./helpers/color";
 import {
   buildContext,
+  collectFiles,
   loadSupplementalNames,
   scanLine,
   scanTree,
@@ -725,6 +726,42 @@ describe("supplemental private-name list", () => {
       const result = await loadSupplementalNames({ MDVIEW_PRIVATE_NAMES: good });
       expect(result.source).toBe("env");
       expect([...result.names].sort()).toEqual(["alpha", "beta"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// A git worktree stores `.git` as a *file* whose contents are an absolute path written by
+// git. `collectFiles` used to test `SKIP_DIRS` only inside its `isDirectory()` branch, so
+// it scanned that file and failed containment on git's own plumbing — which made worktrees
+// unusable and pushed dispatched work into full clones parked inside the code root.
+describe("skip rules match by name, not by entry type", () => {
+  test("a worktree's `.git` file is skipped rather than scanned", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-worktree-"));
+    try {
+      // Exactly the shape git writes. The account is the sanctioned fake one: the guard has
+      // no self-exception, so a test *about* the home-path rule must not trip it — writing a
+      // realistic account name here failed the suite on its own fixture, which is the design
+      // working rather than an inconvenience.
+      await writeFile(join(dir, ".git"), "gitdir: /home/example/main-repo/.git/worktrees/wp-1\n");
+      await writeFile(join(dir, "real.ts"), "export const x = 1;\n");
+      const files = collectFiles(dir);
+      expect(files.some((file) => file.endsWith("/real.ts"))).toBe(true);
+      expect(files.some((file) => file.endsWith("/.git"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a file sharing a skipped directory's name is skipped too", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-skipname-"));
+    try {
+      await writeFile(join(dir, "dist"), "not a directory\n");
+      await writeFile(join(dir, "keep.md"), "# keep\n");
+      const files = collectFiles(dir);
+      expect(files.some((file) => file.endsWith("/keep.md"))).toBe(true);
+      expect(files.some((file) => file.endsWith("/dist"))).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
