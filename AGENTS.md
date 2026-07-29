@@ -821,6 +821,48 @@ This file, `src/render.ts` and `scripts/sweep.ts` all previously cited private r
 name — one of them by file *and line number* — and the containment guard below is what
 now holds the line. Keep the reasoning; drop the coordinates.
 
+#### Corpus growth findings — 79 overflows, and 77 of them are one bug
+
+Widening corpus membership put **79 width overflows** on the board, **0 errors**. Every
+one is classified. They are not 79 problems:
+
+| Class | Count | Construct |
+|---|---|---|
+| Accepted by design | 2 | a table of ≥9 columns emitted at its minimum feasible width, at target 80 only — the precedent set in `plans/mdview.md` |
+| Renderer defect | 77 | the frontmatter meta block's **degraded** paths, which never consult `targetWidth` |
+| Source pathology | 0 | none, despite appearances — see below |
+
+The 77 split three ways, all of them in `src/frontmatter.ts`:
+
+- **46** (23 files) — the parse-failure diagnostic that `formatMetaBlock`'s `catch`
+  emits. It is `dim()`ed and passed through verbatim; the parser's message text runs a
+  fixed ~104 columns, so it overflows at 80 and 100 and is clean from 116 up.
+- **26** (16 files) — the raw frontmatter that the same `catch` echoes beneath the
+  diagnostic. One long authored scalar comes back at its full source width, measured
+  between 118 and 568 columns. `formatMapping`'s success path wraps this correctly
+  through `wrapValue`; only the failure path does not.
+- **5** (1 file) — a nested mapping at depth ≥ 1, `JSON.stringify`ed straight into the
+  line by `formatMapping`. Every sibling branch routes through `wrapValue`; this one
+  does not, so a machine payload lands at 1,044 columns at **every** target, 346
+  included.
+
+**A wide line is not evidence of an unwrappable source.** Two of these were flagged in
+advance as probable source pathology on width alone (1,044 and 568 columns). Both are the
+defect above: the 1,044-column line has break opportunities that `hardSplit` already
+knows how to take, and the 568-column one is ordinary prose full of spaces. What settles
+the class is the code path that produced the line, never the number.
+
+**This stayed a triage because the fix is a design call, not a wrap call.** The degraded
+path exists to show what the file says when the parser could not, and folding it changes
+exactly that: the diagnostic carries a caret aligned to a source column, and the echoed
+block is verbatim source that stops being valid the moment it wraps. Hard-wrap with a
+continuation indent, truncate with a marker, or treat the block as fence-like and exempt
+it — each is defensible, each needs its own pinning test, and picking one is its own WP.
+
+Neither ratchet moved: `--max-orphans` and `--max-over-indent` have **no committed
+constants** here at all. They are CLI-only, unset by default, and their threshold values
+live in the private archive with the regression corpus they ratchet.
+
 #### ⚠ The sweep proves width, and only width
 
 `--check` and both sweeps **exempt fenced-code ranges from checking**. That exemption is
