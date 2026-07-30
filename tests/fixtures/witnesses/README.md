@@ -41,6 +41,20 @@ data, it is evidence, and the reason it exists has to survive next to it.
   *characters*, not columns; a CJK-heavy title reaches far more than 80 *columns* at that
   same character budget. Deliberately left un-exempt by WP-5 — this fixture pins that the
   gate still catches it rather than silently emitting an over-width line.
+- **`defect-wp14-list-item-inline-markup.md`** — added by WP-14, the first witness here that
+  is not a WP-5 frontmatter defect. `marked-terminal`'s `text` renderer handed a list item
+  its markdown *source*, so `**bold**` and `[label](url)` reached the terminal as literal
+  syntax in every kind of list item and nowhere else. One item of each kind, plus the
+  interactions the fix has to survive: a soft break that must coalesce and a hard break that
+  must not, a reference-style link, a self-referential link, an escaped asterisk, and a fence
+  nested in an item whose own `**not bold**` must stay verbatim.
+
+## The tests do not all live in one file
+
+WP-10's witnesses are asserted in `tests/witnesses.test.ts`; WP-14's is asserted in
+`tests/render.test.ts`, because `plans/representative-corpus.md` assigns that WP that file.
+Each record's `test_file` and `describe` fields are authoritative — read those rather than
+assuming a single test file.
 
 ## Why these are hand-built, not vendored
 
@@ -54,7 +68,7 @@ neighbour-repository material out of this repo entirely.
 
 The bundled default manifest's glob is `tests/fixtures/*.md` — one path segment per `*`, so
 it matches files directly under `tests/fixtures/` and does not descend into this
-subdirectory. These fixtures are read directly by `tests/witnesses.test.ts`, never walked by
+subdirectory. These fixtures are read directly by their tests, never walked by
 the sweep or `--check`. They are still scanned by the containment guard
 (`tests/sweep.test.ts`'s containment describe, which walks the whole tree outside `runs/`),
 same as every other file in the repo.

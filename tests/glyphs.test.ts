@@ -179,12 +179,19 @@ describe("bullet substitution never touches fenced/indented code nested in a lis
     // glyph...
     expect(output).toContain("• ");
     expect(output).not.toMatch(/^\s*\*/m);
-    // ...while the escaped asterisks in the item's own prose (rendered literally,
-    // backslashes and all — a pre-existing, unrelated `marked-terminal` quirk, not
-    // something this fix touches) are left completely alone: not mistaken for another
-    // marker, and not skipped by the fence-detection logic added above, since there is
-    // no `SENTINEL` anywhere in this document to trigger it.
-    expect(output).toContain("\\*not emphasis\\*");
+    // ...while the escaped asterisks in the item's own prose are left completely alone:
+    // not mistaken for another marker, and not skipped by the fence-detection logic added
+    // above, since there is no `SENTINEL` anywhere in this document to trigger it.
+    //
+    // The *spelling* of that prose changed in WP-14 and the point of the test did not.
+    // Until then `marked-terminal`'s `text` renderer handed a list item its markdown
+    // source verbatim, so the backslashes survived into the output and this asserted
+    // `\*not emphasis\*`. Inline tokens are dispatched now, so an escape resolves exactly
+    // as it always has in a paragraph — pinned side by side below, because "the item
+    // agrees with the paragraph" is the durable claim and the literal bytes are not.
+    expect(output).toContain("*not emphasis* rest");
+    expect(output).not.toContain("\\*");
+    expect(stripAnsi(renderDocument("\\*not emphasis\\* rest\n", 80))).toContain("*not emphasis* rest");
   });
 });
 

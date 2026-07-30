@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "generated": "2026-07-29",
-  "generator": "WP-10 (representative-corpus revision), hand-authored",
+  "generator": "WP-10 (representative-corpus revision), hand-authored; extended by WP-14",
   "fix_commit": "6ba370bb89521538f69d689d8a70226be1ad82cf",
-  "note": "One record per witness. `revert_differentiates: false` marks a boundary/scope check that is asserted for completeness but does not itself go red on the pre-fix commit -- WP-10's brief calls out a test that passes both with and without its fix as witnessing nothing, so that distinction is recorded here rather than left implicit.",
+  "note": "One record per witness. `revert_differentiates: false` marks a boundary/scope check that is asserted for completeness but does not itself go red on the pre-fix commit -- WP-10's brief calls out a test that passes both with and without its fix as witnessing nothing, so that distinction is recorded here rather than left implicit. The top-level `fix_commit` is WP-5's, which every WP-10 record witnesses; a record whose fix landed elsewhere carries its own `fix_commit`, and a record's `test_file` is authoritative over the assumption that every witness test lives in tests/witnesses.test.ts.",
   "witnesses": [
     {
       "id": "defect-0-crlf",
@@ -87,6 +87,25 @@
       "companion_pinning_tests": "tests/frontmatter.test.ts, describe(\"defect 1\"), test(\"a CJK excerpt can exceed the target -- the excerpt is left un-exempt so the gate says so\")",
       "revert_method": "not applicable -- there is no fix to revert; see description",
       "revert_differentiates": false
+    },
+    {
+      "id": "wp14-list-item-inline-markup",
+      "wp5_row": null,
+      "wp": "WP-14 (representative-corpus revision)",
+      "fix_commit": null,
+      "fix_commit_note": "Landed by the WP-14 commit that also adds this record; the parent commit is 8504bd0. Left null rather than guessed, since the worker that wrote it does not commit.",
+      "description": "A list item's children are `text` tokens carrying their inline tokens in `.tokens`, and marked-terminal's Renderer.prototype.text (index.js:84-89) discards `.tokens` and returns `token.text` -- the markdown source -- through `this.o.text`, which is `identity` (index.js:47). Its heading (:116-119), paragraph (:201-211) and tablecell (:260-265) all call `parser.parseInline(token.tokens)` instead. So `**bold**`, `_em_`, `` `code` ``, `[label](url)` and `~~struck~~` reached the terminal as literal syntax in tight, loose, nested, ordered and task list items, and only there: paragraph, heading, blockquote, table cell, and even a blockquote nested inside a list item all parsed correctly. Loose items are included because marked's Parser.parse `text` case (marked/lib/marked.cjs:1976-1994) builds the loose body from renderer.text before wrapping it in a synthesised paragraph token whose sole child text token has no `tokens` of its own, leaving paragraph's parseInline nothing to parse.",
+      "fix": "src/render.ts's `renderer.text` override (`wrappedText`) dispatches the item's inline tokens itself -- `this.parser.parseInline(token.tokens)` -- with `inlineDepth` raised for the duration so the recursive text tokens inside strong/em/link/del take the library path, and with marked-terminal's HARD_RETURN converted to a real line break (nothing reflows a list item, so that conversion is this seam's to make). Existing guards unchanged: a token with no `tokens`, a body carrying a code SENTINEL, and anything outside a list still return the library's own answer verbatim.",
+      "fixture": "tests/fixtures/witnesses/defect-wp14-list-item-inline-markup.md",
+      "fixture_kind": "reconstructed",
+      "fixture_note": "Minimal reconstruction, not a vendored file: one item of each kind (tight, loose, ordered, nested, task open/done) plus the interactions the fix has to survive -- an authored soft break that must coalesce, an authored hard break that must not, a reference-style link, a self-referential link, an escaped asterisk, and a fence nested in an item whose `**not bold**` must stay verbatim. Paths are `/home/example` only.",
+      "test_file": "tests/render.test.ts",
+      "describe": "witness: WP-14 -- inline markup inside a list item (tests/fixtures/witnesses/defect-wp14-list-item-inline-markup.md)",
+      "test_file_note": "Not tests/witnesses.test.ts: plans/representative-corpus.md assigns WP-14 `tests/render.test.ts`, and WP-14's brief puts tests/witnesses.test.ts out of scope. The pattern -- fixture, index record, revert proof -- is WP-10's; only the file differs.",
+      "companion_pinning_tests": "tests/glyphs.test.ts, test(\"a list item whose prose legitimately begins with an escaped asterisk still gets its own marker substituted (no over-correction)\") -- its third assertion pinned the pre-fix spelling `\\*not emphasis\\*` and now pins the item against the paragraph instead.",
+      "revert_method": "src/render.ts's `renderer.text` override reverted to its 8504bd0 shape: `const result = originalText.call(this, token)` used directly, with no `this.parser.parseInline(inlineTokens)` call, no `inlineDepth` bracket around it, and no HARD_RETURN conversion or `settle` (i.e. `git checkout 8504bd0 -- src/render.ts`).",
+      "revert_differentiates": true,
+      "revert_note": "Proven: with src/render.ts at 8504bd0 and this fixture and describe block in place, `bun test tests/render.test.ts` reports 90 pass / 4 fail. The four that go red are the WP-14 claims -- \"every list-item kind renders its inline markup parsed\", \"a task item's checkbox is rendered once\", \"an authored hard break still ends its line, and no bare carriage return survives\", and \"under real ANSI the item is styled like the paragraph\". The other three in the block are deliberate scope checks that pass either way, in WP-10's `revert_differentiates: false` sense, and are recorded as such here rather than left to look like part of the proof: the soft-break coalescing is WP-2c's and predates this fix, the fence-verbatim assertion guards a guard that was already there, and the width assertion is a no-regression check on a fixture that never overflowed."
     }
   ]
 }

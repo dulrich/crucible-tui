@@ -453,22 +453,27 @@ function substituteBullets(body: string, glyphs: GlyphSet): string {
  * `marked-terminal`'s `HARD_RETURN` (`index.js:26`), the marker `Renderer.prototype.br`
  * (`index.js:291-293`) emits in place of a hard break when `reflowText` is on.
  *
- * **It never reaches a tight list item** — measured, see `coalesceTightItemLines` — but
- * a coalescing pass must refuse to join across one if it ever does, so it is named here
- * rather than assumed absent.
+ * **It reaches a list item since WP-14**, and that is a change: WP-2c measured zero of
+ * them here and said so, because `marked-terminal`'s raw-text path meant `br` never fired
+ * inside an item. The `text` override now dispatches the item's inline tokens, so it does,
+ * and that override converts each marker into `HARD_RETURN` + `\n` precisely so this
+ * constant keeps meaning what it meant — a break a coalescing pass must refuse to join
+ * across. The guard in `isHardBoundary` was written for the case "if it ever does"; it now
+ * carries real traffic rather than none.
  */
 const HARD_RETURN = "\r";
 
 /**
- * An authored hard line break, as it actually survives into a *tight* list item's text.
+ * An authored hard line break, as it survives into a list item's text on the paths that
+ * still return `marked-terminal`'s raw source.
  *
  * **Not `HARD_RETURN`.** `marked-terminal`'s `Renderer.prototype.text` (`index.js:84-89`)
  * renders a block text token from its raw `token.text` field and never dispatches
- * `token.tokens`, so for a tight item no inline token is ever rendered — `br` does not
- * fire, no `HARD_RETURN` is produced, and the item's *markdown source syntax* arrives
- * verbatim instead. (This is the same library behaviour that makes `**bold**` render as
- * literal asterisks inside a tight item.) A hard break is therefore still visible, as
- * the source spelling that created it, immediately before the `\n`:
+ * `token.tokens`, so on that path no inline token is ever rendered — `br` does not fire,
+ * no `HARD_RETURN` is produced, and the item's *markdown source syntax* arrives verbatim
+ * instead. (This is the same library behaviour that made `**bold**` render as literal
+ * asterisks inside an item, which is the defect WP-14 closed.) A hard break is therefore
+ * still visible, as the source spelling that created it, immediately before the `\n`:
  *
  * - two or more trailing spaces,
  * - a trailing backslash,
@@ -477,6 +482,12 @@ const HARD_RETURN = "\r";
  * Measured over 600 corpus files: 11,675 soft breaks inside tight items, **1** hard
  * break (trailing spaces), **0** `HARD_RETURN`, **0** `SENTINEL`. Rare is not never —
  * the one instance must survive, which is why this is a boundary and not a heuristic.
+ *
+ * **Since WP-14 this is the fallback spelling, not the primary one.** A list item whose
+ * inline tokens were dispatched carries `HARD_RETURN` instead, and `isHardBoundary` tests
+ * that first. This regex still guards every `return raw` path out of the `text` override —
+ * a body carrying a code sentinel, a token with no inline tokens — where the source
+ * spelling is still exactly what arrives.
  */
 const HARD_BREAK_TAIL = /(?: {2,}|\\|<br\s*\/?>)$/i;
 
@@ -1260,6 +1271,13 @@ export function renderDocumentDetailed(
     // shearing its tail word onto a line of its own. That tail is the orphan: 1,823 of
     // them across 250 files at width 100 in a 1,744-file corpus sample.
     //
+    // **WP-14 added a second job to the same seam** — parsing that raw source, which the
+    // library never did — and the two are sequential, not alternatives: parse first, then
+    // coalesce and re-wrap the parsed text. The three conditions below still select
+    // exactly the same tokens; only what happens to the ones they select changed. Soft
+    // breaks still arrive verbatim afterwards, because a soft newline stays inside the
+    // inline text token that carries it.
+    //
     // Three independent conditions identify a tight item's own text, and any one of
     // them failing means we leave the result exactly as the library produced it:
     //
@@ -1280,21 +1298,86 @@ export function renderDocumentDetailed(
     const originalText = renderer.text;
     if (originalText) {
       renderer.text = function wrappedText(token: Tokens.Text | Tokens.Escape | Tokens.Tag) {
-        const result = originalText.call(this, token);
-        if (result === false || typeof result !== "string") return result;
-        if (listDepth() === 0 || inlineDepth > 0) return result;
-        if (!Array.isArray((token as { tokens?: Token[] }).tokens)) return result;
+        const raw = originalText.call(this, token);
+        if (raw === false || typeof raw !== "string") return raw;
+        if (listDepth() === 0 || inlineDepth > 0) return raw;
+        const inlineTokens = (token as { tokens?: Token[] }).tokens;
+        if (!Array.isArray(inlineTokens)) return raw;
         // Belt and braces on the "fences never reach here" measurement above: a body
         // carrying a code sentinel is returned untouched rather than reasoned about.
-        if (!result.includes("\n") || result.includes(SENTINEL)) return result;
+        if (raw.includes(SENTINEL)) return raw;
+
+        // **This is where a list item's inline markup gets parsed at all** (WP-14).
+        //
+        // `raw` is `marked-terminal`'s own answer, and its own answer is the markdown
+        // *source*: `Renderer.prototype.text` (`index.js:84-89`) reads `token.text` and
+        // returns it through `this.o.text`, which is `identity` (`index.js:47`). It never
+        // dispatches `token.tokens`. Its `heading` (`:116-119`), `paragraph` (`:201-211`),
+        // `tablecell` (`:260-265`) and — transitively, through `parser.parse` —
+        // `blockquote` (`:102-107`) all call `parser.parseInline(token.tokens)` instead,
+        // which is exactly why `**bold**` and `[label](url)` reach the terminal parsed
+        // everywhere *except* a list item, and why a blockquote nested *inside* a list
+        // item is fine while the item's own text is not.
+        //
+        // Every list item routes here, not just a tight one. A tight item's children go
+        // to `Parser.parse(item.tokens, false)`, whose block `text` case dispatches here
+        // and emits the result directly. A **loose** item's children reach the *same*
+        // case with `top === true` (`marked/lib/marked.cjs:1976-1994`), and that branch
+        // still builds its body from `this.renderer.text(textToken)` before wrapping it
+        // in a *synthesised* paragraph token whose `tokens` is a single text token with
+        // **no** `tokens` of its own — so `paragraph`'s `parseInline` has nothing left to
+        // parse and re-emits the same string. One override therefore fixes tight, loose,
+        // nested, ordered and task items together, and the synthesised token's missing
+        // `tokens` is what stops the loose path parsing twice.
+        //
+        // `inlineDepth` is raised for the duration, upholding this seam's own condition 2
+        // for the recursive calls `parseInline` makes: the text tokens inside `strong`,
+        // `em`, `link` and `del` come back through here, and they must take the library
+        // path. They also carry no `tokens`, so condition 3 already stops them — the
+        // counter is the documented invariant, held rather than relied on twice.
+        inlineDepth += 1;
+        let parsed: string;
+        try {
+          parsed = this.parser.parseInline(inlineTokens);
+        } finally {
+          inlineDepth -= 1;
+        }
+        if (typeof parsed !== "string" || parsed.includes(SENTINEL)) return raw;
+
+        // Now that inline tokens *are* dispatched, `br` fires, and with `reflowText` on it
+        // emits `HARD_RETURN` rather than a newline (`index.js:291-293`) — a marker
+        // `reflowText` later turns back into a line break for the three block renderers
+        // that reflow. **Nothing reflows a list item**, so this seam owes that conversion
+        // itself, or an authored hard break arrives as a bare `\r` that walks the cursor
+        // back to column 0. It is spelled as `HARD_RETURN` *plus* the newline so the
+        // marker survives into `coalesceTightItemLines`, whose `isHardBoundary` already
+        // refuses to join across one (see `HARD_RETURN`'s comment, which named this case
+        // as "rare is not never" while `marked-terminal`'s raw-text path still made it
+        // unreachable). `settle` drops the markers on the way out, on every return path.
+        //
+        // This replaces `HARD_BREAK_TAIL` as the mechanism for list items, and does not
+        // retire it: that regex reads the *source spelling* of a hard break, which is
+        // still what an unparsed body carries on the `raw` returns above.
+        const result = parsed.split(HARD_RETURN).join(`${HARD_RETURN}\n`);
+        const settle = (text: string): string => text.split(HARD_RETURN).join("");
+
+        if (!result.includes("\n")) return settle(result);
 
         const { segments, coalesced } = coalesceTightItemLines(result);
         // Nothing was joined — the item is a single line, or every break in it is a
         // genuine hard break. Leave it on the pre-WP-2c path rather than re-wrapping
         // text this WP has no reason to touch.
-        if (!coalesced) return result;
+        if (!coalesced) return settle(result);
 
         const budget = Math.max(1, targetWidth - pendingPrefixWidth());
+        // `segments` now carry live ANSI wherever `chalk` has a colour level, so the
+        // re-wrap has to be the ANSI-aware one — which it already was: `wrapAnsi`
+        // segments escape sequences out as atomic zero-width units and `measure` is
+        // `string-width`, which strips them before counting. That path was built for
+        // exactly this content (see `src/wrap.ts`'s module comment, which names list
+        // items carrying live ANSI as its reason to exist) and was already exercised here
+        // by `styleWikiLink`'s hard-coded escapes, which reach this seam through
+        // `preprocessBody` at every colour level.
         const wrapAt = (width: number): string =>
           segments.map((segment) => wrapAnsi(segment, Math.max(1, width), measure).join("\n")).join("\n");
 
@@ -1305,12 +1388,14 @@ export function renderDocumentDetailed(
         // line and, in an ordered list, is handed that item's number and rewritten.
         const collides = (text: string): boolean =>
           text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
-        if (!collides(wrapped)) return wrapped;
+        if (!collides(wrapped)) return settle(wrapped);
 
-        return wrapAt(budget - 1)
-          .split("\n")
-          .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
-          .join("\n");
+        return settle(
+          wrapAt(budget - 1)
+            .split("\n")
+            .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
+            .join("\n"),
+        );
       };
     }
 
