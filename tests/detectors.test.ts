@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import {
+  classifyListOrphans,
   findColumnZeroMarkers,
   findContinuationOverIndent,
   findListOrphans,
+  findShearOrphans,
+  probeBlockEnds,
+  readBlockEnds,
   isTableLine,
   stripAnsi,
+  type BlockEnds,
+  type ClassifiedOrphan,
 } from "../src/detectors";
+import { renderDocumentDetailed } from "../src/render";
 import { parseWidths } from "../scripts/sweep";
 
 // ---------------------------------------------------------------------------
@@ -73,6 +80,205 @@ describe("findListOrphans", () => {
     expect(findListOrphans(bad, 64, { codeRanges: [[2, 2]] })).toEqual([]);
     // supplied but covering an unrelated line -> unchanged
     expect(findListOrphans(bad, 64, { codeRanges: [[9, 9]] })).toEqual(["lambda"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-8. The point of these is the *pair*: `findListOrphans` keeps its answer and
+// `findShearOrphans` subtracts the block boundaries out of it. Every case below
+// therefore asserts both readings, never the new one alone — a test that only
+// pinned the new number could pass while the frozen series quietly moved.
+// ---------------------------------------------------------------------------
+
+/** The whole round trip: probe the source, render both, align, classify. */
+function classifyDocument(
+  source: string,
+  width: number,
+): { orphans: string[]; classified: ClassifiedOrphan[]; mapped: boolean } {
+  const plain = renderDocumentDetailed(source, width);
+  const probed = renderDocumentDetailed(probeBlockEnds(source), width);
+  const blockEnds = readBlockEnds(plain.text, probed.text);
+  return {
+    orphans: findListOrphans(plain.text, width, { codeRanges: plain.codeRanges }),
+    classified: classifyListOrphans(plain.text, width, blockEnds, { codeRanges: plain.codeRanges }),
+    mapped: blockEnds.mapped,
+  };
+}
+
+// A loose item whose *first* paragraph ends on a two-word line after a nearly-full
+// one. In the render the blank line between the two paragraphs is gone
+// (`bulletPointLines`' `.filter(identity)`), so it is indistinguishable from a shear
+// by any line-based reading — which is exactly the blind spot this WP subtracts.
+const LOOSE_MULTI_PARAGRAPH_ITEM = `- Sustained throughput on the ingest path is bounded by the slowest of the three
+  stages, and in every profile we have taken that stage is the checksum
+  verifier.
+
+  Buffering ahead of it helps only until the queue is deep enough to hide a
+  single stall, after which the extra memory buys nothing at all.
+`;
+
+describe("findShearOrphans — the loose multi-paragraph item the old detector cannot clear", () => {
+  test("the old detector flags it and the new one does not", () => {
+    const { orphans, classified, mapped } = classifyDocument(LOOSE_MULTI_PARAGRAPH_ITEM, 80);
+
+    // the frozen metric's answer, unchanged and still reported
+    expect(orphans).toEqual(["checksum verifier."]);
+    expect(mapped).toBe(true);
+    // ...and the new reading, which knows it is a paragraph ending
+    expect(classified.map((hit) => hit.kind)).toEqual(["paragraph-boundary"]);
+    expect(classified[0]?.text).toBe("checksum verifier.");
+  });
+
+  test("the same hit is a shear when nothing marks its line as a block end", () => {
+    // Same rendered input, empty boundary map: the classification is doing the work,
+    // not some other property of the line.
+    const plain = renderDocumentDetailed(LOOSE_MULTI_PARAGRAPH_ITEM, 80);
+    const none: BlockEnds = { ends: new Map(), mapped: true };
+    expect(findShearOrphans(plain.text, 80, none).map((hit) => hit.text)).toEqual(["checksum verifier."]);
+  });
+});
+
+describe("classifyListOrphans", () => {
+  test("reports exactly findListOrphans' hits, in order, whatever the labels are", () => {
+    const documents = [
+      LOOSE_MULTI_PARAGRAPH_ITEM,
+      `- Outer item text that runs on for a while so the quote below it is indented.
+
+  > Why? Since imports are hoisted, keeping them all at the top prevents
+  > surprising behavior.
+
+  \`\`\`js
+  const foo = 1;
+  \`\`\`
+`,
+      `1. Outer step that sets the scene for the nested list below it.
+   1. Note: plugin files between plugin packages installed with pip must
+      have unique filenames.
+   2. Any path in the search path is scanned for the namespace folder.
+`,
+      `# Heading
+
+Ordinary prose that is not in a list at all, so nothing here can be a candidate.
+
+- [a very long link label indeed](https://example.invalid/a/rather/long/path/that/will/not/fit)
+- second item
+`,
+    ];
+    for (const source of documents) {
+      for (const width of [40, 80, 116, 346]) {
+        const { orphans, classified } = classifyDocument(source, width);
+        expect(classified.map((hit) => hit.text)).toEqual(orphans);
+      }
+    }
+  });
+
+  test("every kind is reachable, and each label follows the boundary map", () => {
+    const plain = renderDocumentDetailed(LOOSE_MULTI_PARAGRAPH_ITEM, 80);
+    const at = 3; // the rendered line the hit lands on
+    const kindFor = (ends: BlockEnds): string | undefined =>
+      classifyListOrphans(plain.text, 80, ends, { codeRanges: plain.codeRanges })[0]?.kind;
+
+    expect(kindFor({ ends: new Map(), mapped: true })).toBe("shear");
+    expect(kindFor({ ends: new Map([[at, "paragraph"]]), mapped: true })).toBe("paragraph-boundary");
+    expect(kindFor({ ends: new Map([[at, "block"]]), mapped: true })).toBe("block-boundary");
+    // a document whose probe did not align is reported as such rather than guessed at
+    expect(kindFor({ ends: new Map([[at, "paragraph"]]), mapped: false })).toBe("unmapped");
+  });
+
+  test("a block end that is not a paragraph boundary is labelled as one — a fence, a quote", () => {
+    const source = `- Outer item text that runs on for a while so the quote below it is indented.
+
+  > Why? Since imports are hoisted, keeping them all at the top prevents
+  > surprising behavior.
+
+  \`\`\`js
+  const foo = 1;
+  \`\`\`
+`;
+    const { orphans, classified } = classifyDocument(source, 80);
+    expect(orphans).toEqual(["indented.", "surprising behavior."]);
+    expect(classified.map((hit) => hit.kind)).toEqual(["block-boundary", "block-boundary"]);
+  });
+
+  test("longestToken measures the hit's neighbourhood, not the hit", () => {
+    const rendered = [
+      "    • alpha beta gamma delta epsilon zeta eta theta iota kappa",
+      "      lambda",
+      "      https://example.invalid/one/rather/long/unbreakable/path/segment",
+    ].join("\n");
+    const hits = classifyListOrphans(rendered, 64, { ends: new Map(), mapped: true });
+    expect(hits.map((hit) => hit.text)).toEqual(["lambda"]);
+    expect(hits[0]?.longestToken).toBe(64);
+  });
+});
+
+describe("probeBlockEnds / readBlockEnds", () => {
+  test("aligns even though the probe changes where the library breaks a line", () => {
+    // `marked-terminal` reflows by `.length`, so a probe *can* move a word to the next
+    // line. The alignment is on the visible character stream for exactly that reason,
+    // and `mapped` is the invariant that says so.
+    const { mapped } = classifyDocument(LOOSE_MULTI_PARAGRAPH_ITEM, 80);
+    expect(mapped).toBe(true);
+  });
+
+  test("inline markup at the end of a probed block still renders as markup", () => {
+    // Both halves of the placement rule (`PROBE_TRAILER`): a probe after a closing `**`
+    // defeats emphasis, and a probe before a link's closing paren invalidates the href.
+    // A blockquote is the case that can show it — `marked-terminal`'s `text` renderer
+    // returns a list item's block text verbatim, so inline markup inside a list item is
+    // emitted literally either way and would not expose a broken rule.
+    const source = `> **Bold to the very end of the paragraph, which runs on long enough to wrap once**
+>
+> A [labelled link](https://example.invalid/some/path) closing the second one
+>
+> Trailing text so the two blocks above are not last.
+`;
+    for (const width of [40, 80, 116]) {
+      const plain = renderDocumentDetailed(source, width);
+      const probed = renderDocumentDetailed(probeBlockEnds(source), width);
+      expect(readBlockEnds(plain.text, probed.text).mapped).toBe(true);
+      // the emphasis really was parsed, in both renders, so `mapped` means something here
+      expect(stripAnsi(plain.text)).not.toContain("**");
+      expect(stripAnsi(probed.text)).not.toContain("**");
+    }
+  });
+
+  test("a probe never reaches the terminal", () => {
+    const probed = renderDocumentDetailed(probeBlockEnds(LOOSE_MULTI_PARAGRAPH_ITEM), 80).text;
+    // the probes are in the render (that is the mechanism) but never in the visible text
+    // the detector or the reader is handed — `readBlockEnds` is the only thing that sees them
+    expect([...probed].some((char) => char === String.fromCharCode(17))).toBe(true);
+    const plain = renderDocumentDetailed(LOOSE_MULTI_PARAGRAPH_ITEM, 80).text;
+    expect([...plain].some((char) => char.charCodeAt(0) === 17 || char.charCodeAt(0) === 18)).toBe(false);
+  });
+
+  test("frontmatter is left alone — a probe there would reach the YAML parser", () => {
+    const source = `---
+title: A note
+tags:
+  - one
+  - two
+---
+
+- Sustained throughput on the ingest path is bounded by the slowest of the three
+  stages, and in every profile we have taken that stage is the checksum
+  verifier.
+
+  Buffering ahead of it helps only until the queue is deep enough to hide a
+  single stall, after which the extra memory buys nothing at all.
+`;
+    const probed = probeBlockEnds(source);
+    expect(probed.split("---")[1]).toBe(source.split("---")[1]);
+    const { orphans, classified, mapped } = classifyDocument(source, 80);
+    expect(mapped).toBe(true);
+    expect(orphans).toEqual(["checksum verifier."]);
+    expect(classified.map((hit) => hit.kind)).toEqual(["paragraph-boundary"]);
+  });
+
+  test("mismatched renders report mapped: false instead of a wrong line", () => {
+    const plain = renderDocumentDetailed(LOOSE_MULTI_PARAGRAPH_ITEM, 80);
+    const other = renderDocumentDetailed(probeBlockEnds("- a completely different document\n"), 80);
+    expect(readBlockEnds(plain.text, other.text).mapped).toBe(false);
   });
 });
 

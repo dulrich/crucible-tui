@@ -25,7 +25,15 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { renderDocumentDetailed } from "../src/render";
-import { findContinuationOverIndent, findListOrphans, isTableLine, stripAnsi } from "../src/detectors";
+import {
+  findContinuationOverIndent,
+  findListOrphans,
+  findShearOrphans,
+  isTableLine,
+  probeBlockEnds,
+  readBlockEnds,
+  stripAnsi,
+} from "../src/detectors";
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "../src/config";
 import { NARROW_MEASURE, measureFor, type Measure } from "../src/width";
@@ -120,6 +128,16 @@ export interface CorpusResult {
   elapsedSeconds: number;
   /** Populated only under `--detect`. */
   orphans: DetectEntry[];
+  /**
+   * WP-8's reading of the same hits `orphans` counts: only those that are a short line
+   * *inside* a block rather than the last line of one. **Reported beside `orphans`, never
+   * instead of it** — `findListOrphans` is the series every dated figure in the private
+   * archive's `measurements/` was taken with, and two numbers that can be compared are
+   * the whole point of adding one.
+   */
+  shears: DetectEntry[];
+  /** Of the same hits, how many landed in a document whose probe could not be aligned. */
+  shearsUnmapped: number;
   overIndent: DetectEntry[];
   /**
    * Of `overflow`, how many are a table row or border. Many-column tables overflow below
@@ -645,6 +663,8 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
       errors: [],
       elapsedSeconds: 0,
       orphans: [],
+      shears: [],
+      shearsUnmapped: 0,
       overIndent: [],
       tableOverflow: 0,
       symlinkedDirsSkipped: 0,
@@ -671,6 +691,8 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
         errors: [],
         elapsedSeconds: (performance.now() - started) / 1000,
         orphans: [],
+        shears: [],
+        shearsUnmapped: 0,
         overIndent: [],
         tableOverflow: 0,
         symlinkedDirsSkipped: symlinkStats.symlinkedDirs,
@@ -689,6 +711,8 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
       errors: [{ path: spec.root, message: "corpus exists but matched 0 files" }],
       elapsedSeconds: (performance.now() - started) / 1000,
       orphans: [],
+      shears: [],
+      shearsUnmapped: 0,
       overIndent: [],
       tableOverflow: 0,
       symlinkedDirsSkipped: symlinkStats.symlinkedDirs,
@@ -707,6 +731,8 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
   const overflow: OverflowEntry[] = [];
   const errors: ErrorEntry[] = [];
   const orphans: DetectEntry[] = [];
+  const shears: DetectEntry[] = [];
+  let shearsUnmapped = 0;
   const overIndent: DetectEntry[] = [];
   let tableOverflow = 0;
   let combos = 0;
@@ -739,6 +765,21 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
           if (foundOrphans.length > 0) {
             const first = text.split("\n").findIndex((line) => stripAnsi(line).trim() === foundOrphans[0]);
             orphans.push({ path, targetWidth: width, count: foundOrphans.length, line: first + 1 });
+            // WP-8's second reading of exactly those hits. Only worth the second render
+            // when there is something to classify, so it is nested inside the guard
+            // above rather than run over every combo.
+            const probed = renderDocumentDetailed(probeBlockEnds(source), width, options.glyphs, measure);
+            const blockEnds = readBlockEnds(text, probed.text);
+            const foundShears = findShearOrphans(text, width, blockEnds, { codeRanges, measure });
+            if (!blockEnds.mapped) shearsUnmapped += foundOrphans.length;
+            if (foundShears.length > 0) {
+              shears.push({
+                path,
+                targetWidth: width,
+                count: foundShears.length,
+                line: foundShears[0]?.line ?? 0,
+              });
+            }
           }
           const drift = findContinuationOverIndent(text, { codeRanges, measure });
           if (drift.length > 0) {
@@ -763,6 +804,8 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
     errors,
     elapsedSeconds: (performance.now() - started) / 1000,
     orphans,
+    shears,
+    shearsUnmapped,
     overIndent,
     tableOverflow,
     symlinkedDirsSkipped: symlinkStats.symlinkedDirs,
@@ -775,12 +818,15 @@ export function printResult(result: CorpusResult, detect: boolean): void {
     return;
   }
   const orphanTotal = result.orphans.reduce((sum, entry) => sum + entry.count, 0);
+  const shearTotal = result.shears.reduce((sum, entry) => sum + entry.count, 0);
   const driftTotal = result.overIndent.reduce((sum, entry) => sum + entry.count, 0);
   console.log(
     `[${result.name}] files=${result.filesScanned} combos=${result.combos} ` +
       `overflow=${result.overflow.length} errors=${result.errors.length} ` +
       (detect
         ? `orphans=${orphanTotal} (${result.orphans.length} file-widths) ` +
+          `shears=${shearTotal} (${result.shears.length} file-widths, ` +
+          `${result.shearsUnmapped} unmapped) ` +
           `overIndent=${driftTotal} (${result.overIndent.length} file-widths) ` +
           `tableOverflow=${result.tableOverflow} `
         : "") +
