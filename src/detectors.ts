@@ -397,6 +397,15 @@ export interface ClassifiedOrphan {
    * forced rather than chosen. A corpus selected without splitting on this would take a
    * hundred link-list READMEs and count them as a hundred distinct defects. The
    * remaining 1,089 are ordinary reflow shears, a short word stranded mid-paragraph.
+   *
+   * **Post-WP-14 (measured at sprint close): 1,373 of 2,417 shears, 56.8%.** The collapse
+   * the sprint expected did not happen — parsing an item's inline markup splits
+   * `[label](url)` into two runs but does not shorten the URL, and reference links and
+   * autolinked emails *add* long tokens that were invisible while the source sat unparsed.
+   * The distribution barely moved (mean 74.1 -> 73.1 columns, p90 94 either side). WP-9's
+   * own harness derives 1,419 rather than 1,373 for the same threshold; the figure is
+   * threshold-invariant across -0..-5 columns so no conclusion turns on it, and the
+   * disagreement is recorded rather than resolved.
    */
   longestToken: number;
 }
@@ -477,11 +486,20 @@ export function classifyListOrphans(
  * **Measured, and it is not what the sprint expected.** Over the three vendored strata at
  * the five swept widths — 479 files, 2,395 file-widths, 3,223 hits — the split is 2,837
  * `shear`, 144 `paragraph-boundary`, 242 `block-boundary`, **0 `unmapped`**. The blind spot
- * is 4% of the metric, not the bulk of it, and the reason is simply that the material does
+ * is 4.5% of the metric, not the bulk of it, and the reason is simply that the material does
  * not contain the construct: 533 loose multi-paragraph item boundaries against 32,614
  * indented prose-block ends. Subtracting it moves the per-stratum firing rate from
  * 37%/49%/56% of files to 36%/44%/55%. That rate is a fact about link-dense list items —
  * see `ClassifiedOrphan.longestToken` — not about loose items.
+ *
+ * **The `0 unmapped` above is a pre-WP-14 reading and no longer holds.** Once list items
+ * began parsing their inline tokens, `readBlockEnds`' probe became defeatable *inside* an
+ * item, so the same pool now yields 49 `unmapped` hits over 7 file-width combos in 2 files.
+ * Re-measured at sprint close: **2,817 hits — 2,417 `shear`, 128 `paragraph-boundary`,
+ * 223 `block-boundary`, 49 `unmapped`**, with 175 files firing at least one shear (was
+ * 215). Every conclusion above survives the re-measurement; only the absolute counts moved.
+ * The `unmapped` bucket is doing its job — reporting non-alignment instead of guessing a
+ * label — and closing it is this detector's own follow-up, not a caller's problem.
  */
 export function findShearOrphans(
   rendered: string,

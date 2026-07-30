@@ -75,7 +75,7 @@ reason — do not remove one without re-running the corpus sweep:
 | `code` | Brackets fenced output so `--check` can exempt it, and normalizes `token.lang` through `src/lang.ts` before highlighting |
 | `html`, and a safety net on `paragraph`/`heading`/`blockquote` | A block-level tag (e.g. a line starting `<script>`) swallows a paragraph and is returned unreflowed; the library's own reflow also measures with `.length` rather than `string-width`, undercounting a few Unicode marks |
 | `paragraph`, inside a list **or a blockquote** | Every item of a **loose** list is a paragraph token dispatched through this override, so it — not `list` — is where that item's text gets wrapped. A blockquote's own prose reaches it the same way and owes the same columns. See below |
-| `text`, inside a list | Every item of a **tight** list arrives here instead, as a raw block text token still carrying the author's own line breaks. See below |
+| `text`, inside a list | Every item of a **tight** list arrives here instead, as a raw block text token still carrying the author's own line breaks — and, since WP-14, **the only place a list item's inline markup gets parsed at all**. See below |
 | `blockquote` | Parses its children itself so the body is observable, then gives back the first line's indent that the library's `quote.trim()` strips. See below |
 
 #### Loose list items are wrapped by `paragraph`, at the item's own budget
@@ -86,6 +86,12 @@ is wrapped by the `paragraph` override, **before** `list` glues on the item's ma
 its blanket indent. Wrapping it at the full target width there is what produced the
 orphaned-line defect: the text came back 6+ columns over budget and `rewrapListBody`
 reflowed it a second time, shearing the tail word onto a line of its own.
+
+**Re-verified in WP-13, because WP-14's own source comment had denied it.** The lexer
+really does hand a loose item `paragraph` children and a tight item `text` children, both
+carrying the same inline `tokens` (`marked/lib/marked.cjs:557-561` stamps `loose`; the
+block tokenizer makes the paragraph-vs-text choice). That asymmetry is the whole reason
+WP-14's defect existed on one side only — see the tight-item section below.
 
 The rule, therefore: **`paragraph` wraps at the width its text will actually occupy**,
 not at the target width. `src/render.ts` keeps a stack of the columns each enclosing block
@@ -135,6 +141,24 @@ The rule: **inside a list, in a block position, on a token that carries `tokens`
 `text` coalesces the item's soft-wrapped lines back into one logical line per segment and
 wraps once** at `targetWidth` minus the same pending-prefix stack the loose path uses.
 
+**WP-14 gave this seam a second, prior job: parsing the item's inline markup.** Because
+`marked-terminal`'s `text` returns `token.text` and never dispatches `token.tokens`, while
+its `heading` (`:116-119`), `paragraph` (`:201-211`) and `tablecell` (`:260-265`) all call
+`parser.parseInline(token.tokens)`, **a tight list item was the only container in the whole
+renderer that reached the terminal as raw markdown** — `**bold**` and `[label](url)`
+verbatim. This override now calls `parseInline` itself, then coalesces and re-wraps the
+parsed text; the two jobs are sequential, not alternatives.
+
+**The defect was a property of the token type, not of the marker — and it was never the
+loose path.** WP-14's own comment claimed one override fixed tight and loose together;
+WP-13 measured it and it is wrong. A loose item's children are `paragraph` tokens, so
+`paragraph`'s `parseInline` had always parsed them. Verified at the library baseline: a
+tight item renders `**b**` verbatim, a loose one renders it bold. What this override fixes
+is every **tight** item — unordered, ordered, task — and every nested item whose own list
+is tight, at any depth. Do not "extend" it to the loose path: a loose item's `paragraph`
+token never arrives here, and the inline `text` tokens `parseInline` dispatches carry no
+`tokens`, which is what stops a double parse.
+
 Four things that must not be simplified away:
 
 - **A `\n` here is authored, and coalescing it is lossless** — which is *not* true one
@@ -142,11 +166,20 @@ Four things that must not be simplified away:
   one space, and because nothing reflowed the text no word has been hard-split. This is
   precisely the information WP-2b found destroyed in the `paragraph` path; do not carry
   that conclusion across.
-- **A hard break is still distinguishable, but not as `HARD_RETURN`.** `Renderer.prototype.br`
-  never fires for a tight item (nothing dispatches its inline tokens), so no `\r` is ever
-  produced here — the *markdown source spelling* survives instead: two or more trailing
-  spaces, a trailing backslash, or a literal `<br>`. Those are the segment boundaries.
-  Measured over 600 corpus files: 11,675 soft breaks, 1 hard break, 0 `\r`.
+- **A hard break is distinguishable, and since WP-14 it is `HARD_RETURN` again.** This bullet
+  used to read *"`Renderer.prototype.br` never fires for a tight item (nothing dispatches its
+  inline tokens), so no `\r` is ever produced here"*, and the source spelling — two trailing
+  spaces, a trailing backslash, a literal `<br>` — was the segment boundary. Dispatching
+  inline tokens makes `br` fire inside an item for the first time, so `HARD_RETURN` now
+  carries real traffic on this path: it is emitted, converted to `HARD_RETURN + "\n"` so
+  WP-2c's `isHardBoundary` sees it, and stripped on the way out. **No bare `\r` reaches the
+  terminal** — that is a pinned invariant, not a hope. Net effect on a tight item is an
+  improvement: the break survives *and* the authored trailing spaces no longer do (before
+  WP-14 the line came out as `"• first line  "`).
+- **A hard break inside a *loose* item is still dropped, and that is a pre-existing defect,
+  not WP-14's.** The library preserves it; this repo's `paragraph` path collapses
+  `first line  \n  second line` to one line. Measured identical at `8504bd0` (pre-WP-14), so
+  the `text` seam did not cause it. Recorded in `plans/representative-corpus.md`, not fixed.
 - **Three conditions gate the pass, and all three are load-bearing:** inside a list, not
   inside a renderer that dispatches inline tokens (`paragraph`/`heading` keep an
   `inlineDepth` counter for this), and the token carries `tokens`. The same 600 files put
@@ -863,6 +896,33 @@ Neither ratchet moved: `--max-orphans` and `--max-over-indent` have **no committ
 constants** here at all. They are CLI-only, unset by default, and their threshold values
 live in the private archive with the regression corpus they ratchet.
 
+#### The table allocator is not broken, and the width gate is nearly blind
+
+Two corrections from `plans/representative-corpus.md`'s WP-6, both of which invalidate
+claims made confidently in this repo's own briefs. Read them before opening either subject
+again.
+
+**The three-column table overflow does not exist.** It was reported as a table rendering
+106–114 columns against a target of 100, and named as a defect distinct from the accepted
+≥9-column case. The reproduction snippet had lost the escape byte from its ANSI strip, so
+it was measuring SGR codes as printable columns. A census of **4,963 tables over 29,778
+renders** found **26 overflowing renders**, and every single one has `allocFits === false`,
+`rendered === minFeasible`, and **at least 9 columns** — the precedent already accepted in
+`plans/mdview.md`. There is no second table defect. `src/table.ts` allocates correctly.
+
+**Width overflow barely fires on realistic documents: 1 in 575 README combos, and 0 in
+1,000 prose combos.** This is the repo's headline gate, the thing `--check` and both sweeps
+exist to measure, and on the material users actually open it is almost never the signal.
+That is *why* `src/detectors.ts` exists and why a green sweep is such weak evidence — see
+the two sections below. Do not rank a corpus on overflow; a sprint tried and had to throw
+the metric out.
+
+**Do not weight a corpus by file count, either.** The largest vendor collection in the
+reference set is **~51% self-duplicated**: 1,571 markdown files, **771 unique**, with 766
+groups mirrored byte-for-byte under `.github/plugins/`. Every volume-weighted figure
+computed against it is wrong by roughly a factor of two, which strengthens rather than
+weakens the rule it was originally cited for.
+
 #### ⚠ The sweep proves width, and only width
 
 `--check` and both sweeps **exempt fenced-code ranges from checking**. That exemption is
@@ -886,15 +946,17 @@ code ranges are exempt). **When a gate passes, check that it passes for the righ
 `src/detectors.ts` (WP-2d) is the answer to the section above. Every list-wrap defect this
 tool has shipped was **under** the target width, and `--check` and both sweeps only test
 for *exceeding* it, so no green sweep in this repo's history has ever been evidence about
-that class. Three detectors, all width-blind by design where the width is not the point:
+that class. Three detectors, all width-blind by design where the width is not the point,
+plus WP-8's classifier that labels the first one's hits:
 
 | Detector | Finds |
 |---|---|
 | `findListOrphans(rendered, width)` | a line in a list item with <= 2 words, after a nearly-full line, followed by more prose in the same item |
 | `findContinuationOverIndent(rendered)` | a continuation line indented past **its own item's** text column |
 | `findColumnZeroMarkers(rendered)` | a rendered list marker at **column 0** — outside the block it belongs to (WP-2g) |
+| `classifyListOrphans(rendered, width, blockEnds)` (WP-8) | the same candidate set, each hit labelled `shear` / `paragraph-boundary` / `block-boundary` / `unmapped` using the `marked` token stream. `findShearOrphans` is the filtered view — the layout faults only |
 
-Five things about this module are load-bearing:
+Seven things about this module are load-bearing:
 
 - **The first two detectors are structurally blind to the column-0 class, and that is
   why the third exists.** Both require `isIndentedLine`, so a line that collapsed to
@@ -927,9 +989,30 @@ Five things about this module are load-bearing:
   because turning it on changes `findListOrphans`' historical counts. New callers pass it.
 - **`--detect` is off by default and that is not timidity.** The two bundled sweeps'
   contract is `overflow=0 errors=0`; the detectors measure a class that is still partly
-  open — the two metric blind spots the orphan detector documents, and the legitimate
+  open — the metric blind spots the orphan detector documents, and the legitimate
   over-indent class above — so switching them on by default would turn both gates red for
   known, tracked reasons and destroy their value as a signal.
+- **The loose-list blind spot is real but small, and it is NOT why the detector fires so
+  often.** This is the correction that matters most in this section, because the opposite
+  belief drove a whole sprint. `findListOrphans`' docblock documents that `marked-terminal`
+  drops the blank line between two paragraphs of a loose item, making a paragraph boundary
+  and a genuine shear the same shape in rendered text — and the reasonable inference was
+  that a detector firing on ~39–51% of real files was mostly that artefact. WP-8 measured
+  it against the token stream: over 479 files, 2,395 file-widths and 3,223 hits, the split
+  is **2,837 `shear` / 144 `paragraph-boundary` / 242 `block-boundary`**. The blind spot is
+  **4.5% of the metric**, and subtracting it moves the firing rate by about two points.
+  The material simply does not contain the construct: 533 loose multi-paragraph item
+  boundaries against 32,614 indented prose-block ends. **The real driver is long
+  unbreakable tokens** — 62% of shears sit beside a run that does not fit the item's budget
+  at all, a bare URL or a reference-style image label. The firing rate is a fact about
+  link-dense list items, not about loose ones.
+- **`unmapped` is no longer always zero, and WP-14 is why.** WP-8 measured 0 `unmapped`
+  across the pool and the classifier's docblock said so. Once WP-14 made list items parse
+  their inline tokens, `readBlockEnds`' probe became defeatable inside an item: 49 hits
+  over 7 file-width combos in 2 files. Post-WP-14 the population is **2,817 orphans /
+  2,417 shear / 128 paragraph-boundary / 223 block-boundary / 49 unmapped**, with 175 files
+  firing at least one shear (was 215). `unmapped` is the honest answer, not a failure —
+  the probe reports non-alignment rather than guessing a label. Not fixed; recorded.
 
 ##### The fast tier: few notes, every width
 
@@ -959,6 +1042,36 @@ are a **ratchet, not a target**: the regression corpus is a set of notes that ar
 just mean never running it. What must not happen is the number going up. The set itself,
 its index, and the current threshold values live in the private archive — a public clone
 has no regression corpus and no thresholds to pin.
+
+##### Two curated sets now live in the archive, and they answer different questions
+
+WP-9 of `plans/representative-corpus.md` added a second one beside the regression set. Both
+live in the private archive; neither replaces the other.
+
+| | the regression set (WP-2d) | the durable set (WP-9) |
+|---|---|---|
+| content | ~50 minimal excerpts, delta-debugged | 91 whole publishable documents, **referenced, not copied** |
+| source | the private vault | the vendored README / skills / clippings strata |
+| keyed on | defect class × construct | shape, with one named witness per member |
+| manifest | `walkAll` over a directory | **explicit per-file** |
+| answers | "does this defect still reproduce?" | "does the renderer still survive what a user opens?" |
+
+Three things about the durable set that matter from this side of the boundary:
+
+- **It is a selection manifest, not a copy** — not one markdown byte is duplicated. That is
+  what makes the clippings stratum includable at all: it is third-party copyrighted prose
+  that may not be vendored, so a member records the `sha256` pinned at ingestion plus a
+  `requiresRecreate` flag and resolves only after the archive's recreate script has run.
+  Those hashes pin a **vault snapshot, not the live web** — one post already drifted when
+  its author revised it after ingestion.
+- **Its full sweep exits non-zero by design.** Six of its renders overflow; the set was
+  assembled precisely to contain documents that trip the gates. Read `errors=0` as the
+  health signal there, never the exit code.
+- **A real coverage gap, recorded rather than papered over: all six overflows are table
+  overflows**, at 9, 10 and 19 columns. The pool contains **no non-table width-overflow
+  witness**, which is consistent with the census two sections above — overflow fires on 1
+  in 575 README combos and every instance had 9+ columns. If a non-table overflow defect is
+  ever fixed, its witness has to be synthesised.
 
 Run verification from this repo's root. This instruction used to read "run from
 ``, **not** the repo root": while this tool was a subfolder of a mono-repo, the
@@ -1290,13 +1403,21 @@ the common case rather than the rare one.
 **The real conclusion is that this does not belong in a constant at all.** Substitution
 is a *terminal capability* question, so it should follow the glyph tier the tool already
 models: `--unicode` renders glyphs, `--ascii` cannot and must leave the literal
-shortcode, with a user-config override. That is planned work, not done here. Two defects
-to fix when it lands, both measured: `insertEmojis` returns `emojiSign + ' '`, appending
-a space that was never in the source — reflow absorbs it mid-line, but it survives as
-trailing whitespace at the end of a paragraph or heading (list items trim it) — and it
-therefore changes rendered width, which is the one thing this tool exists to control.
-Shortcodes inside fences stay literal regardless, because `marked-terminal`'s `code`
-renderer never runs the transform; the glyph-tier work needs no special case for them.
+shortcode, with a user-config override.
+
+**That work has since landed — WP-11 of `plans/representative-corpus.md`.** `emoji` is now
+`emojiOverride ?? (glyphs.tier === "unicode")` (`src/render.ts`), threaded from
+`MdviewConfig.emoji` (`src/config.ts`), so config can force either direction regardless of
+tier. Every `marked-terminal` construction in a single render call — the main one and the
+per-budget ones the `paragraph` and `heading` overrides build — is passed the **same**
+`emoji` value deliberately; substitution must not depend on whether a paragraph happened to
+sit inside a list item. The measured defect went with it: the stray space `insertEmojis`
+appends (`emojiSign + ' '`, never in the source, surviving as trailing whitespace at end of
+paragraph or heading and therefore changing rendered width — the one thing this tool exists
+to control) is now stripped, fence-aware via `codeRanges` so a literal emoji-then-space the
+user actually typed inside a fence survives. Shortcodes inside fences stay literal regardless, because
+`marked-terminal`'s `code` renderer never runs the transform, so no special case was
+needed for them.
 
 **Corollary, corrected:** the file count from the prior measurement stands (12,363,
 re-measured 12,385 a day later — corpus drift, not a method error), but the
@@ -1309,10 +1430,10 @@ by following symlinks — it was added properly, as the two explicit roots this 
 now measures against. Any "verified across the whole corpus" claim made before
 2026-07-29 still carries the hole that the swept corpus was missing those two roots; it
 does not carry a hole shaped like "12,363 files of real markdown no gate has ever
-rendered," because most of that set was never real markdown in the first place. See
-`tests/render.test.ts`'s emoji-pin block for what fails if anyone sets `emoji: false`
-without doing the glyph-tier work — including the pinned trailing-space defect, which
-that work should make fail and then fix.
+rendered," because most of that set was never real markdown in the first place. The
+glyph-tier work above has since superseded the old pins: see `tests/render.test.ts`'s
+emoji-tier describe block for the behaviour now asserted per tier, including the
+trailing-space defect those pins had only recorded.
 
 **Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
 installed and exercised by this test suite — `marked@14.1.4`, `marked-terminal@7.3.0`,
