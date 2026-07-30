@@ -826,6 +826,73 @@ function extractCodeRanges(renderedWithSentinels: string): RenderResult {
   return { text, codeRanges };
 }
 
+// Matches one Unicode emoji glyph (an optional variation selector after it, since
+// `node-emoji` sometimes includes U+FE0F) immediately followed by exactly the single
+// space `insertEmojis` appends, immediately followed by whatever ANSI SGR codes close
+// that segment's styling (`chalk.reset`/`chalk.green.bold`/etc. wrap the *whole*
+// rendered string, so the appended space sits before their closing codes, not after —
+// verified with `FORCE_COLOR=3`, see `tests/helpers/color.ts`), then end of line. Under
+// `bun test` (no TTY, chalk level 0) there are no SGR codes at all and the second group
+// matches empty, so the same expression covers both.
+const TRAILING_ANSI_SGR_SOURCE = "(?:\\x1b\\[[0-9;]*m)*";
+const EMOJI_TRAILING_SPACE = new RegExp(`(\\p{Extended_Pictographic}\\uFE0F?) (${TRAILING_ANSI_SGR_SOURCE})$`, "u");
+
+/**
+ * Strip the stray space `insertEmojis` (`marked-terminal`) appends after every
+ * substituted glyph, wherever it survived to the true end of a rendered line (WP-11).
+ *
+ * That space was never in the source. Reflow already absorbs it mid-line — the next
+ * word on the same line gets rejoined with a single space regardless — so this only
+ * ever fires at the end of a paragraph, a heading, or a list item, which is exactly
+ * where the pre-WP-11 pinned tests recorded it surviving. Applying one rule uniformly
+ * here, on the fully rendered body, replaces three inconsistent per-renderer behaviors
+ * (paragraph and heading keep it, a list item happens to drop it only when it is the
+ * list's last line — an accident of `marked-terminal`'s own `list()` doing
+ * `body.trim()` on the whole concatenated body, not a deliberate per-item trim; see the
+ * WP-11 report) with one: no trailing space the source did not have, anywhere.
+ *
+ * The implemented predicate is deliberately a **superset** of that rule: it strips a
+ * single end-of-line space after *any* `Extended_Pictographic` character, without
+ * proving the glyph came from `insertEmojis`. So an authored trailing space does lose
+ * out when it follows a pictographic character — `"Acme (c) "` keeps its space,
+ * `"Acme ©️ "` does not. That difference is intentional and measured: the residue is
+ * invisible trailing whitespace at end of line, it strictly narrows rendered width
+ * rather than widening it, and distinguishing an authored glyph from a substituted one
+ * would mean tracking substitution provenance through `marked-terminal`'s renderer for
+ * no observable gain. Anything before end-of-line, and any authored space after a
+ * non-pictographic character, is untouched.
+ *
+ * Skips every line inside a code range (`codeRanges`, 1-based inclusive, ascending by
+ * construction) — fenced *and* indented, since `extractCodeRanges` records both: that
+ * content is exempted, verbatim-from-source output by this tool's own contract, so a
+ * literal emoji-then-space sequence the user actually typed inside one must survive
+ * untouched, not be mistaken for this artifact.
+ */
+function stripEmojiTrailingSpace(body: string, codeRanges: ReadonlyArray<readonly [number, number]>): string {
+  if (codeRanges.length === 0) {
+    return body
+      .split("\n")
+      .map((line) => line.replace(EMOJI_TRAILING_SPACE, "$1$2"))
+      .join("\n");
+  }
+
+  let rangeIndex = 0;
+  return body
+    .split("\n")
+    .map((line, index) => {
+      const lineNumber = index + 1;
+      while (rangeIndex < codeRanges.length) {
+        const current = codeRanges[rangeIndex];
+        if (current === undefined || current[1] >= lineNumber) break;
+        rangeIndex += 1;
+      }
+      const current = codeRanges[rangeIndex];
+      const inCode = current !== undefined && lineNumber >= current[0] && lineNumber <= current[1];
+      return inCode ? line : line.replace(EMOJI_TRAILING_SPACE, "$1$2");
+    })
+    .join("\n");
+}
+
 /**
  * How many columns `Renderer.prototype.blockquote`'s `quote.trim()` is about to strip
  * off the **first content line** of an already-rendered blockquote body — the second,
@@ -1051,6 +1118,7 @@ export function renderDocumentDetailed(
   targetWidth: number,
   glyphs: GlyphSet = UNICODE_GLYPHS,
   measure: Measure = NARROW_MEASURE,
+  emojiOverride?: boolean,
 ): RenderResult {
   const { meta, body } = splitFrontmatter(source);
   // The divider is appended *into* `metaBlock` itself, before `metaLineOffset` below is
@@ -1067,33 +1135,50 @@ export function renderDocumentDetailed(
   const processedBody = preprocessBody(body, glyphs);
 
   const instance = new Marked();
-  // WP-3 (corpus-symlink-membership): `emoji` is left at its default `true`, and
-  // that is now a decision rather than an omission.
+  // WP-11 (representative-corpus): shortcode substitution follows the glyph tier.
   //
-  // It was twice proposed to set `emoji: false` to save ~468 KB in the compiled
-  // binary. **That saving does not exist.** `marked-terminal` imports `node-emoji`
-  // at module top level and the option only picks a function at runtime
-  // (`this.emoji = this.o.emoji ? insertEmojis : identity`), so the dependency is
-  // bundled either way; compiling both ways differs by tens of bytes on a ~97 MB
-  // binary. There was never a binary-size case for this, in either direction.
+  // It was twice proposed to set `emoji: false` unconditionally to save ~468 KB in
+  // the compiled binary. **That saving does not exist** (see `AGENTS.md`'s emoji
+  // section) — `marked-terminal` imports `node-emoji` at module top level and the
+  // option only picks a function at runtime (`this.emoji = this.o.emoji ?
+  // insertEmojis : identity`), so the dependency is bundled either way.
   //
-  // The corpus evidence says only that turning it off would be *harmless here*:
-  // `scripts/emoji-audit.ts` (committed, re-runnable, behavioural — render each
-  // candidate token twice and keep only tokens whose bytes differ) finds zero
-  // authored prose shortcodes across ~44.7k files; the prior "392 in 59 files"
-  // came from symlink-reachable machine junk, a corpus-membership bug WP-1 fixed.
-  // Harmless is not a reason. In a modern terminal the default expectation is that
-  // `:rocket:` renders as a glyph, and the planned GitHub-README corpus is expected
-  // to be dense with exactly that.
+  // The real conclusion (also `AGENTS.md`): this is a *terminal-capability*
+  // question, not a constant. Rendering `:rocket:` as 🚀 requires a terminal that
+  // can draw it, which is exactly what `glyphs.tier` already models — Unicode
+  // renders the glyph, ASCII cannot and keeps the literal shortcode — with
+  // `emojiOverride` (threaded from `MdviewConfig.emoji`, `src/config.ts`) able to
+  // force either direction regardless of tier. `emojiOverride ?? tier-based` is
+  // deliberately computed **once, here**, and handed to all three `markedTerminal`
+  // constructions below (this one and the two per-budget caches) so substitution
+  // can never disagree between a document's top-level text and a loose list
+  // item's or blockquote's, which render through a second, separately-constructed
+  // extension — see `paragraphRendererAt`/`headingRendererAt`.
   //
-  // So this belongs in config, not in a constant: shortcode substitution should
-  // follow the glyph tier (`--unicode` renders glyphs, `--ascii` cannot and must
-  // leave the literal shortcode), which is the next sprint's work. Two known
-  // defects to fix when it lands: `insertEmojis` appends a stray space after the
-  // glyph (`emojiSign + ' '`), and it therefore changes text width — which this
-  // tool exists to control. Shortcodes inside fences stay literal regardless;
-  // `marked-terminal`'s `code` renderer never runs the transform.
-  const extension = markedTerminal({ width: targetWidth, reflowText: true });
+  // The caches themselves need no *key* change: `budgetedParagraphs` and
+  // `budgetedHeadings` are declared inside this function (recreated on every call
+  // to `renderDocumentDetailed`), so every entry in a given call's map is already
+  // built under this same call's single `emoji` value — there is no cross-tier
+  // reuse for a compound key to prevent. The bug this WP actually guards against
+  // is subtler: forgetting to pass `emoji` to those two constructions at all,
+  // which would silently default them to the library's own `true` regardless of
+  // tier — making list/blockquote-nested substitution disagree with top-level
+  // substitution at the ASCII tier specifically. Pinned in
+  // `tests/render.test.ts`'s emoji-tier describe block.
+  //
+  // `insertEmojis` (`marked-terminal`) appends a stray space after every glyph
+  // (`emojiSign + ' '`) that was never in the source. Reflow absorbs it when more
+  // text follows on the same line; at the true end of a rendered line it is
+  // trailing whitespace this tool did not put there, and it survives independent
+  // of ANSI styling (`chalk.reset`/`chalk.green.bold` etc. wrap the whole segment,
+  // so the space sits *before* their closing SGR codes, not after). Stripped
+  // uniformly, once, by `stripEmojiTrailingSpace` below, skipping fenced code
+  // (`codeRanges`) so a literal emoji+space the user actually typed inside a fence
+  // is never touched. Shortcodes inside fences stay literal regardless —
+  // `marked-terminal`'s `code` renderer never runs the transform at all, so this
+  // needs no special case there; verified by test.
+  const emoji = emojiOverride ?? glyphs.tier === "unicode";
+  const extension = markedTerminal({ width: targetWidth, reflowText: true, emoji });
   const renderer = extension.renderer;
   if (renderer) {
     renderer.table = (token: Tokens.Table) => renderTable(token, targetWidth, glyphs, measure);
@@ -1238,11 +1323,11 @@ export function renderDocumentDetailed(
     const paragraphRendererAt = (budget: number): typeof renderer.paragraph => {
       const cached = budgetedParagraphs.get(budget);
       if (cached) return cached;
-      // Same `emoji` default as the main construction above, deliberately — see that
+      // Same `emoji` value as the main construction above, deliberately — see that
       // comment. A per-budget renderer built with a different `emoji` setting would
       // make shortcode substitution depend on whether a paragraph happened to sit
       // inside a list, which is not a distinction this tool's output should make.
-      const paragraph = markedTerminal({ width: budget, reflowText: true }).renderer?.paragraph;
+      const paragraph = markedTerminal({ width: budget, reflowText: true, emoji }).renderer?.paragraph;
       if (paragraph) budgetedParagraphs.set(budget, paragraph);
       return paragraph;
     };
@@ -1379,9 +1464,9 @@ export function renderDocumentDetailed(
     const headingRendererAt = (budget: number): typeof renderer.heading => {
       const cached = budgetedHeadings.get(budget);
       if (cached) return cached;
-      // Same `emoji` default as the main construction above, for the same reason as
+      // Same `emoji` value as the main construction above, for the same reason as
       // `paragraphRendererAt`.
-      const heading = markedTerminal({ width: budget, reflowText: true }).renderer?.heading;
+      const heading = markedTerminal({ width: budget, reflowText: true, emoji }).renderer?.heading;
       if (heading) budgetedHeadings.set(budget, heading);
       return heading;
     };
@@ -1447,6 +1532,14 @@ export function renderDocumentDetailed(
   // a bug in either one can never silently affect the other's bookkeeping.
   const cleanedBody = stripTaskStateSentinel(strippedBody);
 
+  // WP-11: one uniform pass over the body strips `insertEmojis`'s stray trailing
+  // space wherever it survived to end-of-line, skipping fenced ranges. `bodyRanges`
+  // (not the offset `codeRanges` below) is correct here — `cleanedBody`'s own line
+  // numbering starts at 1 for the body, the same numbering `extractCodeRanges` used to
+  // record `bodyRanges` in the first place; the `metaLineOffset` shift below is only
+  // for the *returned* `codeRanges`, which describe the final `metaBlock`-prefixed text.
+  const emojiCleanedBody = stripEmojiTrailingSpace(cleanedBody, bodyRanges);
+
   // `metaBlock` never passes through `code`/`rewriteTaskState`, so it never carries
   // either sentinel; its own line count is a fixed offset onto the body's ranges once
   // the two are joined.
@@ -1458,7 +1551,7 @@ export function renderDocumentDetailed(
     ...bodyRanges.map(([start, end]): [number, number] => [start + metaLineOffset, end + metaLineOffset]),
   ];
 
-  return { text: `${metaBlock}${cleanedBody}`, codeRanges };
+  return { text: `${metaBlock}${emojiCleanedBody}`, codeRanges };
 }
 
 export function renderDocument(
@@ -1466,6 +1559,7 @@ export function renderDocument(
   targetWidth: number,
   glyphs: GlyphSet = UNICODE_GLYPHS,
   measure: Measure = NARROW_MEASURE,
+  emojiOverride?: boolean,
 ): string {
-  return renderDocumentDetailed(source, targetWidth, glyphs, measure).text;
+  return renderDocumentDetailed(source, targetWidth, glyphs, measure, emojiOverride).text;
 }

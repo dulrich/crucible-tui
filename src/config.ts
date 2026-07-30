@@ -14,6 +14,15 @@ import { dirname, join } from "node:path";
  * module loads, so a user entry for a key that also has a built-in default
  * wins. `mdview highlight-as` (`src/cli.ts`) is the write path, via
  * `writeHighlightAlias` below.
+ *
+ * WP-11 adds `emoji`: whether `:shortcode:` substitution follows the glyph tier
+ * (unset — the default) or is forced on/off regardless of tier. Unlike
+ * `highlightAs`, this key is not layered over anything — it is read once in
+ * `src/cli.ts`'s view path and handed to `renderDocumentDetailed` as an explicit
+ * `emojiOverride` argument (`src/render.ts`), the same "config stays impure,
+ * render stays pure and takes explicit values" split `glyphs`/`measure` already
+ * use, rather than the module-level-state pattern `setHighlightAliases` uses —
+ * see that function's own doc comment for why *its* case needs a global instead.
  */
 export interface MdviewConfig {
   /** Path to a corpus manifest (see `scripts/sweep.ts`'s `CorpusManifest`). */
@@ -24,6 +33,12 @@ export interface MdviewConfig {
    * Layered over — never replacing — `src/lang.ts`'s built-in map.
    */
   highlightAs?: Record<string, string>;
+  /**
+   * Force `:shortcode:` substitution on (`true`) or off (`false`), overriding the
+   * glyph-tier default (Unicode renders glyphs, ASCII keeps the literal shortcode).
+   * Unset (the common case) means "follow the tier".
+   */
+  emoji?: boolean;
 }
 
 const CONFIG_DEFAULTS: MdviewConfig = {};
@@ -104,6 +119,13 @@ export async function loadConfig(path = resolveConfigPath()): Promise<MdviewConf
     if (record.highlightAs !== undefined) {
       const highlightAs = validateHighlightAs(record.highlightAs, path);
       if (highlightAs) config.highlightAs = highlightAs;
+    }
+    if (record.emoji !== undefined) {
+      if (typeof record.emoji === "boolean") {
+        config.emoji = record.emoji;
+      } else {
+        console.error(`mdview: ignoring malformed "emoji" at ${path}: expected a boolean`);
+      }
     }
     return config;
   } catch (error) {

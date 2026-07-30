@@ -321,7 +321,13 @@ async function runView(args: string[]): Promise<void> {
         "out with it. Set MDVIEW_AMBIGUOUS=narrow to override (see `mdview probe`).\n",
     );
   }
-  const { text: output, codeRanges } = renderDocumentDetailed(source, targetWidth, glyphs, ambiguous.measure);
+  const { text: output, codeRanges } = renderDocumentDetailed(
+    source,
+    targetWidth,
+    glyphs,
+    ambiguous.measure,
+    config.emoji,
+  );
 
   if (options.check) {
     const overflow = checkOverflow(output, targetWidth, codeRanges, ambiguous.measure);

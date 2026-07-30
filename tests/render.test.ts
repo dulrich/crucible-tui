@@ -1396,63 +1396,177 @@ describe("renderDocument — lists inside blockquotes (WP-2g)", () => {
   });
 });
 
-// WP-3 (corpus-symlink-membership): pins shortcode substitution **on**, which is
-// `marked-terminal`'s default and a deliberate choice — see the comment at
-// `src/render.ts`'s main `markedTerminal()` construction. The audit that was meant to
-// justify turning it off (`scripts/emoji-audit.ts`, committed and re-runnable) instead
-// killed the reason for it: the ~468 KB binary saving does not exist, because
-// `node-emoji` is imported unconditionally and the option only selects a function at
-// runtime. In a modern terminal `:rocket:` is expected to render as a glyph.
+// WP-11 (representative-corpus, formerly WP-7): shortcode substitution follows the
+// glyph tier — Unicode renders the glyph (the default, matching `marked-terminal`'s own
+// default), ASCII cannot draw it and keeps the literal shortcode, and
+// `MdviewConfig.emoji` (`src/config.ts`) overrides either direction via the
+// `emojiOverride` argument `renderDocumentDetailed`/`renderDocument` now accept. See
+// `src/render.ts`'s `emoji` computation at the top of `renderDocumentDetailed` and
+// `AGENTS.md`'s emoji section for why this is no longer a hardcoded constant.
 //
-// These tests fail if anyone sets `emoji: false` at any of the three construction
-// sites, including the two per-budget caches. That is not a permanent veto: making
-// substitution follow the glyph tier (`--ascii` cannot render glyphs and must keep the
-// literal) is planned work, and whoever does it updates these tests deliberately —
-// which is the point of pinning it.
-describe("renderDocument — emoji shortcode substitution stays on (WP-3)", () => {
-  test("a prose shortcode in a paragraph is substituted with its glyph", () => {
-    const output = renderDocument("Ship it :rocket: today.\n", 80);
+// These tests fail if any of the three `markedTerminal()` construction sites — the
+// main one, or either per-budget cache (`paragraphRendererAt`, `headingRendererAt`) —
+// stop honoring the same `emoji` value, or if the config override stops reaching
+// `renderDocumentDetailed`.
+describe("renderDocument — emoji shortcode substitution follows the glyph tier (WP-11)", () => {
+  test("unicode tier: a prose shortcode in a paragraph is substituted with its glyph", () => {
+    const output = renderDocument("Ship it :rocket: today.\n", 80, UNICODE_GLYPHS);
     const plain = stripAnsi(output);
     expect(plain).toContain("🚀");
     expect(plain).not.toContain(":rocket:");
   });
 
-  test("a prose shortcode in a heading is substituted with its glyph", () => {
-    const output = renderDocument("# Status :white_check_mark:\n", 80);
+  test("unicode tier: a prose shortcode in a heading is substituted with its glyph", () => {
+    const output = renderDocument("# Status :white_check_mark:\n", 80, UNICODE_GLYPHS);
     const plain = stripAnsi(output);
     expect(plain).toContain("✅");
     expect(plain).not.toContain(":white_check_mark:");
   });
 
-  test("a shortcode inside a loose list item's own budgeted paragraph renderer is substituted too", () => {
+  test("ascii tier: a shortcode in a paragraph keeps its literal text, no glyph", () => {
+    // The terminal-capability question this WP exists to answer: an ASCII terminal
+    // cannot draw 🚀, so the literal shortcode is the only thing it can render.
+    const output = renderDocument("Ship it :rocket: today.\n", 80, ASCII_GLYPHS);
+    const plain = stripAnsi(output);
+    expect(plain).toContain(":rocket:");
+    expect(plain).not.toContain("🚀");
+  });
+
+  test("ascii tier: a shortcode in a heading keeps its literal text, no glyph", () => {
+    const output = renderDocument("# Status :white_check_mark:\n", 80, ASCII_GLYPHS);
+    const plain = stripAnsi(output);
+    expect(plain).toContain(":white_check_mark:");
+    expect(plain).not.toContain("✅");
+  });
+
+  test("unicode tier: a shortcode inside a loose list item's own budgeted paragraph renderer is substituted too", () => {
     // Exercises `paragraphRendererAt` — the per-budget cache with its own
-    // `markedTerminal()` construction, which must carry the same `emoji` setting.
+    // `markedTerminal()` construction, which must carry the same `emoji` value.
     // Substitution must not depend on whether a paragraph sits inside a list.
     const source = "- one\n\n  still one, with a shortcode :bulb: in its second paragraph\n\n- two\n";
-    const output = renderDocument(source, 80);
+    const output = renderDocument(source, 80, UNICODE_GLYPHS);
     const plain = stripAnsi(output);
     expect(plain).toContain("💡");
     expect(plain).not.toContain(":bulb:");
   });
 
-  test("a shortcode inside a fence stays literal, whatever the option says", () => {
-    const output = renderDocument("```\n:star:\n```\n", 80);
+  test("ascii tier: the same budgeted-paragraph seam keeps the literal, not a unicode-cached glyph", () => {
+    // The likeliest bug this WP guards against: `paragraphRendererAt`'s cache is keyed
+    // only by budget, so if it were built without `emoji` it would silently default to
+    // the library's own `true` regardless of tier. Proven by reverting the `emoji`
+    // argument at this call site alone (leaving the main construction correct) and
+    // confirming this exact source then renders 💡 at the ASCII tier — see the WP-11
+    // report for the reproduction. With `emoji` threaded through, it must not.
+    const source = "- one\n\n  still one, with a shortcode :bulb: in its second paragraph\n\n- two\n";
+    const output = renderDocument(source, 80, ASCII_GLYPHS);
     const plain = stripAnsi(output);
-    // `marked-terminal`'s `code` renderer never runs `insertEmojis`, so fence content
-    // is inert by construction — it proves nothing about the `emoji` option either
-    // way, and nobody should mistake it for evidence. Recorded so the glyph-tier work
-    // knows fences already behave correctly and need no special case.
-    expect(plain).toContain(":star:");
+    expect(plain).toContain(":bulb:");
+    expect(plain).not.toContain("💡");
   });
 
-  test("the stray space `insertEmojis` appends is absorbed mid-line but survives at end of block", () => {
+  test("ascii tier: a heading inside a blockquote — the budgeted-heading cache seam — also keeps the literal", () => {
+    // Same proof as above for `headingRendererAt`: a blockquote's non-zero
+    // `pendingPrefixWidth()` forces `budget !== targetWidth`, which is exactly what
+    // routes a nested heading through the per-budget cache instead of `originalHeading`.
+    const output = renderDocument("> ## Heads :bulb:\n", 40, ASCII_GLYPHS);
+    const plain = stripAnsi(output);
+    expect(plain).toContain(":bulb:");
+    expect(plain).not.toContain("💡");
+  });
+
+  test("config override forces substitution on at the ascii tier", () => {
+    const output = renderDocument("Ship it :rocket: today.\n", 80, ASCII_GLYPHS, undefined, true);
+    const plain = stripAnsi(output);
+    expect(plain).toContain("🚀");
+    expect(plain).not.toContain(":rocket:");
+  });
+
+  test("config override forces substitution off at the unicode tier", () => {
+    const output = renderDocument("Ship it :rocket: today.\n", 80, UNICODE_GLYPHS, undefined, false);
+    const plain = stripAnsi(output);
+    expect(plain).toContain(":rocket:");
+    expect(plain).not.toContain("🚀");
+  });
+
+  test("a shortcode inside a fence stays literal, whatever the tier or override says", () => {
+    // `marked-terminal`'s `code` renderer never runs `insertEmojis`, so fence content
+    // is inert by construction — true regardless of `emoji`, and this existing path
+    // needs no special case for the glyph-tier work. Proven at both tiers and with the
+    // override explicitly forcing substitution on, so nothing here is an accident of
+    // the ASCII tier just happening not to substitute.
+    for (const [glyphs, override] of [
+      [UNICODE_GLYPHS, undefined],
+      [ASCII_GLYPHS, undefined],
+      [UNICODE_GLYPHS, true],
+    ] as const) {
+      const output = renderDocument("```\n:star:\n```\n", 80, glyphs, undefined, override);
+      const plain = stripAnsi(output);
+      expect(plain).toContain(":star:");
+    }
+  });
+
+  test("no trailing space the source did not have, anywhere: mid-line, paragraph end, heading end", () => {
     // `insertEmojis` returns `emojiSign + ' '` — the glyph plus a space that was never
-    // in the source. Measured, not assumed: reflow collapses it against following text,
-    // so mid-sentence output is clean, but at the end of a paragraph or heading it
-    // survives as trailing whitespace. List items trim it. Pinned as-is rather than
-    // worked around, so the glyph-tier WP sees exactly which case it has to fix.
+    // in the source. Mid-line, reflow rejoins it against the following word so the
+    // extra byte is invisible; at the true end of a rendered line nothing follows to
+    // reflow against, and pre-WP-11 that survived as trailing whitespace. WP-11's
+    // contract: strip it uniformly, so end-of-paragraph and end-of-heading now match
+    // mid-line — no trailing space anywhere, not "sometimes, depending on position".
     expect(stripAnsi(renderDocument("Ship it :rocket: today.\n", 80))).toContain("Ship it 🚀 today.");
-    expect(stripAnsi(renderDocument("All done :rocket:\n", 80))).toContain("🚀 \n");
-    expect(stripAnsi(renderDocument("- item :bulb:\n", 80))).toContain("💡\n");
+    expect(stripAnsi(renderDocument("All done :rocket:\n", 80))).toContain("🚀\n");
+    expect(stripAnsi(renderDocument("All done :rocket:\n", 80))).not.toContain("🚀 \n");
+    expect(stripAnsi(renderDocument("# Status :white_check_mark:\n", 80))).toContain("✅\n");
+    expect(stripAnsi(renderDocument("# Status :white_check_mark:\n", 80))).not.toContain("✅ \n");
+  });
+
+  test("no trailing space in a list item, including one that is not the list's last line", () => {
+    // Pre-WP-11 this only looked uniformly "trimmed" because `marked-terminal`'s own
+    // `list()` does `body.trim()` on the whole concatenated body — which happens to
+    // eat the very last item's trailing space as a side effect of trimming the whole
+    // string, not because any per-item logic drops it. A **non-last** item proves the
+    // rule is now real: before this WP, `item :bulb: \n    * item2 ...` kept the space
+    // on the first item's own line.
+    const twoItems = stripAnsi(renderDocument("- item :bulb:\n- item2 :bulb:\n", 80));
+    expect(twoItems).toContain("💡\n");
+    expect(twoItems).not.toContain("💡 \n");
+    const singleItem = stripAnsi(renderDocument("- item :bulb:\n", 80));
+    expect(singleItem).toContain("💡\n");
+    expect(singleItem).not.toContain("💡 \n");
+  });
+
+  test("no trailing space survives under real ANSI styling, not just the colorless test default", async () => {
+    // Under `bun test` chalk is level 0 (no TTY) and every SGR-code assumption above is
+    // vacuous. `renderWithForcedColor` renders in a fresh subprocess with FORCE_COLOR=3
+    // set before that process's module graph loads, so `chalk.reset`/`chalk.green.bold`
+    // actually wrap the rendered segment — proving `stripEmojiTrailingSpace`'s regex
+    // correctly looks *past* the closing SGR codes for the artifact space, rather than
+    // only working by accident when there are none to look past.
+    const paragraph = await renderWithForcedColor("All done :rocket:\n", 80);
+    const paragraphPlain = stripAnsi(paragraph.text);
+    expect(paragraphPlain).toContain("🚀\n");
+    expect(paragraphPlain).not.toContain("🚀 \n");
+    // Built the same indirect way `src/render.ts`'s own `EMOJI_TRAILING_SPACE` is: a
+    // separately-declared source string interpolated into `new RegExp`, not a regex
+    // literal — eslint's `no-control-regex` flags a literal ESC escape it can see
+    // directly, not one behind this level of indirection.
+    const ansiSgrSource = "(?:\\x1b\\[[0-9;]*m)*";
+    expect(paragraph.text).not.toMatch(new RegExp(`🚀 ${ansiSgrSource}\\n`));
+
+    const heading = await renderWithForcedColor("# Status :white_check_mark:\n", 80);
+    const headingPlain = stripAnsi(heading.text);
+    expect(headingPlain).toContain("✅\n");
+    expect(headingPlain).not.toContain("✅ \n");
+  });
+
+  test("a fenced code block's own literal emoji-then-space content is never touched by the trailing-space strip", () => {
+    // `stripEmojiTrailingSpace` must skip fenced ranges (`codeRanges`), or a document
+    // that happens to contain a real emoji character followed by a real trailing space
+    // as literal fence content would be silently mangled — exactly the fence-verbatim
+    // contract this tool already guarantees for width, extended here to this new pass.
+    const source = "```\n🎉 \n```\n";
+    const output = renderDocument(source, 80);
+    // The fence's own trailing space must survive; only bytes outside `codeRanges`
+    // are ever candidates for this strip.
+    expect(output).toContain("🎉 \n");
   });
 });
