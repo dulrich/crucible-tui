@@ -1,0 +1,7 @@
+# tests/fixtures/witnesses/defect-0-crlf-frontmatter.md must reach every checkout with
+# its authored CRLF line endings intact — that is the whole point of the fixture (see
+# tests/fixtures/witnesses/README.md). `-text` tells git to treat it as binary: no
+# line-ending conversion on checkin or checkout, under any core.autocrlf setting, on any
+# machine, ever. Without this, the fixture is one `core.autocrlf=true` or one editor
+# "fix line endings" action away from silently becoming an LF file that witnesses nothing.
+tests/fixtures/witnesses/defect-0-crlf-frontmatter.md -text

@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "generated": "2026-07-29",
+  "generator": "WP-10 (representative-corpus revision), hand-authored",
+  "fix_commit": "6ba370bb89521538f69d689d8a70226be1ad82cf",
+  "note": "One record per witness. `revert_differentiates: false` marks a boundary/scope check that is asserted for completeness but does not itself go red on the pre-fix commit -- WP-10's brief calls out a test that passes both with and without its fix as witnessing nothing, so that distinction is recorded here rather than left implicit.",
+  "witnesses": [
+    {
+      "id": "defect-0-crlf",
+      "wp5_row": 0,
+      "description": "CRLF frontmatter reached the yaml parser as bytes that do not parse (a bare \\r survives on every key), so valid YAML was reported unparseable and echoed raw at very wide columns.",
+      "fix": "normalizeLineEndings (src/frontmatter.ts:48), applied to the meta candidate in splitFrontmatter; body left byte-for-byte.",
+      "fixture": "tests/fixtures/witnesses/defect-0-crlf-frontmatter.md",
+      "fixture_kind": "reconstructed",
+      "fixture_note": "Real CRLF bytes on disk, pinned by .gitattributes `-text` (repo root) so no core.autocrlf setting can silently convert it to LF.",
+      "test_file": "tests/witnesses.test.ts",
+      "describe": "witness: defect 0 -- CRLF frontmatter (tests/fixtures/witnesses/defect-0-crlf-frontmatter.md)",
+      "companion_pinning_tests": "tests/frontmatter.test.ts, describe(\"defect 0 -- CRLF frontmatter reaches the parser as bytes that parse\")",
+      "revert_method": "splitFrontmatter's `meta: normalizeLineEndings(candidate)` changed back to `meta: candidate`",
+      "revert_differentiates": true
+    },
+    {
+      "id": "defect-1-diagnostic-wrap",
+      "wp5_row": 1,
+      "description": "The yaml parse diagnostic was emitted unwrapped (~105 columns at target 80); the summary is ours to wrap, the excerpt/caret pair is yaml's own and must stay verbatim so the caret keeps its column.",
+      "fix": "formatMetaBlockDetailed's catch branch splits `reason` at its first newline and wraps the summary through wrapValue (src/frontmatter.ts:~300-308); the excerpt/caret detail is appended verbatim.",
+      "fixture": "tests/fixtures/witnesses/defect-1-2-unparseable-frontmatter.md",
+      "fixture_kind": "reconstructed",
+      "fixture_note": "A plain scalar followed by `{a: b} c` is a real, deterministic yaml \"Nested mappings are not allowed in compact mappings\" error, not a paraphrase of one.",
+      "test_file": "tests/witnesses.test.ts",
+      "describe": "witness: defect 1 -- diagnostic wraps, excerpt/caret do not (tests/fixtures/witnesses/defect-1-2-unparseable-frontmatter.md)",
+      "companion_pinning_tests": "tests/frontmatter.test.ts, describe(\"defect 1 -- the parse diagnostic wraps, the excerpt and caret do not\")",
+      "revert_method": "the catch branch's wrapValue(summary, ...) call replaced with the raw pre-fix join (dim(`! could not parse frontmatter: ${reason}`) + dim(meta.trimEnd()))",
+      "revert_differentiates": true
+    },
+    {
+      "id": "defect-2-echo-exemption",
+      "wp5_row": 2,
+      "description": "The raw echo of an unparseable block -- the file's own bytes, not our layout -- was measured against the width gate like any other output line.",
+      "fix": "MetaBlockResult.verbatimRanges (src/frontmatter.ts:~220-254) records the echoed block's line span; renderDocumentDetailed prepends it to codeRanges (src/render.ts:1455-1459) so --check and the sweep exempt exactly that span.",
+      "fixture": "tests/fixtures/witnesses/defect-1-2-unparseable-frontmatter.md",
+      "fixture_kind": "reconstructed",
+      "fixture_note": "Same fixture as defect 1: the same unparseable block drives both the diagnostic-wrap fix and the echo-exemption fix.",
+      "test_file": "tests/witnesses.test.ts",
+      "describe": "witness: defect 2 -- only the verbatim echo is exempt (tests/fixtures/witnesses/defect-1-2-unparseable-frontmatter.md)",
+      "companion_pinning_tests": "tests/frontmatter.test.ts, describe(\"defect 2 -- only the verbatim echo is exempt from the width check\")",
+      "revert_method": "renderDocumentDetailed's codeRanges construction reverted to drop metaResult?.verbatimRanges (i.e. codeRanges = bodyRanges.map(...) only, the pre-fix shape)",
+      "revert_differentiates": true
+    },
+    {
+      "id": "defect-2-success-path-boundary",
+      "wp5_row": 2,
+      "description": "The load-bearing scope check: the exemption must cover only the echoed block, not the whole formatMetaBlock output, or a genuinely over-width successfully-parsed block would escape the width gate.",
+      "fix": "Same as defect-2-echo-exemption; formatMetaBlockDetailed's success path (the final `return { text: formatMapping(...), verbatimRanges: [] }`) contributes no exempt ranges.",
+      "fixture": "tests/fixtures/witnesses/defect-2-success-path-overwide.md",
+      "fixture_kind": "reconstructed",
+      "test_file": "tests/witnesses.test.ts",
+      "describe": "witness: defect 2 -- a successfully parsed, over-width block is still caught (tests/fixtures/witnesses/defect-2-success-path-overwide.md)",
+      "companion_pinning_tests": "tests/frontmatter.test.ts, describe(\"defect 2\"), test(\"a successfully parsed, over-width meta block is still caught\")",
+      "revert_method": "not revert-differentiating -- see revert_note",
+      "revert_differentiates": false,
+      "revert_note": "Before WP-5, renderDocumentDetailed's codeRanges never included any frontmatter output at all (parsed or degraded), so a successfully-parsed over-width block was already caught on the parent commit too. This assertion guards the fix from being widened incorrectly in the future (e.g. exempting formatMetaBlock's whole output rather than just verbatimRanges) more than it proves the original defect; recorded here rather than left to look like a fourth revert-provable witness."
+    },
+    {
+      "id": "defect-3-nested-mapping",
+      "wp5_row": 3,
+      "description": "A nested mapping at depth >= 1 was JSON.stringify'd and pushed straight to output without ever consulting targetWidth, so a machine payload could land at four-figure column counts at every width.",
+      "fix": "The depth >= 1 branch's stringified form now goes through wrapValue (src/frontmatter.ts:~195-210) like every scalar sibling.",
+      "fixture": "tests/fixtures/witnesses/defect-3-nested-mapping.md",
+      "fixture_kind": "reconstructed",
+      "test_file": "tests/witnesses.test.ts",
+      "describe": "witness: defect 3 -- nested mapping respects targetWidth (tests/fixtures/witnesses/defect-3-nested-mapping.md)",
+      "companion_pinning_tests": "tests/frontmatter.test.ts, describe(\"defect 3 -- a nested mapping at depth >= 1 respects targetWidth\")",
+      "revert_method": "formatMapping's depth >= 1 branch reverted to `lines.push(indent + dim(paddedKey) + \": \" + JSON.stringify(value))`, unwrapped",
+      "revert_differentiates": true
+    },
+    {
+      "id": "cjk-excerpt-synthetic",
+      "wp5_row": null,
+      "description": "yaml folds its own parse-error excerpt to 80 *characters*, not columns. A CJK-heavy source line can therefore produce an excerpt far wider than the target in columns, while being exactly the character budget yaml allows. No file in the corpus hits this shape yet; WP-5 measured it and deliberately left the excerpt un-exempt so a future occurrence goes red rather than silent.",
+      "fix": "None -- this is a documented, intentional gap, not a defect that was fixed. The witness pins current (correct) behaviour: the excerpt is not exempted and a file that hits this shape turns the width gate red.",
+      "fixture": "tests/fixtures/witnesses/defect-cjk-excerpt.md",
+      "fixture_kind": "synthetic",
+      "fixture_note": "Added by WP-10 per the plan's revision text (\"Adds the CJK 152-column excerpt as a synthetic fixture\"). No real corpus file drove this; none exists yet.",
+      "test_file": "tests/witnesses.test.ts",
+      "describe": "witness: synthetic CJK excerpt -- un-exempt by design (tests/fixtures/witnesses/defect-cjk-excerpt.md)",
+      "companion_pinning_tests": "tests/frontmatter.test.ts, describe(\"defect 1\"), test(\"a CJK excerpt can exceed the target -- the excerpt is left un-exempt so the gate says so\")",
+      "revert_method": "not applicable -- there is no fix to revert; see description",
+      "revert_differentiates": false
+    }
+  ]
+}
