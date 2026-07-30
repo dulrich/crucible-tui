@@ -1319,16 +1319,28 @@ export function renderDocumentDetailed(
         // everywhere *except* a list item, and why a blockquote nested *inside* a list
         // item is fine while the item's own text is not.
         //
-        // Every list item routes here, not just a tight one. A tight item's children go
-        // to `Parser.parse(item.tokens, false)`, whose block `text` case dispatches here
-        // and emits the result directly. A **loose** item's children reach the *same*
-        // case with `top === true` (`marked/lib/marked.cjs:1976-1994`), and that branch
-        // still builds its body from `this.renderer.text(textToken)` before wrapping it
-        // in a *synthesised* paragraph token whose `tokens` is a single text token with
-        // **no** `tokens` of its own — so `paragraph`'s `parseInline` has nothing left to
-        // parse and re-emits the same string. One override therefore fixes tight, loose,
-        // nested, ordered and task items together, and the synthesised token's missing
-        // `tokens` is what stops the loose path parsing twice.
+        // **Only a *tight* item routes here, and that is the whole scope of the defect.**
+        // This comment claimed the opposite when WP-14 landed — that a loose item's
+        // children reached the block `text` case with `top === true` and were wrapped in a
+        // synthesised paragraph whose text token had no `tokens`, so one override fixed
+        // tight and loose together. That mechanism is not what `marked` does; WP-13
+        // re-measured it and corrected the record.
+        //
+        // What decides it is the **token type an item's children carry**, not the marker.
+        // `marked`'s list lexer stamps `loose` (`marked/lib/marked.cjs:557-561`) and the
+        // block tokenizer then gives a **tight** item `text` children and a **loose** item
+        // `paragraph` children — both carrying the same inline `tokens`. `listitem`
+        // dispatches either through `Parser.parse(item.tokens, !!item.loose)`
+        // (`marked-terminal` `index.js:184`), so a loose item's children land on the
+        // `paragraph` case, whose override already calls `parseInline`. **Loose items were
+        // never broken.** Verified at the library baseline: a tight item renders `**b**`
+        // verbatim, a loose one renders it bold.
+        //
+        // So this override fixes tight items of every marker kind — unordered, ordered,
+        // task — plus every nested item whose own list is tight, at any depth. It does not
+        // touch the loose path and must not: a loose item's `paragraph` token never reaches
+        // here, and the `text` tokens `parseInline` dispatches from inside it carry no
+        // `tokens`, so condition 3 excludes them. That is what stops a double parse.
         //
         // `inlineDepth` is raised for the duration, upholding this seam's own condition 2
         // for the recursive calls `parseInline` makes: the text tokens inside `strong`,
