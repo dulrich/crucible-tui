@@ -49,6 +49,17 @@ jobs:
       - name: Sweep (bundled public-safe corpus, ASCII tier)
         run: bun run sweep -- --glyphs ascii
 
+      # Mirrors the local `bun run test:security` gate (AGENTS.md). CI has no
+      # warmed Trivy DB cache, so this installs Trivy fresh and may omit
+      # --skip-db-update; the local AGENTS.md command stays offline-flagged.
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.73.0
+
+      - name: Security scan (Trivy — deps)
+        run: trivy fs --scanners vuln --exit-code 1 --severity CRITICAL,HIGH .
+
       # Deliberately NOT run here: the fast-tier defect-detector sweep
       # (`bun run sweep -- --corpus regressions --widths 40-360 --detect`).
       # That corpus is a frozen regression set that lives in a private

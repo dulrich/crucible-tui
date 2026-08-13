@@ -484,6 +484,7 @@ bun test tests
 bun run src/cli.ts --check --width 80 tests/fixtures/wide-table.md
 bun run sweep
 bun run sweep -- --glyphs ascii
+bun run test:security
 ```
 
 **Flag order matters.** `bun run --cwd <dir> <script>` works; `bun --cwd <dir> run
