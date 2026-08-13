@@ -10,7 +10,8 @@
     "install:man": "mkdir -p \"$HOME/.local/share/man/man1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/mdview.1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/crucible-tui.1\"",
     "sweep": "bun run scripts/sweep.ts",
     "gen-licenses": "bun run scripts/gen-licenses.ts",
-    "test:security": "trivy fs --scanners vuln --skip-db-update --exit-code 1 --severity CRITICAL,HIGH ."
+    "test:security": "trivy fs --scanners vuln --skip-db-update --exit-code 1 --severity CRITICAL,HIGH .",
+    "verify": "bun run scripts/verify.ts"
   },
   "dependencies": {
     "cli-highlight": "2.1.11",

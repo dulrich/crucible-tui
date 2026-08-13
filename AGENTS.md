@@ -254,8 +254,8 @@ an item's text column is. The fixture is `tests/fixtures/nested-list.md`.
 #### `rewrapListBody` rewrites neither a fence nor a marker
 
 The last pass over a composed list body re-wraps the lines still over budget at that
-level. Two things it must never do, **both invisible to all seven gates**, and both of
-which it did until WP-2f.
+level. Two things it must never do, **both invisible to every gate `bun run verify`
+runs**, and both of which it did until WP-2f.
 
 **It must never rewrite a line that belongs to a fenced block.** The rendering policy
 below is unqualified — fenced code is never rewritten, because the corpus's fences are
@@ -474,18 +474,42 @@ line. See "`rewrapListBody` rewrites neither a fence nor a marker" above.
 
 ## Run
 
-From the repository root, run gates sequentially, stopping at the first failure:
+From the repository root, the verification contract is two commands (WP-1 of
+`plans/tn-review-remediation.md` — one canonical entrypoint, called identically here and
+from CI):
 
 ```bash
 bun install
+bun run verify
+```
+
+`bun run verify` (`scripts/verify.ts`) runs every gate in fail-fast order, printing which
+step failed and exiting non-zero at the first one that does. In order, it runs:
+
+```bash
 bun run typecheck
 bun run lint
 bun test tests
+bun run build
+./dist/mdview --check --width 80 tests/fixtures/wide-table.md
+bun run scripts/gen-licenses.ts --check
 bun run src/cli.ts --check --width 80 tests/fixtures/wide-table.md
 bun run sweep
 bun run sweep -- --glyphs ascii
 bun run test:security
 ```
+
+That list is the explanation of what `verify` does, not a second thing to run by hand —
+every command in it is byte-identical to the gate that already existed for it, plus three
+that existed but were not wired into any single chain before WP-1: the compiled build, a
+smoke of the built artifact (a build step alone cannot see a broken binary), and license
+freshness in `--check` mode (renders to memory and compares against
+`THIRD-PARTY-LICENSES.txt`, so a failing local run never leaves the tree dirty — the
+default `bun run gen-licenses`, with no flag, still writes).
+
+**`verify` never runs `bun install`.** Local floats (`bun install`), CI freezes (`bun
+install --frozen-lockfile`), and that asymmetry is deliberate — installation stays a
+separate step, run once before `verify`, in both places.
 
 **Flag order matters.** `bun run --cwd <dir> <script>` works; `bun --cwd <dir> run
 <script>` does **not** — on Bun 1.3.11 it prints `bun run`'s help text and **exits 0**,
@@ -493,9 +517,33 @@ i.e. it silently passes without executing the script. Verified reproducible in a
 unrelated package, so it is a Bun CLI behavior, not a quirk of this one. Never write the
 second form into a gate: it is a gate that can never fail.
 
-The `--check` gate is the CLI's own self-smoke: it renders with no pager and exits
-non-zero if any output line exceeds the target width. All **seven** gates are binding
-and must exit 0.
+The `--check` step is the CLI's own self-smoke: it renders with no pager and exits
+non-zero if any output line exceeds the target width. Every step `bun run verify` runs is
+binding and must exit 0.
+
+### Security gate bootstrap (trivy)
+
+The security step runs `bun run test:security`
+(`trivy fs --scanners vuln --skip-db-update --exit-code 1 --severity CRITICAL,HIGH .`) —
+offline by design, so a normal `bun run verify` never touches the network for it. That
+means it fails on a machine that has never run trivy before: trivy absent from PATH (exit
+127), or a cold/stale vulnerability DB cache (trivy's own "cannot skip downloading DB" /
+"--skip-db-update cannot be specified on the first run" errors; the DB also expires
+roughly daily). `scripts/verify.ts` preflights for both cases and fails with a loud,
+actionable message instead of a raw 127 or FATAL — it does **not** skip the gate with a
+warning, because a security scan that can silently not-run is worse than no gate at all
+(see "Flag order matters" above). One-time bootstrap, on a fresh clone or after the DB
+goes stale:
+
+```bash
+curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+  | sh -s -- -b ~/.local/bin v0.73.0
+trivy fs --scanners vuln --exit-code 0 --severity CRITICAL,HIGH .
+```
+
+The second command warms the DB cache (network required); after that, `bun run
+test:security` and therefore `bun run verify` run fully offline via `--skip-db-update`
+until the cache goes stale again.
 
 ### Command-line surface (WP-4)
 
@@ -1085,7 +1133,7 @@ measurement.
 
 `tests/helpers/containment.ts` holds the rules; `tests/sweep.test.ts` runs them over
 every file here, **itself included**. They are part of `bun test`, so they are covered by
-the seven gates and need no separate command.
+`bun run verify` and need no separate command.
 
 **It used to be a denylist of five literal private strings, and that shape cannot work.**
 A denylist can only contain the leaks somebody already found: it was extended twice by

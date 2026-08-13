@@ -952,8 +952,9 @@ describe("renderDocument — nested-list continuation over-indent (WP-2e)", () =
 
   // The landmine this pass walks past on every line it looks at: `substituteBullets`
   // honours `SENTINEL`, `rewrapListBody` does not (WP-2f), and adding a second offender
-  // would have been invisible to all seven gates, since code ranges are exempt from
-  // width checking. The decoys are the two marker shapes on the fence's first line.
+  // would have been invisible to every gate `bun run verify` runs, since code ranges are
+  // exempt from width checking. The decoys are the two marker shapes on the fence's
+  // first line.
   test("a fence nested inside a nested list item keeps its own content", async () => {
     const source = await fixture();
     for (const [, glyphs] of WP2_TIERS) {
@@ -1038,9 +1039,9 @@ describe("renderDocument — nested-list continuation over-indent (WP-2e)", () =
 // ---------------------------------------------------------------------------
 // WP-2f — fenced code inside a list item, and the marker-shaped continuation.
 //
-// **Both invariants here are invisible to all seven gates, for the same structural
-// reason.** `--check` and both sweeps exempt recorded `codeRanges` from width checking,
-// so a pass that *corrupts* a line inside one cannot make a width gate fail — and a
+// **Both invariants here are invisible to every gate `bun run verify` runs, for the same
+// structural reason.** `--check` and both sweeps exempt recorded `codeRanges` from width
+// checking, so a pass that *corrupts* a line inside one cannot make a width gate fail — and a
 // continuation line that starts `*` is under the width by definition. `rewrapListBody`
 // shipped from WP-2 with neither the `SENTINEL` walk `substituteBullets` and
 // `realignNestedContinuations` both have, nor the `MARKER_SHAPED_LINE` guard both
