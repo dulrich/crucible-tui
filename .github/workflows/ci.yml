@@ -19,46 +19,29 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Lint
-        run: bun run lint
-
-      - name: Test
-        run: bun test tests
-
-      - name: Self-smoke (--check on a known-wide fixture)
-        run: bun run src/cli.ts --check --width 80 tests/fixtures/wide-table.md
-
-      # THIRD-PARTY-LICENSES.txt is generated, and going stale is a licence-
-      # compliance failure rather than a cosmetic one: add a dependency, forget
-      # to regenerate, and the published repo ships attribution that omits a
-      # package it actually redistributes. The generator is deterministic (no
-      # timestamps), so regenerating and diffing is a real gate. The unit tests
-      # assert that specific notices are *present*; only this catches absence.
-      - name: Third-party notices are current
-        run: |
-          bun run gen-licenses
-          git diff --exit-code -- THIRD-PARTY-LICENSES.txt \
-            || { echo "::error::THIRD-PARTY-LICENSES.txt is stale — run 'bun run gen-licenses' and commit the result."; exit 1; }
-
-      - name: Sweep (bundled public-safe corpus, Unicode tier)
-        run: bun run sweep
-
-      - name: Sweep (bundled public-safe corpus, ASCII tier)
-        run: bun run sweep -- --glyphs ascii
-
-      # Mirrors the local `bun run test:security` gate (AGENTS.md). CI has no
-      # warmed Trivy DB cache, so this installs Trivy fresh and may omit
-      # --skip-db-update; the local AGENTS.md command stays offline-flagged.
+      # CI-only setup: bun run verify's security step calls `bun run
+      # test:security`, which uses --skip-db-update (see AGENTS.md's
+      # "Security gate bootstrap (trivy)") — that requires a vulnerability DB
+      # to already exist, and a fresh runner has no cache. Install Trivy, then
+      # warm the DB once (exit-code 0: this is a download, not the gate
+      # itself) so the actual scan inside `bun run verify` runs offline like
+      # the local gate does.
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin v0.73.0
+          trivy fs --scanners vuln --exit-code 0 --severity CRITICAL,HIGH .
 
-      - name: Security scan (Trivy — deps)
-        run: trivy fs --scanners vuln --exit-code 1 --severity CRITICAL,HIGH .
+      # One canonical gate chain (WP-1 of plans/tn-review-remediation.md):
+      # typecheck, lint, tests, the compiled build plus a smoke of the built
+      # artifact, license freshness, the --check self-smoke, both bundled
+      # sweeps, and the security scan above — see AGENTS.md's Run section for
+      # the full step list `bun run verify` (scripts/verify.ts) runs, in
+      # order. Installation stays outside verify and split by environment:
+      # this job freezes (`--frozen-lockfile`, above); a local `bun install`
+      # floats.
+      - name: Verify
+        run: bun run verify
 
       # Deliberately NOT run here: the fast-tier defect-detector sweep
       # (`bun run sweep -- --corpus regressions --widths 40-360 --detect`).
@@ -67,8 +50,9 @@ jobs:
       # (see AGENTS.md's "Corpus sweep" section) — it will never exist on a
       # public runner. Writing a step for it here would either fail every
       # run for a reason contributors can't fix, or silently no-op on
-      # missing data and look green while proving nothing. The two sweep
-      # steps above run for real, against the bundled public-safe manifest
-      # (`corpus/default-manifest.json`) that ships with the source; the
-      # regression sweep against real corpora is a maintainer-only,
-      # local-only verification step (see AGENTS.md), not a CI gate.
+      # missing data and look green while proving nothing. The two sweeps
+      # `bun run verify` runs above run for real, against the bundled
+      # public-safe manifest (`corpus/default-manifest.json`) that ships with
+      # the source; the regression sweep against real corpora is a
+      # maintainer-only, local-only verification step (see AGENTS.md), not a
+      # CI gate.

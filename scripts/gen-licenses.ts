@@ -26,6 +26,24 @@
  * root). Regenerate after any dependency change — this file is generated,
  * not hand-maintained.
  *
+ * `--check` (used by `bun run verify` / WP-1) renders to memory and compares
+ * against the file already on disk, exiting non-zero on any mismatch or on a
+ * missing file, without writing anything — so a failing local run never
+ * leaves the working tree dirty. The default (no flag) still writes, exactly
+ * as before.
+ *
+ * **Why that check is a real gate, and not redundant with the unit tests.**
+ * Going stale is a licence-compliance failure rather than a cosmetic one: add
+ * a dependency, forget to regenerate, and the published repo ships
+ * attribution that omits a package it actually redistributes. The generator
+ * is deterministic — no timestamps, sorted, deduped — so rendering and
+ * comparing is a real gate rather than a coin flip. And the distinction that
+ * makes it irreplaceable: `tests/licenses.test.ts` asserts that specific
+ * notices are *present*; **only this catches absence.** That reasoning lived
+ * in `.github/workflows/ci.yml` until WP-1 collapsed the per-gate steps into
+ * `bun run verify`; it moved here, to the code that now owns the check,
+ * rather than being deleted along with the step that used to carry it.
+ *
  * No filesystem path is ever written to the output. This repo is published
  * and grew up next to private ones; every off-the-shelf license aggregator
  * happily embeds `/home/<user>/.../node_modules/<pkg>/LICENSE` into its
@@ -183,5 +201,21 @@ for (const pkg of packages) {
 }
 
 const output = `${lines.join("\n")}\n`;
-await Bun.write(join(ROOT, "THIRD-PARTY-LICENSES.txt"), output);
-console.log(`gen-licenses: wrote THIRD-PARTY-LICENSES.txt (${packages.length} packages)`);
+const targetPath = join(ROOT, "THIRD-PARTY-LICENSES.txt");
+
+if (process.argv.includes("--check")) {
+  const existing = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
+  if (existing === output) {
+    console.log(`gen-licenses --check: THIRD-PARTY-LICENSES.txt is current (${packages.length} packages)`);
+  } else {
+    console.error(
+      existing === null
+        ? 'gen-licenses --check: THIRD-PARTY-LICENSES.txt does not exist — run "bun run gen-licenses" to generate it.'
+        : 'gen-licenses --check: THIRD-PARTY-LICENSES.txt is stale — run "bun run gen-licenses" and commit the result.',
+    );
+    process.exit(1);
+  }
+} else {
+  await Bun.write(targetPath, output);
+  console.log(`gen-licenses: wrote THIRD-PARTY-LICENSES.txt (${packages.length} packages)`);
+}
