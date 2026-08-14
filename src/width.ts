@@ -58,10 +58,17 @@ import stringWidth from "string-width";
  *
  * ## What wide mode does *not* fix
  *
- * `cli-table3` bundles its own `string-width@4`, which has no `ambiguousIsNarrow`
- * option at all, so its internal cell padding can never honour wide mode. See
- * `src/table.ts`'s `renderTable` for what the existing re-render loop does and does
- * not absorb, and `AGENTS.md`'s "Ambiguous width (WP-3)" for the measured residual.
+ * Not the per-cell table padding — that residual is **closed**. It existed because
+ * `cli-table3` assembled the finished table and pads with its own bundled
+ * `string-width@4`, which has no `ambiguousIsNarrow` option at all; `src/table.ts`
+ * now emits its own borders and pads with the `Measure` it was given, so there is
+ * nothing left to reconcile.
+ *
+ * What remains is the glyph-choice problem: `─ │ ┌ ┬ ┼ …` are themselves Ambiguous and
+ * measure 2 under wide, so the Unicode tier's border row is exactly twice its content
+ * rows however carefully it is padded. That is handled by refusing the tier —
+ * `wideForcesAscii` in `src/glyphs.ts` — not by measurement. See `AGENTS.md`'s
+ * "Ambiguous width (WP-3)".
  */
 
 // ---------------------------------------------------------------------------

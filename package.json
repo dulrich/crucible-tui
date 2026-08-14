@@ -14,8 +14,8 @@
     "verify": "bun run scripts/verify.ts"
   },
   "dependencies": {
+    "@colors/colors": "1.5.0",
     "cli-highlight": "2.1.11",
-    "cli-table3": "0.6.5",
     "marked": "14.1.4",
     "marked-terminal": "7.3.0",
     "string-width": "7.2.0",

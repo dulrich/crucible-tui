@@ -1,4 +1,4 @@
-import { graphemes, splitToken } from "./table";
+import { graphemes, splitToken } from "./text";
 import { NARROW_MEASURE, type Measure } from "./width";
 
 /**
@@ -164,5 +164,5 @@ export function wrapAnsi(text: string, width: number, measure: Measure = NARROW_
 }
 
 // Re-exported so callers that need raw grapheme counts (tests, mainly) don't have to
-// reach into `./table` for it separately.
+// reach into `./text` for it separately.
 export { graphemes };

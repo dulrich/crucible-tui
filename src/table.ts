@@ -1,6 +1,7 @@
-import Table from "cli-table3";
+import colors from "@colors/colors/safe";
 import type { Token, Tokens } from "marked";
 import type { GlyphSet } from "./glyphs";
+import { type Align, padToWidth, splitToken } from "./text";
 import { NARROW_MEASURE, type Measure } from "./width";
 
 /**
@@ -25,19 +26,24 @@ import { NARROW_MEASURE, type Measure } from "./width";
 // ---------------------------------------------------------------------------
 
 /**
- * cli-table3 geometry, stated once so the chrome budget is derived rather than
- * guessed. These values MUST match the `style` object passed in `renderTable`.
+ * Table geometry, stated once so the chrome budget is derived rather than guessed.
+ * These values are consumed by both the allocator and the emitter below, which is
+ * what keeps the two from disagreeing.
  *
  * A rendered table line looks like:
  *
  *     │ cell │ cell │ cell │
  *     ^ ^  ^ ^                 border, pad-left, content, pad-right, border...
  *
- * so for an N-column table there are N+1 vertical rules and N pairs of padding.
- * Critically, cli-table3's `colWidths` are *cell* widths that INCLUDE padding —
- * treating them as content widths is the +2-per-column overshoot that the
- * prototype of this allocator shipped. `cellWidth()` is the only place that
- * conversion happens.
+ * so for an N-column table there are N+1 vertical rules and N pairs of padding —
+ * `chromeWidth` is `3N + 1`, and every glyph in either tier is exactly 1 display
+ * column under narrow measurement, so the arithmetic holds for both.
+ *
+ * Critically, a *cell* width INCLUDES its padding while an allocated *content* width
+ * does not; treating one as the other is the +2-per-column overshoot that the
+ * prototype of this allocator shipped, and `tests/table.test.ts` still asserts
+ * `maxWidth(output) !== target + 2` because of it. `cellWidth()` is the only place
+ * that conversion happens.
  */
 const PADDING_LEFT = 1;
 const PADDING_RIGHT = 1;
@@ -47,9 +53,11 @@ const BORDER_COLUMNS = 1;
 export const MIN_COLUMN_WIDTH = 6;
 
 /**
- * Hard lower bound on a cell width. cli-table3's border and content rows only stay
- * the same width once the cell width exceeds the padding, so content width 0 is not
- * merely ugly — it misaligns the whole table.
+ * Hard lower bound on a cell width. A content width of 0 is not merely ugly: the
+ * emitter's rule rows are drawn from the *cell* width and its content rows from the
+ * content width plus padding, and a wrapped line can never be narrower than one
+ * grapheme, so a zero-width column would let a single character push its own row
+ * wider than the rule above it and misalign the whole table.
  */
 const ABSOLUTE_MIN_COLUMN_WIDTH = 1;
 
@@ -60,7 +68,7 @@ export function chromeWidth(columnCount: number): number {
   return verticalRules * BORDER_COLUMNS + columnCount * (PADDING_LEFT + PADDING_RIGHT);
 }
 
-/** Convert a content width to the cell width cli-table3's `colWidths` expects. */
+/** Convert an allocated content width to the full cell width, padding included. */
 function cellWidth(contentWidth: number): number {
   return contentWidth + PADDING_LEFT + PADDING_RIGHT;
 }
@@ -134,7 +142,7 @@ export function cellText(cell: Tokens.TableCell): string {
 export interface TableGrid {
   header: string[];
   rows: string[][];
-  aligns: ("left" | "center" | "right")[];
+  aligns: Align[];
   columnCount: number;
 }
 
@@ -319,40 +327,6 @@ export function allocateWidths(natural: number[], targetWidth: number): Allocati
 // Step 4 — lossless splitting
 // ---------------------------------------------------------------------------
 
-const GRAPHEMES = new Intl.Segmenter("en", { granularity: "grapheme" });
-
-/** Split a string into grapheme clusters, so emoji sequences are never cut apart. */
-export function graphemes(text: string): string[] {
-  return Array.from(GRAPHEMES.segment(text), (segment) => segment.segment);
-}
-
-/**
- * Hard-split one unbreakable token into chunks no wider than `width` display columns.
- *
- * This is the step that makes the output lossless and is the specific advantage over
- * `rich-cli` and `cli-table3`'s own behaviour, both of which would ellipsize here.
- * `splitToken(t, w).join("") === t` for every `t` — nothing is ever dropped.
- */
-export function splitToken(token: string, width: number, measure: Measure = NARROW_MEASURE): string[] {
-  const limit = Math.max(1, width);
-  const chunks: string[] = [];
-  let current = "";
-  let currentWidth = 0;
-
-  for (const grapheme of graphemes(token)) {
-    const graphemeWidth = measure(grapheme);
-    if (currentWidth > 0 && currentWidth + graphemeWidth > limit) {
-      chunks.push(current);
-      current = "";
-      currentWidth = 0;
-    }
-    current += grapheme;
-    currentWidth += graphemeWidth;
-  }
-  if (current !== "") chunks.push(current);
-  return chunks.length > 0 ? chunks : [""];
-}
-
 /**
  * Wrap cell text to `width` display columns: greedy fill on word boundaries, with
  * any word too wide for the column hard-split first. Never ellipsizes.
@@ -385,70 +359,262 @@ export function wrapText(text: string, width: number, measure: Measure = NARROW_
 }
 
 // ---------------------------------------------------------------------------
-// Step 5 — render
+// Step 5 — the emitter
 // ---------------------------------------------------------------------------
 
 /**
- * Render a markdown table to ANSI, guaranteed to fit within `targetWidth`.
+ * **Why this module emits its own borders (WP-3 of `plans/tn-review-remediation.md`).**
  *
- * The single sanctioned exception is a table too wide to fit even at the per-column
- * floor (>= 9 columns at an 80-column target): it is emitted at its minimum feasible
- * width instead of being truncated or thrown away. `allocateWidths(...).fits` reports
- * that case for callers that need to know.
+ * Until this package the finished string was assembled by `cli-table3`, and that was a
+ * correctness defect, not merely a dependency. `cli-table3` bundles **its own**
+ * `string-width@4.2.3` (nested under its `node_modules`, beside this repo's top-level
+ * `7.2.0`) and that version has **no `ambiguousIsNarrow` option at all**, so its
+ * per-cell padding could never honour `MDVIEW_AMBIGUOUS=wide`. A cell holding *k* East
+ * Asian *Ambiguous* characters was padded *k* columns too wide; *k* varies cell by cell
+ * within a column, so a table's right edge could be **ragged by up to *k* columns**.
+ * `AGENTS.md` recorded that as not fixable from outside the library, and it was right:
+ * the library pads to its own `colWidths` in its own units, so no pre-padding,
+ * pre-wrapping or budget adjustment on this side could make its count agree with ours.
+ *
+ * Padding here with the caller's own `Measure` — the same ruler `allocateWidths` used
+ * and the same one `--check` will grade the result with — makes that disagreement
+ * **impossible by construction** rather than repaired after the fact. The capped
+ * render/measure/reallocate loop that used to chase the *aggregate* overage (and could
+ * only ever chase the aggregate, never the per-cell raggedness) is gone with it, along
+ * with `MAX_FIT_PASSES` and `maxRenderedWidth`.
+ *
+ * **What this does NOT fix, stated plainly so the win is not heard as a bigger one.**
+ * Wide mode plus the Unicode tier still cannot lay out a table, and nothing here
+ * changes that. `─ │ ┌ ┬ ┼ …` are themselves Ambiguous and measure 2 columns under
+ * `wide`, so a border row is exactly **2x** the content rows — 160 columns at a target
+ * of 80, 200 at 100, pinned in `tests/width.test.ts`. That is a glyph-choice problem,
+ * it is handled by `wideForcesAscii` in `src/glyphs.ts`, and it survives this work
+ * untouched. The combination the CLI actually produces in wide mode is the **ASCII**
+ * tier, every glyph of which is unambiguously 1 column, and *that* is the combination
+ * whose right edge is now straight.
+ *
+ * The feature surface reproduced is strictly the subset this repo asked `cli-table3`
+ * for — `head`, `colWidths`, `colAligns`, `style.head`/`style.border`, the padding
+ * pair, `wordWrap: false` and `chars`. There is no `colSpan`, no `rowSpan`, no row
+ * height, no vertical alignment and no truncation, because this module never used any
+ * of them. Truncation in particular is not merely unused: this repo's rendering policy
+ * is that **nothing is ever ellipsized**, and `cli-table3`'s `pad()` fell through to a
+ * `truncate()` that appends `…` whenever its own measurement said a line did not fit.
  */
-/** Widest rendered line, measured with *our* `Measure` — the one `--check` uses. */
-function maxRenderedWidth(text: string, measure: Measure): number {
-  let max = 0;
-  for (const line of text.split("\n")) {
-    const width = measure(line);
-    if (width > max) max = width;
-  }
-  return max;
+
+/**
+ * One border glyph per slot, resolved from the tier's `chars` record.
+ *
+ * The names are `cli-table3`'s (which is where the tier's kebab-cased `chars` keys in
+ * `src/glyphs.ts` come from), kept deliberately so the ASCII tier's table stays a
+ * drop-in and so anyone diffing this against the old output has the same vocabulary.
+ * Twelve of the fifteen slots draw the three horizontal rules; the other three draw
+ * the vertical rules on a content line.
+ */
+interface BorderChars {
+  readonly topLeft: string;
+  readonly topMid: string;
+  readonly top: string;
+  readonly topRight: string;
+  readonly leftMid: string;
+  readonly midMid: string;
+  readonly mid: string;
+  readonly rightMid: string;
+  readonly bottomLeft: string;
+  readonly bottomMid: string;
+  readonly bottom: string;
+  readonly bottomRight: string;
+  readonly left: string;
+  readonly middle: string;
+  readonly right: string;
 }
 
-function buildTable(
-  grid: TableGrid,
-  natural: number[],
-  budget: number,
-  glyphs: GlyphSet,
-  measure: Measure,
-): { text: string; fits: boolean } {
-  const { widths, fits } = allocateWidths(natural, budget);
-  const layout = (row: string[]): string[] =>
-    row.map((cell, index) => wrapText(cell, widths[index] ?? ABSOLUTE_MIN_COLUMN_WIDTH, measure).join("\n"));
+/**
+ * The Unicode tier's set, which is exactly `cli-table3`'s own default charset.
+ *
+ * `GlyphSet.tableChars` is `undefined` for that tier — it used to mean "let the library
+ * keep its default" and now means "use this", so the constant has to reproduce the
+ * library's defaults byte-for-byte or the Unicode tier's output would change. It does;
+ * `tests/table.test.ts`'s `RULES` set is the standing check that these are the glyphs
+ * being emitted.
+ */
+const UNICODE_BORDER: BorderChars = {
+  topLeft: "┌",
+  topMid: "┬",
+  top: "─",
+  topRight: "┐",
+  leftMid: "├",
+  midMid: "┼",
+  mid: "─",
+  rightMid: "┤",
+  bottomLeft: "└",
+  bottomMid: "┴",
+  bottom: "─",
+  bottomRight: "┘",
+  left: "│",
+  middle: "│",
+  right: "│",
+};
 
-  const table = new Table({
-    head: layout(grid.header),
-    colWidths: widths.map(cellWidth),
-    colAligns: grid.aligns,
-    // Padding is declared here and consumed by chromeWidth()/cellWidth(); the two
-    // must agree or the table overshoots the target by 2 columns per column.
-    style: {
-      head: ["bold"],
-      border: ["grey"],
-      "padding-left": PADDING_LEFT,
-      "padding-right": PADDING_RIGHT,
+/**
+ * Map a tier's kebab-cased `chars` record onto the slots above, falling back per slot.
+ *
+ * Per-slot rather than all-or-nothing because that is what the library did
+ * (`Object.assign({}, defaults.chars, options.chars)`), so a partial override stays
+ * legal. Both shipped tiers are total: Unicode passes `undefined` and ASCII supplies
+ * all fifteen keys.
+ */
+function resolveBorderChars(chars: Readonly<Record<string, string>> | undefined): BorderChars {
+  if (chars === undefined) return UNICODE_BORDER;
+  const pick = (key: string, fallback: string): string => chars[key] ?? fallback;
+  return {
+    topLeft: pick("top-left", UNICODE_BORDER.topLeft),
+    topMid: pick("top-mid", UNICODE_BORDER.topMid),
+    top: pick("top", UNICODE_BORDER.top),
+    topRight: pick("top-right", UNICODE_BORDER.topRight),
+    leftMid: pick("left-mid", UNICODE_BORDER.leftMid),
+    midMid: pick("mid-mid", UNICODE_BORDER.midMid),
+    mid: pick("mid", UNICODE_BORDER.mid),
+    rightMid: pick("right-mid", UNICODE_BORDER.rightMid),
+    bottomLeft: pick("bottom-left", UNICODE_BORDER.bottomLeft),
+    bottomMid: pick("bottom-mid", UNICODE_BORDER.bottomMid),
+    bottom: pick("bottom", UNICODE_BORDER.bottom),
+    bottomRight: pick("bottom-right", UNICODE_BORDER.bottomRight),
+    left: pick("left", UNICODE_BORDER.left),
+    middle: pick("middle", UNICODE_BORDER.middle),
+    right: pick("right", UNICODE_BORDER.right),
+  };
+}
+
+/**
+ * The two styles the old `style: { head: ["bold"], border: ["grey"] }` produced.
+ *
+ * `@colors/colors` is imported rather than the codes being written out inline, and the
+ * reason is the same one `NARROW_MEASURE` exists for: it makes this axis of the output
+ * **unchanged by construction** instead of by measurement. That package decides whether
+ * to colour at all — and it decides it *without* consulting `isTTY`, because
+ * `cli-table3` called `colors.supportsColor()` with no stream argument, so the answer
+ * comes from the environment alone (`TERM`, `--no-color`, `FORCE_COLOR`, CI markers).
+ * That is a different rule from the one `chalk` applies to the rest of this renderer,
+ * where a non-TTY means level 0 and no SGR codes at all. Reproducing the rule by hand
+ * would have been ~60 lines of fidelity risk to change nothing on purpose.
+ *
+ * It is now a **direct** dependency, declared in `package.json`, for the reason
+ * `AGENTS.md` gives about `cli-highlight` and `cli-table3`: an import that resolves
+ * only because some other package hoisted a compatible copy is code that works by
+ * accident of a different package's dependency tree.
+ */
+const styleBorder = (text: string): string => colors.grey(text);
+const styleHead = (text: string): string => colors.bold(text);
+
+/** A row's cells, each already wrapped into its own display lines. */
+type LaidOutRow = string[][];
+
+/**
+ * Draw one horizontal rule.
+ *
+ * `kind` picks the three glyphs that vary: `top` is the rule above the header, `mid`
+ * every rule between two rows, `bottom` the one under the last row. Each column
+ * contributes its left junction plus `cellWidth` fill glyphs, and the last column also
+ * contributes the right junction — and each column's contribution is wrapped in the
+ * border style *separately*, which is not decoration but the escape-sequence layout
+ * `cli-table3` produced (one wrap per cell, not one per line). Reproducing it is what
+ * makes the narrow-mode diff empty rather than merely equivalent.
+ */
+function drawRule(widths: number[], chars: BorderChars, kind: "top" | "mid" | "bottom"): string {
+  const junctions = {
+    top: { first: chars.topLeft, inner: chars.topMid, fill: chars.top, last: chars.topRight },
+    mid: { first: chars.leftMid, inner: chars.midMid, fill: chars.mid, last: chars.rightMid },
+    bottom: {
+      first: chars.bottomLeft,
+      inner: chars.bottomMid,
+      fill: chars.bottom,
+      last: chars.bottomRight,
     },
-    // Cells are pre-wrapped above; cli-table3's own wrapping truncates with "…".
-    wordWrap: false,
-    // `undefined` (the Unicode tier) keeps cli-table3's own default box-drawing
-    // charset — today's behaviour, byte-identical. The ASCII tier supplies a `+-|`
-    // override; every substitute is 1 display column, identical to the Unicode
-    // character it replaces, so `chromeWidth()`/`allocateWidths()` need no changes.
-    ...(glyphs.tableChars !== undefined ? { chars: glyphs.tableChars } : {}),
-  });
+  }[kind];
 
-  for (const row of grid.rows) table.push(layout(row));
-
-  return { text: `${table.toString()}\n`, fits };
+  return widths
+    .map((width, column) => {
+      const left = column === 0 ? junctions.first : junctions.inner;
+      const right = column === widths.length - 1 ? junctions.last : "";
+      return styleBorder(left + junctions.fill.repeat(cellWidth(width)) + right);
+    })
+    .join("");
 }
 
 /**
- * How many re-allocation passes to spend reconciling our width measurement with
- * cli-table3's. One pass fixes every case observed in the corpora; the cap only
- * exists so a pathological input cannot loop.
+ * Draw line `lineIndex` of one row.
+ *
+ * This is where **alignment is applied**, not merely computed: `grid.aligns` used to be
+ * handed to `cli-table3` as `colAligns` and the library chose the padding side, so that
+ * decision had no implementation on this side of the seam at all. It is also where
+ * **multi-line cells compose vertically** — cells arrive pre-wrapped and a cell with
+ * fewer lines than the row is tall contributes a blank cell-wide run, which is what
+ * `cli-table3`'s `drawEmpty` did (its default vertical alignment is top, and this
+ * module never set `rowAligns`, so short cells pad below).
  */
-const MAX_FIT_PASSES = 3;
+function drawLine(
+  row: LaidOutRow,
+  lineIndex: number,
+  widths: number[],
+  aligns: Align[],
+  chars: BorderChars,
+  isHead: boolean,
+  measure: Measure,
+): string {
+  return widths
+    .map((width, column) => {
+      const left = styleBorder(column === 0 ? chars.left : chars.middle);
+      const right = column === widths.length - 1 ? styleBorder(chars.right) : "";
+      const line = row[column]?.[lineIndex];
+      const content =
+        line === undefined
+          ? " ".repeat(cellWidth(width))
+          : " ".repeat(PADDING_LEFT) +
+            padToWidth(line, width, aligns[column] ?? "left", measure) +
+            " ".repeat(PADDING_RIGHT);
+      return left + (isHead ? styleHead(content) : content) + right;
+    })
+    .join("");
+}
+
+/** Lines in the tallest cell of a row — the row's rendered height. */
+function rowHeight(row: LaidOutRow): number {
+  return row.reduce((tallest, cell) => Math.max(tallest, cell.length), 1);
+}
+
+/**
+ * Compose the whole table: top rule, header, then a rule before every body row, then
+ * the bottom rule. A table with no body rows is header-only and still gets both outer
+ * rules, which is what the library did and what `tableGrid` can produce from a
+ * header-only markdown table.
+ */
+function composeTable(
+  header: LaidOutRow,
+  rows: LaidOutRow[],
+  widths: number[],
+  aligns: Align[],
+  chars: BorderChars,
+  measure: Measure,
+): string {
+  const out: string[] = [drawRule(widths, chars, "top")];
+
+  const emitRow = (row: LaidOutRow, isHead: boolean): void => {
+    const height = rowHeight(row);
+    for (let lineIndex = 0; lineIndex < height; lineIndex += 1) {
+      out.push(drawLine(row, lineIndex, widths, aligns, chars, isHead, measure));
+    }
+  };
+
+  emitRow(header, true);
+  for (const row of rows) {
+    out.push(drawRule(widths, chars, "mid"));
+    emitRow(row, false);
+  }
+  out.push(drawRule(widths, chars, "bottom"));
+
+  return `${out.join("\n")}\n`;
+}
 
 /**
  * Render a markdown table to ANSI, guaranteed to fit within `targetWidth`.
@@ -458,15 +624,11 @@ const MAX_FIT_PASSES = 3;
  * width instead of being truncated or thrown away. `allocateWidths(...).fits` reports
  * that case for callers that need to know.
  *
- * **Why this re-renders.** `cli-table3` pads each cell to its `colWidths` entry using
- * *its own bundled* `string-width@4`, while this module allocates — and `--check`
- * verifies — with `string-width@7`. The two disagree on characters whose width data
- * changed between those majors: U+26A0 (warning sign) measures 1 column under v4 and 2
- * under v7. cli-table3 therefore pads such a cell one column too wide, and the finished
- * line overruns the target by one per affected cell, even though the allocation was
- * correct. Rather than duplicate cli-table3's measurement (a private, versioned detail),
- * we measure the *finished* table the same way `--check` will and re-allocate against a
- * budget reduced by the observed overage. Found by the vault corpus sweep, 2026-07-27.
+ * **One pass, no repair.** Every cell is wrapped to its allocated content width and
+ * padded back out to it with the same `Measure`, so the rendered geometry *is* the
+ * allocated geometry — `tests/table.test.ts` asserts `maxWidth(output) ===
+ * allocation.totalWidth` directly. That equality is what makes a corrective render
+ * pass unnecessary rather than merely absent.
  */
 export function renderTable(
   token: Tokens.Table,
@@ -478,23 +640,20 @@ export function renderTable(
   if (grid.columnCount === 0) return "";
 
   const natural = naturalWidths(grid.header, grid.rows, measure);
+  const { widths } = allocateWidths(natural, targetWidth);
+  const chars = resolveBorderChars(glyphs.tableChars);
 
-  let budget = targetWidth;
-  let result = buildTable(grid, natural, budget, glyphs, measure);
+  const layout = (row: string[]): LaidOutRow =>
+    row.map((cell, index) =>
+      wrapText(cell, widths[index] ?? ABSOLUTE_MIN_COLUMN_WIDTH, measure),
+    );
 
-  // Only reconcile when the table is supposed to fit; the >= 9-column case overflows
-  // by design and shrinking it further would just churn.
-  for (let pass = 0; pass < MAX_FIT_PASSES && result.fits; pass += 1) {
-    const overage = maxRenderedWidth(result.text, measure) - targetWidth;
-    if (overage <= 0) break;
-
-    const retry = buildTable(grid, natural, budget - overage, glyphs, measure);
-    // If shrinking pushes the table below its own floor, keep the wider-but-structured
-    // rendering rather than emitting a collapsed one.
-    if (!retry.fits) break;
-    budget -= overage;
-    result = retry;
-  }
-
-  return result.text;
+  return composeTable(
+    layout(grid.header),
+    grid.rows.map(layout),
+    widths,
+    grid.aligns,
+    chars,
+    measure,
+  );
 }

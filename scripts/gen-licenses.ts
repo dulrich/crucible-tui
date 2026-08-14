@@ -11,10 +11,14 @@
  * transitively. `optionalDependencies` is included deliberately, not
  * skipped: `cli-table3` declares `@colors/colors` as optional, but
  * `cli-table3`'s own `src/cell.js` does `require('@colors/colors/safe')`
- * unconditionally whenever a cell style property is set, and mdview's
- * `src/table.ts` does set style properties — so it ships real code and
- * must be reproduced like any other dependency, not waved through as
- * merely suggested.
+ * unconditionally whenever a cell style property is set — so it ships real
+ * code and must be reproduced like any other dependency, not waved through
+ * as merely suggested. (Since WP-3 of `plans/tn-review-remediation.md`
+ * `@colors/colors` is also a *direct* dependency of this package —
+ * `src/table.ts` imports it for the border/head styling it took over from
+ * `cli-table3` — so it would now be reached either way. The optional-edge
+ * rule stays, because it is what keeps `cli-table3` itself, still pulled in
+ * by `marked-terminal`, from dropping its own optional edges silently.)
  *
  * Each resolved package is identified by realpath, so a hoisting conflict
  * (bun nests a second copy of a package under whichever consumer needed a

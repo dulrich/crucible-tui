@@ -719,9 +719,15 @@ describe("wide mode and the glyph tier", () => {
   /**
    * The finding that forced the rule above, pinned so it cannot regress quietly: with
    * the Unicode tier under wide measurement a table's border row is *exactly twice* the
-   * target, because `cli-table3` draws it as one ambiguous `─` per column of cell width
-   * and `renderTable`'s re-render loop cannot shrink by its entire budget. With the
-   * ASCII tier — the one wide mode actually gets — it fits.
+   * target, because a rule is one ambiguous `─` per column of cell width and no
+   * allocation can shrink by its entire budget. With the ASCII tier — the one wide
+   * mode actually gets — it fits.
+   *
+   * **WP-3 of `plans/tn-review-remediation.md` deliberately did not move these
+   * numbers.** It replaced `cli-table3`'s string assembly with an owned emitter that
+   * pads with this repo's own `Measure`, which closes the *ragged edge* — a
+   * measurement defect — and leaves this, a glyph-choice defect, exactly where it was.
+   * If 160/200 ever change, something outside that boundary has been touched.
    */
   test("the ASCII tier is the only tier whose tables fit in wide mode", async () => {
     const table = await readFile(join(REPO_ROOT, "tests/fixtures/wide-table.md"), "utf8");

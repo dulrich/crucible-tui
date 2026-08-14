@@ -30,8 +30,11 @@ deleting it.
 - `marked` (lexer) + `marked-terminal` (prose/list/code rendering) with a custom
   table renderer (`src/table.ts`, added in WP-3) — `marked-terminal` never passes
   terminal width to tables and drops `token.align` entirely.
-- `yaml` for frontmatter parsing, `cli-table3` for table layout, `string-width` for
-  CJK/emoji-correct column measurement.
+- `yaml` for frontmatter parsing, `string-width` for CJK/emoji-correct column
+  measurement. **Table borders, padding and alignment are emitted by `src/table.ts`
+  itself** — `cli-table3` assembled the finished string until WP-3 of
+  `plans/tn-review-remediation.md`; see "The residual, named rather than papered over"
+  below for why that had to stop being true.
 - **Bun/TypeScript over the Rust default the in-house scaffolding skill prescribes
   (its Gate 2)** — recorded per that gate's "record every choice" rule. Justification:
   `marked@^14` was already pinned across the sibling tools this tool was written beside;
@@ -46,7 +49,11 @@ deleting it.
 src/cli.ts          arg parsing, width resolution, pager, --check, glyph flags
 src/render.ts       marked/marked-terminal wiring + renderer overrides
 src/frontmatter.ts  YAML split and metadata block formatting
-src/table.ts        the wide-table allocator — the reason the tool exists
+src/table.ts        the wide-table allocator — the reason the tool exists — and,
+                    since WP-3 of plans/tn-review-remediation.md, the border/cell
+                    emitter that used to be cli-table3
+src/text.ts         grapheme splitting + display-width padding, shared by table.ts
+                    and wrap.ts (which used to reach into table.ts for them)
 src/wrap.ts         ANSI-safe prose wrapping for what marked-terminal won't
 src/glyphs.ts       Unicode/ASCII capability tier — the only module that reads env
 src/width.ts        display-width measurement + the East Asian Ambiguous probe (WP-3);
@@ -620,7 +627,8 @@ and offers no global switch.
 `string-width`**, and `tests/width.test.ts` asserts it. That is not tidiness: a module
 that imports it directly silently opts out of whatever mode was resolved, and **no width
 gate can see that**, because a check measured with the wrong ruler passes. It is the
-same class of defect as the `cli-table3` v4/v7 disagreement below, and it is exactly the
+same class of defect as the `cli-table3` v4/v7 disagreement below (closed in WP-3 of
+`plans/tn-review-remediation.md`, by owning the emitter), and it is exactly the
 kind that this repo has shipped green four times.
 
 #### The mode is threaded, exactly like `GlyphSet`, and for the same stated reason
@@ -780,13 +788,15 @@ statement, and under `wide` it is false for most of the set**: `•` (U+2022), `
 
 Two consequences, neither cosmetic and neither repairable in the allocator:
 
-- **A table's border row cannot be made to fit.** `cli-table3` draws a horizontal rule as
-  one `─` per column of cell width, so the border row is exactly *twice* the content
-  rows. `renderTable`'s re-render loop reduces the budget by the observed overage — but
-  here the overage **is** the entire budget, `allocateWidths` reports `fits: false`, and
-  the loop correctly declines to collapse the table rather than emitting a wreck.
+- **A table's border row cannot be made to fit.** A horizontal rule is one `─` per
+  column of cell width, so the border row is exactly *twice* the content rows — and no
+  allocation can shrink by its entire budget, so `allocateWidths` reports `fits: false`
+  and the table is emitted at its minimum feasible width rather than as a wreck.
   Measured on `tests/fixtures/wide-table.md`: **160 columns at a target of 80, 200 at
-  100 — exactly 2×**, pinned in `tests/width.test.ts`.
+  100 — exactly 2×**, pinned in `tests/width.test.ts`. **WP-3 of
+  `plans/tn-review-remediation.md` did not move these numbers and was not supposed to**
+  — it closed the *padding* defect below, which is a measurement problem; this is a
+  glyph-choice problem, and refusing the tier is the choice.
 - **A substituted bullet widens its own item.** `substituteBullets` swaps `"* "` for
   `"• "` *after* the budget arithmetic ran on the source marker, so every unordered item
   is one column over budget per level.
@@ -803,22 +813,47 @@ binds. An explicit `--unicode` that gets overridden this way is named once on st
 reason — `"─".repeat(targetWidth - 1)` is twice the document width in wide mode, which
 would put the tool's own frontmatter divider over budget on every file that has one.
 
-#### The residual, named rather than papered over
+#### The residual, named rather than papered over — and then closed by owning the emitter
 
-**`cli-table3` bundles its own `string-width@4.2.3`, which has no `ambiguousIsNarrow`
-option at all**, so its cell padding can never honour wide mode. A cell containing *k*
-ambiguous characters is padded *k* columns too wide, and since *k* varies cell by cell
-within a column, **a table's right edge can be ragged by up to *k* columns in wide
-mode**. This is not fixable from outside the library: it pads to `colWidths` in its own
-units, so no amount of pre-padding, pre-wrapping or budget adjustment on our side can
-make its count agree with ours per-cell.
+**The finding.** `cli-table3` bundled its own `string-width@4.2.3`, which has no
+`ambiguousIsNarrow` option at all, so its cell padding could never honour wide mode. A
+cell containing *k* ambiguous characters was padded *k* columns too wide, and since *k*
+varies cell by cell within a column, **a table's right edge could be ragged by up to *k*
+columns**. This paragraph used to end "not fixable from outside the library", and that
+was exactly right: it pads to `colWidths` in its own units, so no amount of pre-padding,
+pre-wrapping or budget adjustment on our side could make its count agree with ours
+per-cell. The capped render/measure/reallocate loop that used to sit in `renderTable`
+absorbed only the **aggregate** overage — which is why a table stayed inside the target
+while its edge stayed crooked, and why a green width gate was never evidence about this.
 
-What the existing re-render loop *does* absorb, with evidence: the **aggregate** overage.
-It measures the finished table with our `Measure` and re-allocates against a reduced
-budget, so with unambiguous borders (the ASCII tier — i.e. the tier wide mode actually
-gets) the widest line stays within the target: ambiguous-carrying tables at targets 80
-and 100 came back at 80 and 83. What it cannot absorb is an overage equal to the whole
-budget, which is the box-drawing case above.
+**The fix, in WP-3 of `plans/tn-review-remediation.md`: stop being outside the library.**
+`src/table.ts` now emits its own borders, junctions, padding and alignment from the
+allocation `allocateWidths` already produced, padding with the `Measure` it was handed —
+the same ruler the allocation used and the same one `--check` grades the result with. The
+disagreement is not repaired, it is **impossible by construction**; the retry loop,
+`MAX_FIT_PASSES` and `maxRenderedWidth` are gone with it, and the rendered geometry now
+*equals* the allocated geometry (`tests/table.test.ts` asserts that equality directly).
+
+Measured over this repo's own 41 markdown files at six widths, both tiers, both ambiguous
+modes — 984 renders:
+
+| Combination | Rendered tables | Ragged before | Ragged after |
+|---|---|---|---|
+| narrow, either tier | 180 each | 0 | 0 |
+| **wide + ASCII** (what the CLI produces) | 180 | **66** | **0** |
+| wide + Unicode (unreachable; `wideForcesAscii`) | 180 | 180 | 180 |
+
+Narrow-mode output is **byte-identical** across those 492 renders — 0 differing bytes —
+because narrow measurement is where the two `string-width` majors happened to agree on
+this corpus, and because the emitter reproduces the library's escape-sequence layout and
+its `@colors/colors` styling decision exactly rather than approximately. It is *not*
+byte-identical in general: a narrow-mode table carrying U+26A0 changes, and improves —
+that glyph is 1 column to `string-width@4` and 2 to `@7`, which is the original
+reconciliation bug, and its edge went from a spread of 3 to 0.
+
+**Do not read this as "wide mode + Unicode tables now work."** They do not, and the row
+above says so: `─` and the whole box-drawing set are themselves Ambiguous, a border row
+is still exactly 2× the content rows, and that is still handled by refusing the tier.
 
 #### The sweep keeps the two axes independent, on purpose
 
@@ -1369,7 +1404,8 @@ re-opens a removal pass that costs review time for zero benefit.
 --compile`, see "Conventions" above) is ~98 MB, almost entirely Bun's own embedded
 runtime — present in every Bun-compiled binary regardless of what a project imports.
 The actual runtime dependency closure (`marked`, `marked-terminal`, `cli-highlight`,
-`cli-table3`, `string-width`, `yaml`, and everything each pulls in transitively) is
+`@colors/colors`, `string-width`, `yaml`, and everything each pulls in transitively,
+which still includes `cli-table3` — see below) is
 **60 packages, ~8 MB**. The other **~57 MB of `node_modules`** (122 packages total) is
 devDependency tooling — `eslint`, `typescript`, `typescript-eslint`, `jiti`,
 `@types/bun`, and their own transitive closures — that never ships in the binary at
@@ -1377,17 +1413,29 @@ all. Dependency weight is therefore **~2% of the compiled artifact**. "Remove a
 dependency to shrink the binary" is the wrong frame for this tool; no dependency was
 removed on that basis, and none should be without re-measuring what actually changes.
 
-**`cli-highlight` and `cli-table3` must stay declared in `dependencies`, even though a
-dependency-pruning tool will flag both as reachable transitively through
+**`cli-highlight` and `@colors/colors` must stay declared in `dependencies`, even though
+a dependency-pruning tool will flag both as reachable transitively through
 `marked-terminal`.** `src/lang.ts:13` imports `supportsLanguage` from `cli-highlight`
-directly, and `src/table.ts:1` imports `Table` from `cli-table3` directly — neither
-import goes through `marked-terminal`'s own copy of either package. Dropping either
+directly, and `src/table.ts:1` imports `@colors/colors/safe` directly — neither import
+goes through `marked-terminal`'s own copy of either package. Dropping either
 declaration would leave those imports resolving only because `marked-terminal` happens
 to hoist a compatible version of the same package into `node_modules` — code that
 works by accident of a *different* package's dependency tree, for **zero** install-size
 saving, since the packages are already present in `node_modules` either way. **Do not
 remove either declaration on a dependency-graph tool's say-so**; the tool is reading
 reachability, not who actually imports what.
+
+**`cli-table3` left `dependencies` in WP-3 of `plans/tn-review-remediation.md` and is
+still physically installed, and both halves of that matter.** `src/table.ts` no longer
+imports it — it emits its own borders — so declaring it would be declaring a package
+this repo does not use. But `marked-terminal` requires `^0.6.5`, so it stays hoisted in
+`node_modules`, stays in the runtime closure `scripts/gen-licenses.ts` walks, and stays
+in `THIRD-PARTY-LICENSES.txt`. Verified by asserting on the tree, not by a green
+`bun install`. Its physical removal belongs to the separate `marked-terminal`
+replacement plan, not here. `@colors/colors` took the declaration slot it vacated,
+deliberately: the emitter has to reproduce the old `style: { head: ["bold"], border:
+["grey"] }` bytes, that package decides whether to colour at all, and reproducing its
+decision by hand would be fidelity risk spent to change nothing on purpose.
 
 **`highlight.js` is pinned at `10.7.3`** (a transitive pin, via `cli-highlight`), two
 majors behind upstream, **and cannot be subset to shrink it**: `cli-highlight`
@@ -1488,8 +1536,8 @@ trailing-space defect those pins had only recorded.
 
 **Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
 installed and exercised by this test suite — `marked@14.1.4`, `marked-terminal@7.3.0`,
-`cli-highlight@2.1.11`, `cli-table3@0.6.5`, `string-width@7.2.0`, `yaml@2.9.0` — rather
-than left on `^` ranges that could silently resolve to an untested minor on a fresh
+`cli-highlight@2.1.11`, `@colors/colors@1.5.0`, `string-width@7.2.0`, `yaml@2.9.0` —
+rather than left on `^` ranges that could silently resolve to an untested minor on a fresh
 `bun install` on a different machine. **This WP pins; it does not upgrade.** Bumping any
 of these is a separate, deliberate decision with its own corpus/sweep verification
 pass, not a side effect of installing on a new machine.
