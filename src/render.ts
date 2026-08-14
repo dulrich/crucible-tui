@@ -407,7 +407,7 @@ function listMarkerWidth(token: Tokens.List): number {
  * already completed, so nothing downstream still needs the `"*"` literal.
  *
  * **Regression, found in review: a fenced code block nested inside a list item got its
- * `* `/bare-`*` content rewritten.** `AGENTS.md`'s rendering policy is
+ * `* `/bare-`*` content rewritten.** `src/AGENTS.md`'s rendering policy is
  * unqualified on this: "fenced code is never rewritten" — a wrapped or altered command
  * is a wrong command, no exceptions. No gate caught it: `--check` and both sweeps
  * exempt code ranges from width checking entirely, so corrupting a line *inside* one is
@@ -506,7 +506,7 @@ function isHardBoundary(before: string, after: string): boolean {
  * by the time it saw a *loose* item's text, `reflowText` had already rendered its own
  * wraps and the author's hard break as the same bare `\n`, and had hard-split any word
  * longer than the width with no marker — so rejoining destroyed authored breaks and
- * corrupted long URLs and paths. **Nothing reflows a tight item** (`AGENTS.md`: "list
+ * corrupted long URLs and paths. **Nothing reflows a tight item** (`src/AGENTS.md`: "list
  * items are never reflowed"), so every `\n` here is one the author typed, no word has
  * been split, and markdown's own rule — a single newline inside a paragraph is a *soft*
  * break, semantically one space — makes joining with a single space exactly lossless.
@@ -780,9 +780,9 @@ function wrapCode(rendered: string): string {
 // count** (WP-3). `─` (U+2500) is East Asian *Ambiguous*, so in wide mode it occupies 2
 // columns and `repeat(targetWidth - 1)` would emit a rule twice the width of the
 // document — over budget on every single frontmatter-carrying file, and a `--check`
-// failure that has nothing to do with the prose. AGENTS.md's "every Unicode substitute
-// is exactly 1 column, so the tier has no width impact" was a narrow-mode statement;
-// the box-drawing set is ambiguous almost in its entirety.
+// failure that has nothing to do with the prose. src/AGENTS.md's "every Unicode
+// substitute is exactly 1 column, so the tier has no width impact" was a narrow-mode
+// statement; the box-drawing set is ambiguous almost in its entirety.
 //
 // In narrow mode, and in the ASCII tier at either setting, `measure(rule)` is 1 and this
 // is `repeat(targetWidth - 1)` exactly as before — byte-identical by construction rather
@@ -1149,12 +1149,12 @@ export function renderDocumentDetailed(
   // WP-11 (representative-corpus): shortcode substitution follows the glyph tier.
   //
   // It was twice proposed to set `emoji: false` unconditionally to save ~468 KB in
-  // the compiled binary. **That saving does not exist** (see `AGENTS.md`'s emoji
+  // the compiled binary. **That saving does not exist** (see `src/AGENTS.md`'s emoji
   // section) — `marked-terminal` imports `node-emoji` at module top level and the
   // option only picks a function at runtime (`this.emoji = this.o.emoji ?
   // insertEmojis : identity`), so the dependency is bundled either way.
   //
-  // The real conclusion (also `AGENTS.md`): this is a *terminal-capability*
+  // The real conclusion (also `src/AGENTS.md`): this is a *terminal-capability*
   // question, not a constant. Rendering `:rocket:` as 🚀 requires a terminal that
   // can draw it, which is exactly what `glyphs.tier` already models — Unicode
   // renders the glyph, ASCII cannot and keeps the literal shortcode — with

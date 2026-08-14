@@ -372,7 +372,7 @@ export function wrapText(text: string, width: number, measure: Measure = NARROW_
  * per-cell padding could never honour `MDVIEW_AMBIGUOUS=wide`. A cell holding *k* East
  * Asian *Ambiguous* characters was padded *k* columns too wide; *k* varies cell by cell
  * within a column, so a table's right edge could be **ragged by up to *k* columns**.
- * `AGENTS.md` recorded that as not fixable from outside the library, and it was right:
+ * `src/AGENTS.md` recorded that as not fixable from outside the library, and it was right:
  * the library pads to its own `colWidths` in its own units, so no pre-padding,
  * pre-wrapping or budget adjustment on this side could make its count agree with ours.
  *

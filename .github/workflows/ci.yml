@@ -47,7 +47,7 @@ jobs:
       # (`bun run sweep -- --corpus regressions --widths 40-360 --detect`).
       # That corpus is a frozen regression set that lives in a private
       # example-harness repo, addressed only via MDVIEW_CORPUS_MANIFEST
-      # (see AGENTS.md's "Corpus sweep" section) — it will never exist on a
+      # (see scripts/AGENTS.md's "Corpus sweep" section) — it will never exist on a
       # public runner. Writing a step for it here would either fail every
       # run for a reason contributors can't fix, or silently no-op on
       # missing data and look green while proving nothing. The two sweeps

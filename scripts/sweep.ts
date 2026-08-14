@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * In-process corpus sweep — replaces the old shell loop (see AGENTS.md's
+ * In-process corpus sweep — replaces the old shell loop (see scripts/AGENTS.md's
  * "Corpus sweep" section) which spawned the 102 MB compiled binary once per file
  * (~83ms each). Rendering in-process against `renderDocumentDetailed` directly
  * measured ~13x faster (600 vault files x 3 widths in 23.8s).
@@ -58,7 +58,7 @@ import {
  * 80, 100 and 160 are kept rather than swapped out: they are the recorded baseline for
  * every dated full-corpus run in the private archive's `measurements/`, and 80 is the
  * narrowest case the table allocator has to survive (it is where the accepted-by-design
- * many-column overflows in `AGENTS.md` live). Adding widths only ever adds combos.
+ * many-column overflows in `src/AGENTS.md` live). Adding widths only ever adds combos.
  */
 const DEFAULT_WIDTHS = [80, 100, 116, 160, 346];
 

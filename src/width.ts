@@ -67,7 +67,7 @@ import stringWidth from "string-width";
  * What remains is the glyph-choice problem: `─ │ ┌ ┬ ┼ …` are themselves Ambiguous and
  * measure 2 under wide, so the Unicode tier's border row is exactly twice its content
  * rows however carefully it is padded. That is handled by refusing the tier —
- * `wideForcesAscii` in `src/glyphs.ts` — not by measurement. See `AGENTS.md`'s
+ * `wideForcesAscii` in `src/glyphs.ts` — not by measurement. See `src/AGENTS.md`'s
  * "Ambiguous width (WP-3)".
  */
 

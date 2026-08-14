@@ -34,10 +34,10 @@
  * `stripAnsi` travels with it for the same reason rather than as a convenience: both call
  * sites strip ANSI *before* tracking (`src/render.ts`, `src/detectors.ts`), and a lost
  * escape byte in an ANSI strip has already produced one fully confident false measurement
- * here — the "three-column table overflow" that did not exist (`AGENTS.md`, "The table
- * allocator is not broken"). `LIST_BULLET` and `LIST_MARKER_PREFIX` are the same regex
- * family, one capturing and one not; splitting a family whose halves must agree about what
- * a marker looks like is the same failure mode one level down.
+ * here — the "three-column table overflow" that did not exist (`scripts/AGENTS.md`,
+ * "The table allocator is not broken"). `LIST_BULLET` and `LIST_MARKER_PREFIX` are the
+ * same regex family, one capturing and one not; splitting a family whose halves must
+ * agree about what a marker looks like is the same failure mode one level down.
  *
  * ## Keep it dependency-light
  *
