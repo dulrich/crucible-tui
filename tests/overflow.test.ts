@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { findFirstOverflow, isLineExempt } from "../src/overflow";
 import { findListOrphans } from "../src/detectors";
 import { main } from "../src/cli";
-import { sweepCorpus, type CorpusSpec, type SweepOptions } from "../scripts/sweep";
+import { sweepCorpus, type CorpusSpec, type SweepOptions } from "../scripts/corpus";
 import { renderDocumentDetailed } from "../src/render";
 import { UNICODE_GLYPHS } from "../src/glyphs";
 import { NARROW_MEASURE } from "../src/width";

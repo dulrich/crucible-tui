@@ -44,9 +44,20 @@
  * hardcodes no corpus path anywhere in its source; every root name and file path
  * it prints at runtime comes from whatever manifest it is pointed at.
  *
+ * **Corpus selection is the sweep's, not a copy of it (WP-4).** This script used to
+ * re-implement the sampling predicate — reading `--all` straight off `process.argv` and
+ * ignoring `--limit` entirely — so the same flags selected different files here than in
+ * `scripts/sweep.ts`, with nothing able to notice. Both now parse with `parseArgs` and
+ * select with `selectCorpusFiles`, so `--all`, `--limit` and `--manifest` mean exactly
+ * what the sweep documents: `--limit` overrides a corpus's manifest `sample` and, as
+ * there, does nothing at all on a corpus that declares none. The sweep's rendering flags
+ * (`--widths`, `--glyphs`, `--ambiguous`, `--detect`, the `--max-*` ratchets) parse but
+ * have no meaning here — this audit renders each *token*, never the corpus.
+ *
  * Usage:
  *   MDVIEW_CORPUS_MANIFEST=/path/to/manifest.json bun run scripts/emoji-audit.ts
- *   bun run scripts/emoji-audit.ts --all   # disable manifest `sample` stride-sampling
+ *   bun run scripts/emoji-audit.ts --all       # disable manifest `sample` stride-sampling
+ *   bun run scripts/emoji-audit.ts --limit 50  # override a corpus's `sample` (needs one)
  *
  * Re-run against the bundled public-safe default manifest with no env var set —
  * it will just report over the small public corpus instead.
@@ -54,7 +65,8 @@
 import { readFile } from "node:fs/promises";
 import { Marked } from "marked";
 import { markedTerminal } from "marked-terminal";
-import { loadManifest, resolveCorpusFiles, resolveManifestSource, strideSample } from "./sweep";
+import { loadManifest, resolveCorpusFiles, resolveManifestSource, selectCorpusFiles } from "./corpus";
+import { parseArgs } from "./sweep";
 import { renderDocument } from "../src/render";
 
 /** Loose enough to catch every real node-emoji shortcode shape; false positives
@@ -180,8 +192,8 @@ interface RootTally {
 }
 
 async function main(): Promise<void> {
-  const all = process.argv.includes("--all");
-  const { path: manifestPath, source } = await resolveManifestSource(undefined);
+  const { options } = parseArgs(process.argv.slice(2));
+  const { path: manifestPath, source } = await resolveManifestSource(options.manifestFlag);
   const manifest = await loadManifest(manifestPath);
   console.log(`manifest: ${manifestPath} (source=${source}, ${manifest.corpora.length} corpora)`);
 
@@ -199,8 +211,7 @@ async function main(): Promise<void> {
       console.log(`[${spec.name}] SKIPPED — corpus root not found`);
       continue;
     }
-    const samplingApplies = spec.sample !== undefined && !all;
-    const selected = samplingApplies ? strideSample(files, spec.sample as number) : files;
+    const selected = selectCorpusFiles(files, spec, options);
 
     const tally: RootTally = {
       name: spec.name,
