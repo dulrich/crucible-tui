@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import stringWidth from "string-width";
-import { findOverflow } from "../scripts/sweep";
+import { findFirstOverflow } from "../src/overflow";
 import { stripAnsi } from "../src/detectors";
 import { formatMetaBlockDetailed, splitFrontmatter } from "../src/frontmatter";
 import { renderDocumentDetailed } from "../src/render";
@@ -117,9 +117,10 @@ describe("witness: defect 2 -- only the verbatim echo is exempt (tests/fixtures/
         true,
       );
     }
-    // The same check `--check`/the sweep actually run (scripts/sweep.ts's findOverflow):
-    // with the exempt ranges honoured, this document reports no overflow at all.
-    expect(findOverflow(text, 80, codeRanges)).toBeNull();
+    // The same check `--check` and the sweep actually run — literally, since WP-2: both
+    // call `src/overflow.ts`'s `findFirstOverflow`, which is now the only implementation
+    // of it. With the exempt ranges honoured, this document reports no overflow at all.
+    expect(findFirstOverflow(text, 80, codeRanges)).toBeNull();
   });
 });
 
@@ -152,7 +153,7 @@ describe("witness: defect 2 -- a successfully parsed, over-width block is still 
         false,
       );
     }
-    expect(findOverflow(text, 80, codeRanges)).not.toBeNull();
+    expect(findFirstOverflow(text, 80, codeRanges)).not.toBeNull();
   });
 });
 
@@ -174,7 +175,7 @@ describe("witness: defect 3 -- nested mapping respects targetWidth (tests/fixtur
 
   test("renderDocumentDetailed of the whole fixture has no overflow at 80", () => {
     const { text, codeRanges } = renderDocumentDetailed(source, 80);
-    expect(findOverflow(text, 80, codeRanges)).toBeNull();
+    expect(findFirstOverflow(text, 80, codeRanges)).toBeNull();
   });
 });
 
@@ -200,7 +201,7 @@ describe("witness: synthetic CJK excerpt -- un-exempt by design (tests/fixtures/
 
   test("the gate still catches it: the over-width excerpt line is not covered by any exempt range", () => {
     const { text, codeRanges } = renderDocumentDetailed(source, 80);
-    const overflow = findOverflow(text, 80, codeRanges);
+    const overflow = findFirstOverflow(text, 80, codeRanges);
     expect(overflow).not.toBeNull();
     // The echo itself is exempt (defect 2) and would not be reported here at all --
     // the line that overflows is the diagnostic excerpt above it.

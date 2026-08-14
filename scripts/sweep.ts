@@ -37,6 +37,9 @@ import {
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "../src/config";
 import { NARROW_MEASURE, measureFor, type Measure } from "../src/width";
+// The width gate, imported rather than re-implemented (WP-2): this file used to carry
+// a second copy of `src/cli.ts`'s `checkOverflow`, identical argument for argument.
+import { findFirstOverflow } from "../src/overflow";
 
 export interface CorpusSpec {
   name: string;
@@ -489,31 +492,6 @@ export async function resolveCorpusFiles(
 }
 
 /**
- * Flag the first line (not exempt via `codeRanges`) whose display width exceeds
- * `targetWidth`. Mirrors `src/cli.ts`'s `checkOverflow`, but returns every overflow
- * instead of stopping at the first — the sweep wants all offending paths, not just
- * the first one found.
- */
-export function findOverflow(
-  output: string,
-  targetWidth: number,
-  codeRanges: Array<[number, number]>,
-  measure: Measure = NARROW_MEASURE,
-): { line: number; width: number } | null {
-  const lines = output.split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const lineNumber = index + 1;
-    const exempt = codeRanges.some(([start, end]) => lineNumber >= start && lineNumber <= end);
-    if (exempt) continue;
-    const width = measure(lines[index] ?? "");
-    if (width > targetWidth) {
-      return { line: lineNumber, width };
-    }
-  }
-  return null;
-}
-
-/**
  * Parse a `--widths` value: a comma list (`80,100,160`), an inclusive range
  * (`40-360`), or any mix of the two (`40-80,116,346`).
  *
@@ -752,7 +730,7 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
         // way and measured another would report an overflow count about nothing.
         const measure = options.measure ?? NARROW_MEASURE;
         const { text, codeRanges } = renderDocumentDetailed(source, width, options.glyphs, measure);
-        const found = findOverflow(text, width, codeRanges, measure);
+        const found = findFirstOverflow(text, width, codeRanges, measure);
         if (found) {
           overflow.push({ path, width: found.width, targetWidth: width, line: found.line });
           if (isTableLine(text.split("\n")[found.line - 1] ?? "")) tableOverflow += 1;

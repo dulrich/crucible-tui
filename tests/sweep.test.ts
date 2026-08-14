@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
-  findOverflow,
   loadManifest,
   parseManifest,
   printResult,
@@ -16,6 +15,7 @@ import {
   type SweepOptions,
 } from "../scripts/sweep";
 import { BUNDLED_DEFAULT_MANIFEST, resolveCorpusManifestPath, type MdviewConfig } from "../src/config";
+import { findFirstOverflow } from "../src/overflow";
 import { renderWithForcedColor } from "./helpers/color";
 import {
   buildContext,
@@ -62,24 +62,28 @@ describe("strideSample", () => {
   });
 });
 
-describe("findOverflow", () => {
+// The gate the sweep runs. Its implementation moved to `src/overflow.ts` in WP-2 (it was
+// a copy of `src/cli.ts`'s, argument for argument); these cases stay here because they are
+// about what the sweep reports. `tests/overflow.test.ts` pins the canonical function
+// itself, including that both entry points reach it.
+describe("findFirstOverflow (the width gate the sweep runs)", () => {
   const wideLine = "x".repeat(200);
 
   test("flags an over-width line outside any code range", () => {
     const output = `short\n${wideLine}\nshort`;
-    const found = findOverflow(output, 80, []);
+    const found = findFirstOverflow(output, 80, []);
     expect(found).toEqual({ line: 2, width: 200 });
   });
 
   test("does not flag the same over-width line when it falls inside a codeRanges entry", () => {
     const output = `short\n${wideLine}\nshort`;
-    const found = findOverflow(output, 80, [[2, 2]]);
+    const found = findFirstOverflow(output, 80, [[2, 2]]);
     expect(found).toBeNull();
   });
 
   test("returns null when every line fits", () => {
     const output = "short\nalso short";
-    expect(findOverflow(output, 80, [])).toBeNull();
+    expect(findFirstOverflow(output, 80, [])).toBeNull();
   });
 });
 

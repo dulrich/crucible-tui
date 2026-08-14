@@ -54,6 +54,8 @@ src/width.ts        display-width measurement + the East Asian Ambiguous probe (
 src/lang.ts         fence-language alias map + supportsLanguage() fallback
 src/config.ts       XDG config load + corpus-manifest path resolution
 src/detectors.ts    orphan / continuation-over-indent detectors (see below)
+src/overflow.ts     the width gate and the code-range exemption predicate — one
+                    implementation, imported by --check, the sweep and the detectors
 corpus/             the bundled public-safe default manifest
 scripts/sweep.ts    multi-corpus width sweep (see "Corpus sweep" below)
 tests/              unit tests + markdown fixtures

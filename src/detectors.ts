@@ -36,9 +36,11 @@
 import { Marked, type Token, type Tokens } from "marked";
 import { splitFrontmatter } from "./frontmatter";
 import { NARROW_MEASURE, type Measure } from "./width";
+import { isLineExempt, type CodeRanges } from "./overflow";
 
-/** Inclusive 1-based `[startLine, endLine]` pairs, as `renderDocumentDetailed` returns. */
-export type CodeRanges = Array<[number, number]>;
+// `CodeRanges` moved to `src/overflow.ts` with the exemption predicate itself (WP-2) and
+// is re-exported here so this module's existing surface is unchanged.
+export type { CodeRanges };
 
 export interface DetectorOptions {
   /** When supplied, lines inside these ranges are not reported. See the module note. */
@@ -76,8 +78,16 @@ const LIST_MARKER_PREFIX = /^(\s{2,}(?:[•*\-◦‣+]|\d+\.)\s+)/;
 /** A rendered line that is inside some list item — indented, and carrying text. */
 export const isIndentedLine = (line: string): boolean => /^\s{2,}\S/.test(line);
 
+/**
+ * The detector-side adapter over the one exemption predicate (`src/overflow.ts`'s
+ * `isLineExempt`). The `undefined` case is **this module's** API, not the predicate's:
+ * `DetectorOptions.codeRanges` is opt-in and defaults to off (see the module note
+ * above), because supplying it would move `findListOrphans`' historical counts — so
+ * here, and only here, "no ranges given" has to mean "exempt nothing". Both width gates
+ * always have ranges to pass and call `isLineExempt` directly.
+ */
 const isExempt = (lineNumber: number, codeRanges: CodeRanges | undefined): boolean =>
-  codeRanges !== undefined && codeRanges.some(([start, end]) => lineNumber >= start && lineNumber <= end);
+  codeRanges !== undefined && isLineExempt(lineNumber, codeRanges);
 
 /** One open list item on an innermost-last stack: where its marker sits, where its text starts. */
 export interface OpenListItem {
