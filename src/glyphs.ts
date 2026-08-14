@@ -16,7 +16,12 @@ export interface GlyphSet {
   readonly bullets: readonly string[];
   /** Single character repeated to draw a horizontal rule. */
   readonly rule: string;
-  /** `cli-table3` `chars` override; `undefined` keeps the library's Unicode default. */
+  /**
+   * Border-glyph override for `src/table.ts`'s emitter, keyed by `cli-table3`'s
+   * kebab-cased slot names (the emitter kept that vocabulary when it took the job
+   * over in WP-3 of `plans/tn-review-remediation.md`). `undefined` selects the
+   * emitter's `UNICODE_BORDER` set, which reproduces the old library default exactly.
+   */
   readonly tableChars: Readonly<Record<string, string>> | undefined;
   /** When false, Obsidian checkbox states render literally (`[x]`). */
   readonly rewriteTaskStates: boolean;
@@ -135,13 +140,15 @@ export function resolveGlyphs(
  *
  * The consequence is not cosmetic and it is not repairable in the allocator:
  *
- * - **A table's border row cannot be made to fit.** `cli-table3` draws a horizontal rule
- *   as one `─` per column of cell width, so the border row is exactly *twice* the
- *   content rows. `renderTable`'s re-render loop reduces the budget by the observed
- *   overage, but that overage is the entire budget, `allocateWidths` reports
- *   `fits: false`, and the loop correctly declines to collapse the table. Measured on
- *   `tests/fixtures/wide-table.md`: 160 columns rendered at a target of 80, 200 at 100 —
- *   exactly 2x, at every width tried.
+ * - **A table's border row cannot be made to fit.** A horizontal rule is one `─` per
+ *   column of cell width, so the border row is exactly *twice* the content rows.
+ *   No amount of allocation fixes that: the overage *is* the entire budget, and
+ *   `allocateWidths` correctly reports `fits: false` rather than collapsing the table.
+ *   Measured on `tests/fixtures/wide-table.md`: 160 columns rendered at a target of 80,
+ *   200 at 100 — exactly 2x, at every width tried. **This is the one wide-mode table
+ *   defect WP-3 of `plans/tn-review-remediation.md` did *not* close** — that package
+ *   fixed the per-cell *padding* (the ragged right edge), which is a measurement
+ *   problem; this is a glyph-choice problem and the choice is made right here.
  * - **A substituted bullet silently widens its own item.** `substituteBullets` swaps
  *   `"* "` for `"• "` *after* the budget arithmetic has run on the source marker, so
  *   every unordered item is one column over budget per level.

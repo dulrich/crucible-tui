@@ -9,11 +9,12 @@ import {
   chromeWidth,
   naturalWidths,
   renderTable,
-  splitToken,
   tableGrid,
   wrapText,
 } from "../src/table";
-import { UNICODE_GLYPHS } from "../src/glyphs";
+import { splitToken } from "../src/text";
+import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
+import { NARROW_MEASURE, WIDE_MEASURE, type Measure } from "../src/width";
 
 // --- helpers ---------------------------------------------------------------
 
@@ -87,12 +88,78 @@ const GATE_COMMAND = "bun run design:verify";
 
 // --- geometry --------------------------------------------------------------
 
-describe("width reconciliation with cli-table3's own measurement", () => {
-  // cli-table3 pads cells using its bundled string-width@4, which measures U+26A0 as 1
-  // column; this module and `--check` use string-width@7, which says 2. Before the
-  // reconciliation pass, a table containing it rendered exactly 1 column over target.
-  // Found in the wild by the vault sweep: "2026-07-15 1v1 Prep.md" line 139 at width 80.
+/** Every non-empty rendered line's display width, on the ruler the render used. */
+function lineWidths(output: string, measure: Measure): number[] {
+  return lines(output)
+    .filter((line) => line !== "")
+    .map((line) => measure(line));
+}
+
+/** Widest minus narrowest rendered line: 0 iff the table's right edge is straight. */
+function edgeSpread(output: string, measure: Measure): number {
+  const widths = lineWidths(output, measure);
+  return Math.max(...widths) - Math.min(...widths);
+}
+
+describe("per-cell padding measures with this repo's own ruler (WP-3)", () => {
+  /**
+   * Until WP-3 the finished string was assembled by `cli-table3`, which pads every cell
+   * with **its own bundled `string-width@4.2.3`** — a version that has no
+   * `ambiguousIsNarrow` option at all. A cell holding *k* characters the two versions
+   * disagree about was padded *k* columns too wide; *k* varies cell by cell, so the
+   * table's **right edge went ragged**. `AGENTS.md` recorded that as not fixable from
+   * outside the library, and it was right: the capped render/measure/reallocate loop
+   * that used to sit in `renderTable` could only ever chase the *aggregate* overage,
+   * which is why it kept the table inside the target while leaving the edge crooked.
+   *
+   * Both edge tests below **fail on the parent commit** — measured there: spread 3 for
+   * the narrow U+26A0 case, spread 4 for the wide/ASCII case — and are 0 here, because
+   * the emitter pads with the same `Measure` the allocation used.
+   */
   const WARNING_SIGN = "⚠";
+
+  // Two characters the bundled v4 and this repo's v7 disagree about, for opposite
+  // reasons: U+26A0 changed width data between the majors, while `—`/`→`/`≥`/`×` are
+  // East Asian *Ambiguous* and v4 has no option to be told which way to count them.
+  const AMBIGUOUS_TABLE =
+    "| Risk | Note |\n| --- | --- |\n| — — — | plain |\n| — | → ≥ × |\n";
+
+  test("narrow mode: a table whose cells hold U+26A0 keeps a straight right edge", () => {
+    const token = lexTable(
+      `| Risk | Note |\n| --- | --- |\n| ${WARNING_SIGN} ${WARNING_SIGN} ${WARNING_SIGN} | plain |\n| a | escalate now |\n`,
+    );
+    const output = renderTable(token, 40, UNICODE_GLYPHS, NARROW_MEASURE);
+    expect(edgeSpread(output, NARROW_MEASURE)).toBe(0);
+    expect(maxWidth(output)).toBeLessThanOrEqual(40);
+  });
+
+  /**
+   * **The combination the CLI actually produces in wide mode**: `resolveGlyphs` returns
+   * the ASCII tier ahead of `--unicode` whenever the ambiguous setting is `wide`, so
+   * this — not wide + Unicode — is the pairing a real user in a wide terminal renders
+   * with. Wide + Unicode is still exactly 2x the target and this WP did not change
+   * that; `tests/width.test.ts` pins it at 160 columns for target 80 and 200 for 100.
+   */
+  test("wide mode + the ASCII tier: the edge is straight and inside the target", () => {
+    const token = lexTable(AMBIGUOUS_TABLE);
+    for (const target of [40, 60, 80]) {
+      const output = renderTable(token, target, ASCII_GLYPHS, WIDE_MEASURE);
+      expect(edgeSpread(output, WIDE_MEASURE)).toBe(0);
+      for (const width of lineWidths(output, WIDE_MEASURE)) {
+        expect(width).toBeLessThanOrEqual(target);
+      }
+    }
+  });
+
+  test("the rendered geometry is the allocated geometry — there is no repair pass", () => {
+    const token = lexTable(AMBIGUOUS_TABLE);
+    const grid = tableGrid(token);
+    for (const target of [40, 60, 80]) {
+      const allocation = allocateWidths(naturalWidths(grid.header, grid.rows, WIDE_MEASURE), target);
+      const output = renderTable(token, target, ASCII_GLYPHS, WIDE_MEASURE);
+      expect(Math.max(...lineWidths(output, WIDE_MEASURE))).toBe(allocation.totalWidth);
+    }
+  });
 
   test("a table whose cell holds U+26A0 still fits the target", () => {
     const token = lexTable(
@@ -103,7 +170,7 @@ describe("width reconciliation with cli-table3's own measurement", () => {
     }
   });
 
-  test("the glyph itself survives — reconciliation shrinks, it never drops content", () => {
+  test("the glyph itself survives — padding is corrected, content is never dropped", () => {
     const token = lexTable(
       `| Risk | Note |\n| --- | --- |\n| ${WARNING_SIGN} | escalate |\n`,
     );
@@ -112,13 +179,76 @@ describe("width reconciliation with cli-table3's own measurement", () => {
     expect(output).not.toContain("…");
   });
 
-  test("a table with no such glyph is not shrunk by the reconciliation pass", () => {
+  test("rendering is deterministic — the same input renders byte-identically", () => {
     const token = lexTable("| A | B |\n| --- | --- |\n| one | two |\n");
     const before = renderTable(token, 80, UNICODE_GLYPHS);
     expect(maxWidth(before)).toBeLessThanOrEqual(80);
-    // Plain ASCII content: cli-table3 and string-width@7 agree, so the first build is
-    // already correct and the output must be byte-identical across repeated renders.
     expect(renderTable(token, 80, UNICODE_GLYPHS)).toBe(before);
+  });
+});
+
+// --- the border set --------------------------------------------------------
+
+describe("the emitted border set", () => {
+  const table = buildTable(["A", "B"], [["one", "two"], ["three", "four"]]);
+
+  /**
+   * Twelve junction slots draw the three horizontal rules and three draw the vertical
+   * rules, and the emitter owns all fifteen now. The Unicode tier's set has to
+   * reproduce `cli-table3`'s own defaults exactly — `GlyphSet.tableChars` is
+   * `undefined` there, which used to mean "keep the library's charset" and now means
+   * "use `UNICODE_BORDER`" — so this is the standing check that it still does.
+   */
+  test("the Unicode tier draws the box-drawing rules, corners and junctions", () => {
+    const rendered = lines(renderTable(table, 40, UNICODE_GLYPHS)).filter((l) => l !== "");
+    expect(rendered[0]).toMatch(/^┌─+┬─+┐$/);
+    expect(rendered[2]).toMatch(/^├─+┼─+┤$/);
+    expect(rendered.at(-1)).toMatch(/^└─+┴─+┘$/);
+    expect(rendered[1]).toMatch(/^│[^│]+│[^│]+│$/);
+  });
+
+  test("the ASCII tier draws the same twelve slots as + and -", () => {
+    const rendered = lines(renderTable(table, 40, ASCII_GLYPHS)).filter((l) => l !== "");
+    expect(rendered[0]).toMatch(/^\+-+\+-+\+$/);
+    expect(rendered[2]).toMatch(/^\+-+\+-+\+$/);
+    expect(rendered.at(-1)).toMatch(/^\+-+\+-+\+$/);
+    expect(rendered[1]).toMatch(/^\|[^|]+\|[^|]+\|$/);
+    expect(rendered.join("")).not.toContain("┌");
+  });
+
+  test("a rule sits above the header, between every pair of rows, and below the last", () => {
+    for (const glyphs of [UNICODE_GLYPHS, ASCII_GLYPHS]) {
+      const rendered = lines(renderTable(table, 40, glyphs)).filter((l) => l !== "");
+      // top rule, header, mid rule, row, mid rule, row, bottom rule
+      expect(rendered.length).toBe(7);
+    }
+  });
+
+  test("a header-only table still gets both outer rules", () => {
+    const headerOnly = lexTable("| A | B |\n| --- | --- |\n");
+    const rendered = lines(renderTable(headerOnly, 40, UNICODE_GLYPHS)).filter((l) => l !== "");
+    expect(rendered.length).toBe(3);
+    expect(rendered[0]).toMatch(/^┌/);
+    expect(rendered.at(-1)).toMatch(/^└/);
+  });
+});
+
+// --- multi-line cells ------------------------------------------------------
+
+describe("multi-line cells compose vertically", () => {
+  /**
+   * Cells arrive pre-wrapped, so a row is as tall as its tallest cell and every shorter
+   * cell owes blank, cell-wide lines *below* its content — `cli-table3`'s default
+   * vertical alignment was top and this module never set `rowAligns`, so that is the
+   * behaviour being reproduced rather than chosen.
+   */
+  test("a short cell is blank-padded to the row's height, and the row stays rectangular", () => {
+    const table = buildTable(["A", "B"], [["x", "one two three four five six seven eight"]]);
+    const output = renderTable(table, 40, UNICODE_GLYPHS);
+    const body = lines(output).filter((line) => line.startsWith("│")).slice(1);
+    expect(body.length).toBeGreaterThan(1);
+    expect(segments(body[1] ?? "")[0]?.trim()).toBe("");
+    expect(new Set(body.map((line) => stringWidth(line))).size).toBe(1);
   });
 });
 
@@ -347,6 +477,26 @@ describe("renderTable alignment", () => {
     expect(left.left).toBeLessThan(left.right);
     expect(Math.abs(center.left - center.right)).toBeLessThanOrEqual(1);
     expect(right.left).toBeGreaterThan(right.right);
+  });
+
+  /**
+   * Alignment is **applied** here, not merely computed. Until WP-3 `grid.aligns` was
+   * handed to `cli-table3` as `colAligns` and the library chose the padding side, so
+   * the decision had no implementation on this side of the seam at all.
+   *
+   * The exact counts are pinned rather than the ordering, because one of them is a
+   * choice that could silently flip: an odd slack in a **centred** cell goes to the
+   * **right**, matching `cli-table3`'s `pad()` (`right = ceil(padlen / 2)`), so
+   * centred cells keep the bytes they had.
+   */
+  test("the padding side and count are exact, and centre biases the odd column right", () => {
+    const output = renderTable(table, 80, UNICODE_GLYPHS);
+    const bodyLine = lines(output).filter((line) => line.startsWith("│")).at(-1) ?? "";
+
+    // Header widths 4/6/5 are the natural widths; a one-column cell leaves 3/5/4 slack.
+    expect(pads(bodyLine, 0)).toEqual({ left: 1, right: 4 });
+    expect(pads(bodyLine, 1)).toEqual({ left: 3, right: 4 });
+    expect(pads(bodyLine, 2)).toEqual({ left: 5, right: 1 });
   });
 });
 
