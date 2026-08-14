@@ -5,7 +5,19 @@ import { renderTable } from "./table";
 import { formatMetaBlockDetailed, splitFrontmatter } from "./frontmatter";
 import { wrapAnsi } from "./wrap";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
+import {
+  detectInlineColor,
+  renderBr,
+  renderCodespan,
+  renderDel,
+  renderEm,
+  renderImage,
+  renderInlineText,
+  renderLink,
+  renderStrong,
+} from "./inline";
 import { resolveFenceLanguage } from "./lang";
+import { createLayoutContext } from "./layout-context";
 import { stripAnsi, trackListLine, type OpenListItem } from "./list-lines";
 import { NARROW_MEASURE, type Measure } from "./width";
 
@@ -1189,10 +1201,63 @@ export function renderDocumentDetailed(
   // `marked-terminal`'s `code` renderer never runs the transform at all, so this
   // needs no special case there; verified by test.
   const emoji = emojiOverride ?? glyphs.tier === "unicode";
+
+  // **The one `LayoutContext` for this render** (WP-2 of
+  // `plans/marked-terminal-replacement.md`). Everything the owned visitors need, as one
+  // immutable value constructed here and threaded explicitly: the target width, the glyph
+  // tier and the `Measure` — both of which this repo already requires to be threaded
+  // rather than detected at the point of use — the pending-prefix column stack, the
+  // fence-language resolver as a seam, whether shortcode substitution runs, and whether
+  // inline styling emits SGR codes at all.
+  //
+  // `detectInlineColor()` is called once per render rather than once per style, and it
+  // asks the library rather than re-deriving `chalk`'s rule; see its doc comment for why a
+  // hand-rolled TTY check would have silently stopped colouring under CI. It is
+  // deliberately *not* `@colors/colors`' own `enabled` flag, which `src/table.ts` keeps
+  // for itself: two enablement rules in one binary is the existing, deliberate state, and
+  // unifying them here would change table output.
+  const layout = createLayoutContext({
+    width: targetWidth,
+    glyphs,
+    measure,
+    resolveFenceLanguage,
+    emoji,
+    color: detectInlineColor(),
+  });
+
   const extension = markedTerminal({ width: targetWidth, reflowText: true, emoji });
   const renderer = extension.renderer;
   if (renderer) {
     renderer.table = (token: Tokens.Table) => renderTable(token, targetWidth, glyphs, measure);
+
+    // **The owned inline visitors** (WP-2). These are no longer overrides *of* the
+    // library — nothing delegates to `marked-terminal` here any more — but the block
+    // renderers around them still are, so the two have to agree byte-for-byte. See
+    // `src/inline.ts` for what each reproduces and why, including the two upstream
+    // defects (`fixHardReturn`, and `insertEmojis`'s stray trailing space) that are
+    // deliberately kept because this package's parity class forbids output moving.
+    //
+    // `parseInline` is handed in as a closure over `this` rather than read off the
+    // context: it is the *parser's* recursion, per call, and belongs to `marked`, not to
+    // the layout. `image` needs neither, and `br` needs nothing at all.
+    //
+    // Not assigned: `tablerow` and `tablecell`, which are unreachable because `table` is
+    // replaced wholesale by `renderTable` and that never dispatches cell tokens.
+    renderer.strong = function ownedStrong(token: Tokens.Strong) {
+      return renderStrong(layout, token, (tokens) => this.parser.parseInline(tokens));
+    };
+    renderer.em = function ownedEm(token: Tokens.Em) {
+      return renderEm(layout, token, (tokens) => this.parser.parseInline(tokens));
+    };
+    renderer.codespan = (token: Tokens.Codespan) => renderCodespan(layout, token);
+    renderer.br = () => renderBr();
+    renderer.del = function ownedDel(token: Tokens.Del) {
+      return renderDel(layout, token, (tokens) => this.parser.parseInline(tokens));
+    };
+    renderer.link = function ownedLink(token: Tokens.Link) {
+      return renderLink(layout, token, (tokens) => this.parser.parseInline(tokens));
+    };
+    renderer.image = (token: Tokens.Image) => renderImage(token);
 
     // Columns that block renderers still owe every line of whatever is being rendered
     // *right now*, because they are glued on only after that inner render returns: a
@@ -1202,14 +1267,19 @@ export function renderDocumentDetailed(
     // text being produced has to be. This is what lets the `paragraph` override wrap a
     // *loose* list item once, at the width the item will actually occupy — see its
     // comment below and `wrapOverBudgetLines`'s.
-    const pendingPrefix: Array<{ columns: number; list: boolean }> = [];
-    const pendingPrefixWidth = (): number => pendingPrefix.reduce((sum, entry) => sum + entry.columns, 0);
-    const listDepth = (): number => pendingPrefix.reduce((count, entry) => count + (entry.list ? 1 : 0), 0);
+    //
+    // The stack itself now lives on the `LayoutContext` (`src/layout-context.ts`), which
+    // is what makes it reachable from a visitor that is no longer a closure declared
+    // inside this function — the whole point of the seam. These four names stay as local
+    // aliases so that every call site below reads exactly as it did, and this WP's diff
+    // shows the seam being introduced rather than fifteen unrelated call-site rewrites.
+    const pendingPrefix = layout.prefix;
+    const pendingPrefixWidth = (): number => layout.prefix.width();
+    const listDepth = (): number => layout.prefix.listDepth();
     // The still-pending columns that are *not* a list's own — today, an enclosing
     // blockquote's `indentify`. `currentListBudget` counts list levels itself (from
     // `depth`), so double-counting them here would narrow every nested list twice.
-    const outerColumns = (): number =>
-      pendingPrefix.reduce((sum, entry) => sum + (entry.list ? 0 : entry.columns), 0);
+    const outerColumns = (): number => layout.prefix.outerColumns();
 
     // Non-zero while a renderer that dispatches *inline* tokens is on the stack. Only
     // `paragraph` and `heading` do so anywhere a list can reach (`table` is replaced
@@ -1295,121 +1365,126 @@ export function renderDocumentDetailed(
     // Fenced code, tables and nested lists are safe **by construction, not by
     // inspection**: each is its own token type and never reaches a `text` call. Measured
     // to confirm: 0 of those 11,443 tokens contained a `SENTINEL`.
-    const originalText = renderer.text;
-    if (originalText) {
-      renderer.text = function wrappedText(token: Tokens.Text | Tokens.Escape | Tokens.Tag) {
-        const raw = originalText.call(this, token);
-        if (raw === false || typeof raw !== "string") return raw;
-        if (listDepth() === 0 || inlineDepth > 0) return raw;
-        const inlineTokens = (token as { tokens?: Token[] }).tokens;
-        if (!Array.isArray(inlineTokens)) return raw;
-        // Belt and braces on the "fences never reach here" measurement above: a body
-        // carrying a code sentinel is returned untouched rather than reasoned about.
-        if (raw.includes(SENTINEL)) return raw;
+    //
+    // **WP-2 replaced the inner call only.** What used to be `originalText.call(this,
+    // token)` — the library's `text`, which per `index.js:84-89` is `token.text` returned
+    // through an `identity` option and nothing else — is now `renderInlineText(token)`.
+    // Everything around it, including the three conditions, `inlineDepth`, both sentinel
+    // guards and the coalesce/re-wrap, is unchanged and out of that package's scope.
+    renderer.text = function wrappedText(token: Tokens.Text | Tokens.Escape | Tokens.Tag) {
+      // The library's `text` was typed `string | false` and this seam guarded for both;
+      // the owned one returns `token.text`, which every token `parseInline` and the block
+      // `text` case dispatch here carries, so the guard has nothing left to catch.
+      const raw = renderInlineText(token);
+      if (listDepth() === 0 || inlineDepth > 0) return raw;
+      const inlineTokens = (token as { tokens?: Token[] }).tokens;
+      if (!Array.isArray(inlineTokens)) return raw;
+      // Belt and braces on the "fences never reach here" measurement above: a body
+      // carrying a code sentinel is returned untouched rather than reasoned about.
+      if (raw.includes(SENTINEL)) return raw;
 
-        // **This is where a list item's inline markup gets parsed at all** (WP-14).
-        //
-        // `raw` is `marked-terminal`'s own answer, and its own answer is the markdown
-        // *source*: `Renderer.prototype.text` (`index.js:84-89`) reads `token.text` and
-        // returns it through `this.o.text`, which is `identity` (`index.js:47`). It never
-        // dispatches `token.tokens`. Its `heading` (`:116-119`), `paragraph` (`:201-211`),
-        // `tablecell` (`:260-265`) and — transitively, through `parser.parse` —
-        // `blockquote` (`:102-107`) all call `parser.parseInline(token.tokens)` instead,
-        // which is exactly why `**bold**` and `[label](url)` reach the terminal parsed
-        // everywhere *except* a list item, and why a blockquote nested *inside* a list
-        // item is fine while the item's own text is not.
-        //
-        // **Only a *tight* item routes here, and that is the whole scope of the defect.**
-        // This comment claimed the opposite when WP-14 landed — that a loose item's
-        // children reached the block `text` case with `top === true` and were wrapped in a
-        // synthesised paragraph whose text token had no `tokens`, so one override fixed
-        // tight and loose together. That mechanism is not what `marked` does; WP-13
-        // re-measured it and corrected the record.
-        //
-        // What decides it is the **token type an item's children carry**, not the marker.
-        // `marked`'s list lexer stamps `loose` (`marked/lib/marked.cjs:557-561`) and the
-        // block tokenizer then gives a **tight** item `text` children and a **loose** item
-        // `paragraph` children — both carrying the same inline `tokens`. `listitem`
-        // dispatches either through `Parser.parse(item.tokens, !!item.loose)`
-        // (`marked-terminal` `index.js:184`), so a loose item's children land on the
-        // `paragraph` case, whose override already calls `parseInline`. **Loose items were
-        // never broken.** Verified at the library baseline: a tight item renders `**b**`
-        // verbatim, a loose one renders it bold.
-        //
-        // So this override fixes tight items of every marker kind — unordered, ordered,
-        // task — plus every nested item whose own list is tight, at any depth. It does not
-        // touch the loose path and must not: a loose item's `paragraph` token never reaches
-        // here, and the `text` tokens `parseInline` dispatches from inside it carry no
-        // `tokens`, so condition 3 excludes them. That is what stops a double parse.
-        //
-        // `inlineDepth` is raised for the duration, upholding this seam's own condition 2
-        // for the recursive calls `parseInline` makes: the text tokens inside `strong`,
-        // `em`, `link` and `del` come back through here, and they must take the library
-        // path. They also carry no `tokens`, so condition 3 already stops them — the
-        // counter is the documented invariant, held rather than relied on twice.
-        inlineDepth += 1;
-        let parsed: string;
-        try {
-          parsed = this.parser.parseInline(inlineTokens);
-        } finally {
-          inlineDepth -= 1;
-        }
-        if (typeof parsed !== "string" || parsed.includes(SENTINEL)) return raw;
+      // **This is where a list item's inline markup gets parsed at all** (WP-14).
+      //
+      // `raw` is `marked-terminal`'s own answer, and its own answer is the markdown
+      // *source*: `Renderer.prototype.text` (`index.js:84-89`) reads `token.text` and
+      // returns it through `this.o.text`, which is `identity` (`index.js:47`). It never
+      // dispatches `token.tokens`. Its `heading` (`:116-119`), `paragraph` (`:201-211`),
+      // `tablecell` (`:260-265`) and — transitively, through `parser.parse` —
+      // `blockquote` (`:102-107`) all call `parser.parseInline(token.tokens)` instead,
+      // which is exactly why `**bold**` and `[label](url)` reach the terminal parsed
+      // everywhere *except* a list item, and why a blockquote nested *inside* a list
+      // item is fine while the item's own text is not.
+      //
+      // **Only a *tight* item routes here, and that is the whole scope of the defect.**
+      // This comment claimed the opposite when WP-14 landed — that a loose item's
+      // children reached the block `text` case with `top === true` and were wrapped in a
+      // synthesised paragraph whose text token had no `tokens`, so one override fixed
+      // tight and loose together. That mechanism is not what `marked` does; WP-13
+      // re-measured it and corrected the record.
+      //
+      // What decides it is the **token type an item's children carry**, not the marker.
+      // `marked`'s list lexer stamps `loose` (`marked/lib/marked.cjs:557-561`) and the
+      // block tokenizer then gives a **tight** item `text` children and a **loose** item
+      // `paragraph` children — both carrying the same inline `tokens`. `listitem`
+      // dispatches either through `Parser.parse(item.tokens, !!item.loose)`
+      // (`marked-terminal` `index.js:184`), so a loose item's children land on the
+      // `paragraph` case, whose override already calls `parseInline`. **Loose items were
+      // never broken.** Verified at the library baseline: a tight item renders `**b**`
+      // verbatim, a loose one renders it bold.
+      //
+      // So this override fixes tight items of every marker kind — unordered, ordered,
+      // task — plus every nested item whose own list is tight, at any depth. It does not
+      // touch the loose path and must not: a loose item's `paragraph` token never reaches
+      // here, and the `text` tokens `parseInline` dispatches from inside it carry no
+      // `tokens`, so condition 3 excludes them. That is what stops a double parse.
+      //
+      // `inlineDepth` is raised for the duration, upholding this seam's own condition 2
+      // for the recursive calls `parseInline` makes: the text tokens inside `strong`,
+      // `em`, `link` and `del` come back through here, and they must take the library
+      // path. They also carry no `tokens`, so condition 3 already stops them — the
+      // counter is the documented invariant, held rather than relied on twice.
+      inlineDepth += 1;
+      let parsed: string;
+      try {
+        parsed = this.parser.parseInline(inlineTokens);
+      } finally {
+        inlineDepth -= 1;
+      }
+      if (typeof parsed !== "string" || parsed.includes(SENTINEL)) return raw;
 
-        // Now that inline tokens *are* dispatched, `br` fires, and with `reflowText` on it
-        // emits `HARD_RETURN` rather than a newline (`index.js:291-293`) — a marker
-        // `reflowText` later turns back into a line break for the three block renderers
-        // that reflow. **Nothing reflows a list item**, so this seam owes that conversion
-        // itself, or an authored hard break arrives as a bare `\r` that walks the cursor
-        // back to column 0. It is spelled as `HARD_RETURN` *plus* the newline so the
-        // marker survives into `coalesceTightItemLines`, whose `isHardBoundary` already
-        // refuses to join across one (see `HARD_RETURN`'s comment, which named this case
-        // as "rare is not never" while `marked-terminal`'s raw-text path still made it
-        // unreachable). `settle` drops the markers on the way out, on every return path.
-        //
-        // This replaces `HARD_BREAK_TAIL` as the mechanism for list items, and does not
-        // retire it: that regex reads the *source spelling* of a hard break, which is
-        // still what an unparsed body carries on the `raw` returns above.
-        const result = parsed.split(HARD_RETURN).join(`${HARD_RETURN}\n`);
-        const settle = (text: string): string => text.split(HARD_RETURN).join("");
+      // Now that inline tokens *are* dispatched, `br` fires, and with `reflowText` on it
+      // emits `HARD_RETURN` rather than a newline (`index.js:291-293`) — a marker
+      // `reflowText` later turns back into a line break for the three block renderers
+      // that reflow. **Nothing reflows a list item**, so this seam owes that conversion
+      // itself, or an authored hard break arrives as a bare `\r` that walks the cursor
+      // back to column 0. It is spelled as `HARD_RETURN` *plus* the newline so the
+      // marker survives into `coalesceTightItemLines`, whose `isHardBoundary` already
+      // refuses to join across one (see `HARD_RETURN`'s comment, which named this case
+      // as "rare is not never" while `marked-terminal`'s raw-text path still made it
+      // unreachable). `settle` drops the markers on the way out, on every return path.
+      //
+      // This replaces `HARD_BREAK_TAIL` as the mechanism for list items, and does not
+      // retire it: that regex reads the *source spelling* of a hard break, which is
+      // still what an unparsed body carries on the `raw` returns above.
+      const result = parsed.split(HARD_RETURN).join(`${HARD_RETURN}\n`);
+      const settle = (text: string): string => text.split(HARD_RETURN).join("");
 
-        if (!result.includes("\n")) return settle(result);
+      if (!result.includes("\n")) return settle(result);
 
-        const { segments, coalesced } = coalesceTightItemLines(result);
-        // Nothing was joined — the item is a single line, or every break in it is a
-        // genuine hard break. Leave it on the pre-WP-2c path rather than re-wrapping
-        // text this WP has no reason to touch.
-        if (!coalesced) return settle(result);
+      const { segments, coalesced } = coalesceTightItemLines(result);
+      // Nothing was joined — the item is a single line, or every break in it is a
+      // genuine hard break. Leave it on the pre-WP-2c path rather than re-wrapping
+      // text this WP has no reason to touch.
+      if (!coalesced) return settle(result);
 
-        const budget = Math.max(1, targetWidth - pendingPrefixWidth());
-        // `segments` now carry live ANSI wherever `chalk` has a colour level, so the
-        // re-wrap has to be the ANSI-aware one — which it already was: `wrapAnsi`
-        // segments escape sequences out as atomic zero-width units and `measure` is
-        // `string-width`, which strips them before counting. That path was built for
-        // exactly this content (see `src/wrap.ts`'s module comment, which names list
-        // items carrying live ANSI as its reason to exist) and was already exercised here
-        // by `styleWikiLink`'s hard-coded escapes, which reach this seam through
-        // `preprocessBody` at every colour level.
-        const wrapAt = (width: number): string =>
-          segments.map((segment) => wrapAnsi(segment, Math.max(1, width), measure).join("\n")).join("\n");
+      const budget = Math.max(1, targetWidth - pendingPrefixWidth());
+      // `segments` now carry live ANSI wherever `chalk` has a colour level, so the
+      // re-wrap has to be the ANSI-aware one — which it already was: `wrapAnsi`
+      // segments escape sequences out as atomic zero-width units and `measure` is
+      // `string-width`, which strips them before counting. That path was built for
+      // exactly this content (see `src/wrap.ts`'s module comment, which names list
+      // items carrying live ANSI as its reason to exist) and was already exercised here
+      // by `styleWikiLink`'s hard-coded escapes, which reach this seam through
+      // `preprocessBody` at every colour level.
+      const wrapAt = (width: number): string =>
+        segments.map((segment) => wrapAnsi(segment, Math.max(1, width), measure).join("\n")).join("\n");
 
-        const wrapped = wrapAt(budget);
-        // Same landmine, same guard as `wrappedParagraph` — see `MARKER_SHAPED_LINE`.
-        // Every line after the first is still at column 0 when `bulletPointLines` /
-        // `numberedLines` run, so one that *starts* `*` or `12.` is taken for a marker
-        // line and, in an ordered list, is handed that item's number and rewritten.
-        const collides = (text: string): boolean =>
-          text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
-        if (!collides(wrapped)) return settle(wrapped);
+      const wrapped = wrapAt(budget);
+      // Same landmine, same guard as `wrappedParagraph` — see `MARKER_SHAPED_LINE`.
+      // Every line after the first is still at column 0 when `bulletPointLines` /
+      // `numberedLines` run, so one that *starts* `*` or `12.` is taken for a marker
+      // line and, in an ordered list, is handed that item's number and rewritten.
+      const collides = (text: string): boolean =>
+        text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
+      if (!collides(wrapped)) return settle(wrapped);
 
-        return settle(
-          wrapAt(budget - 1)
-            .split("\n")
-            .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
-            .join("\n"),
-        );
-      };
-    }
+      return settle(
+        wrapAt(budget - 1)
+          .split("\n")
+          .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
+          .join("\n"),
+      );
+    };
 
     // One `marked-terminal` renderer per distinct list budget, built lazily and reused.
     // Rendering a loose list item's paragraph through a renderer constructed at that
@@ -1459,7 +1534,11 @@ export function renderDocumentDetailed(
         // `try`/`catch` never fires) — it logs via `console.error` unconditionally.
         // Never mutate `token`, which `marked` owns; pass a shallow copy carrying the
         // rewritten `lang` instead.
-        const normalizedLang = resolveFenceLanguage(token.lang);
+        // Through the context, not the module import (WP-2). The resolver is a field so
+        // that F4 — making `src/lang.ts`'s `effectiveAliases` global an immutable value —
+        // has somewhere to land in WP-3, which rewrites this renderer. The global itself is
+        // untouched here: this is the seam, not the fix.
+        const normalizedLang = layout.resolveFenceLanguage(token.lang);
         const normalizedToken = normalizedLang === token.lang ? token : { ...token, lang: normalizedLang };
         const result = originalCode.call(this, normalizedToken);
         return result === false ? false : wrapCode(result);
