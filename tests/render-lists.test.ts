@@ -489,7 +489,7 @@ describe("renderDocument — nested-list continuation over-indent (WP-2e)", () =
 
   // **Code ranges are exempt here, and were not before WP-2f — this assertion used to
   // pass for the wrong reason.** The tool's guarantee is "no *non-code* line exceeds the
-  // width" (`AGENTS.md`, rendering policy; `--check` and both sweeps skip code ranges).
+  // width" (`src/AGENTS.md`, rendering policy; `--check` and both sweeps skip code ranges).
   // Until WP-2f this fixture's fenced content happened to fit anyway, because
   // `rewrapListBody` was splitting it — the very invariant violation WP-2f closed. With
   // the fence left alone, its longest content line is 81 columns at width 80, exempt.

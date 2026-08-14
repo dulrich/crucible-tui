@@ -9,9 +9,9 @@ the mechanism that keeps that evidence durable instead of merely current.
 
 Same intent as the private corpus harness's provenance record for vendored READMEs (a
 different repo, described here by role only — this repo's own convention, per
-`AGENTS.md`'s note that a private repository is named by what it does, never by path) and
-as `tests/fixtures/wide-table.md` in this directory's parent: a fixture is not just test
-data, it is evidence, and the reason it exists has to survive next to it.
+`scripts/AGENTS.md`'s note that a private repository is named by what it does, never by
+path) and as `tests/fixtures/wide-table.md` in this directory's parent: a fixture is not
+just test data, it is evidence, and the reason it exists has to survive next to it.
 
 ## Layout
 

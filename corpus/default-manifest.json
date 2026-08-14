@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generated": "2026-07-27T21:26:07Z",
-  "generator": "hand-authored (public-safe placeholder; see AGENTS.md's Corpus sweep section)",
+  "generator": "hand-authored (public-safe placeholder; see scripts/AGENTS.md's Corpus sweep section)",
   "corpora": [
     {
       "name": "repo",

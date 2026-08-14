@@ -107,7 +107,7 @@ describe("per-cell padding measures with this repo's own ruler (WP-3)", () => {
    * with **its own bundled `string-width@4.2.3`** — a version that has no
    * `ambiguousIsNarrow` option at all. A cell holding *k* characters the two versions
    * disagree about was padded *k* columns too wide; *k* varies cell by cell, so the
-   * table's **right edge went ragged**. `AGENTS.md` recorded that as not fixable from
+   * table's **right edge went ragged**. `src/AGENTS.md` recorded that as not fixable from
    * outside the library, and it was right: the capped render/measure/reallocate loop
    * that used to sit in `renderTable` could only ever chase the *aggregate* overage,
    * which is why it kept the table inside the target while leaving the edge crooked.

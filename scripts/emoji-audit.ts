@@ -2,7 +2,7 @@
 /**
  * Emoji shortcode behavioural audit (WP-3, `plans/corpus-symlink-membership.md`).
  *
- * The record in `AGENTS.md` and `src/render.ts` describes a test that decided
+ * The record in `src/AGENTS.md` and `src/render.ts` describes a test that decided
  * `emoji: false` for `markedTerminal()` — 392 prose shortcodes across 59 files,
  * all reachable only through symlink-following. That test was a throwaway
  * subagent invocation; nothing in the repo could re-run it. This script is that

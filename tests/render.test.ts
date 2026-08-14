@@ -371,7 +371,7 @@ describe("renderDocument — fence language normalization silences highlight.js 
 // `MdviewConfig.emoji` (`src/config.ts`) overrides either direction via the
 // `emojiOverride` argument `renderDocumentDetailed`/`renderDocument` now accept. See
 // `src/render.ts`'s `emoji` computation at the top of `renderDocumentDetailed` and
-// `AGENTS.md`'s emoji section for why this is no longer a hardcoded constant.
+// `src/AGENTS.md`'s emoji section for why this is no longer a hardcoded constant.
 //
 // These tests fail if any of the three `markedTerminal()` construction sites — the
 // main one, or either per-budget cache (`paragraphRendererAt`, `headingRendererAt`) —

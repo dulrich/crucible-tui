@@ -787,7 +787,7 @@ describe("first-seen width order survives parse and sweep (WP-4 invariant 4)", (
     const dir = await mkdtemp(join(tmpdir(), "mdview-width-order-"));
     try {
       // A nineteen-column table: below its minimum feasible width the allocator has
-      // nowhere left to shrink and it overflows **by design** (AGENTS.md's
+      // nowhere left to shrink and it overflows **by design** (src/AGENTS.md's
       // "many-column tables exceed the target width"), so every width swept below
       // overflows and the recorded order is the only variable. A long unbreakable
       // token would not do — those are hard-split losslessly and never overflow.

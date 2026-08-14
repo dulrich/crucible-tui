@@ -128,7 +128,7 @@ export function resolveGlyphs(
  * **Deliberately the flag only, not `MDVIEW_GLYPHS=unicode`.** A flag is a request made
  * about *this* invocation and going unmet is news; an exported environment variable is
  * ambient, and a notice for it would print on every single render for the rest of that
- * shell's life. The env var's own resolution is documented in `AGENTS.md` and in the
+ * shell's life. The env var's own resolution is documented in `src/AGENTS.md` and in the
  * probe's output, which is where an ambient setting belongs.
  *
  * **Why wide mode forces ASCII (WP-3).** This tier's whole width contract, stated at
