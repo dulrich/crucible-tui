@@ -10,14 +10,15 @@ import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
 // change no count: 58 aggregate metrics (4 fixtures x 6 widths x 2 tiers, plus a
 // 1,000-file corpus sample at 5 widths) and all 17 per-file corpus entries were
 // byte-identical before and after. **Do not reimplement any of them here.**
+// WP-5 of `plans/tn-review-remediation.md` then moved the line primitives one module
+// further, to `src/list-lines.ts`, so `src/render.ts` reaches them without importing the
+// detectors at all — same rule, one level down: relocated, never copied.
 import {
-  LIST_BULLET,
   findColumnZeroMarkers,
   findContinuationOverIndent,
   findListOrphans,
-  isIndentedLine,
-  stripAnsi,
 } from "../src/detectors";
+import { LIST_BULLET, isIndentedLine, stripAnsi } from "../src/list-lines";
 import { renderWithForcedColor } from "./helpers/color";
 
 const TABLE_MODULE_PATH = `${import.meta.dir}/../src/table.ts`;

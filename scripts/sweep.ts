@@ -32,8 +32,8 @@ import {
   isTableLine,
   probeBlockEnds,
   readBlockEnds,
-  stripAnsi,
 } from "../src/detectors";
+import { stripAnsi } from "../src/list-lines";
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "../src/config";
 import { NARROW_MEASURE, measureFor, type Measure } from "../src/width";

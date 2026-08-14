@@ -8,6 +8,21 @@
  * `src/` (not in a test file) so the test suite and `scripts/sweep.ts` measure
  * with one implementation rather than two that drift.
  *
+ * ## The line primitives live next door, in `src/list-lines.ts`
+ *
+ * `stripAnsi`, the marker regexes, `isIndentedLine`, `OpenListItem` and `trackListLine`
+ * were this module's until WP-5 of `plans/tn-review-remediation.md`. They are production
+ * code — `src/render.ts`'s re-alignment pass rewrites with `trackListLine` while
+ * `findContinuationOverIndent` below grades that pass with the same function — so they
+ * moved to a module `render.ts` can import without also importing this one, which puts a
+ * second `Marked` instantiation, the block-end probe and the shear classifier into the
+ * import graph the shipped binary is compiled from — a cohesion win, **not** a size one:
+ * the bundler tree-shakes nearly all of it, and the measured delta is 151 bytes on a
+ * 2.68 MB bundle (`src/list-lines.ts` records the measurement). **They were relocated,
+ * not copied**: a detector and the fix it
+ * measures must not be able to disagree about where an item's text column is, and no gate
+ * here could see them drift apart. Import them from `./list-lines`; do not re-declare one.
+ *
  * ## The counts here are load-bearing history
  *
  * `findListOrphans` is the metric every number WP-2, WP-2b and WP-2c recorded was
@@ -37,6 +52,13 @@ import { Marked, type Token, type Tokens } from "marked";
 import { splitFrontmatter } from "./frontmatter";
 import { NARROW_MEASURE, type Measure } from "./width";
 import { isLineExempt, type CodeRanges } from "./overflow";
+import {
+  LIST_BULLET,
+  isIndentedLine,
+  stripAnsi,
+  trackListLine,
+  type OpenListItem,
+} from "./list-lines";
 
 // `CodeRanges` moved to `src/overflow.ts` with the exemption predicate itself (WP-2) and
 // is re-exported here so this module's existing surface is unchanged.
@@ -58,26 +80,6 @@ export interface DetectorOptions {
   measure?: Measure;
 }
 
-// Deliberately matching the ESC control character to strip ANSI SGR codes, so a
-// detector measures the text a reader sees rather than the escape bytes.
-// eslint-disable-next-line no-control-regex
-const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
-
-export const stripAnsi = (value: string): string => value.replace(ANSI_PATTERN, "");
-
-/**
- * A rendered list marker line: at least two columns of indent, a bullet or an
- * ordered marker, then the item's text. The bullet class covers both glyph tiers
- * (`•◦‣` unicode, `-` ascii) plus the `*`/`+` the library can still emit.
- */
-export const LIST_BULLET = /^\s{2,}(?:[•*\-◦‣+]|\d+\.)\s/;
-
-/** Same, but capturing the full marker prefix so the item's text column is derivable. */
-const LIST_MARKER_PREFIX = /^(\s{2,}(?:[•*\-◦‣+]|\d+\.)\s+)/;
-
-/** A rendered line that is inside some list item — indented, and carrying text. */
-export const isIndentedLine = (line: string): boolean => /^\s{2,}\S/.test(line);
-
 /**
  * The detector-side adapter over the one exemption predicate (`src/overflow.ts`'s
  * `isLineExempt`). The `undefined` case is **this module's** API, not the predicate's:
@@ -88,54 +90,6 @@ export const isIndentedLine = (line: string): boolean => /^\s{2,}\S/.test(line);
  */
 const isExempt = (lineNumber: number, codeRanges: CodeRanges | undefined): boolean =>
   codeRanges !== undefined && isLineExempt(lineNumber, codeRanges);
-
-/** One open list item on an innermost-last stack: where its marker sits, where its text starts. */
-export interface OpenListItem {
-  /** Display column the marker glyph itself sits at. */
-  markerColumn: number;
-  /** Display column the item's text starts at — where its continuations belong. */
-  textColumn: number;
-}
-
-/**
- * Advance an innermost-last stack of open list items by one rendered line, and report
- * which item that line is a **continuation** of (`null` when it is not a continuation:
- * a blank line, a marker line, or a line that closed every open list).
- *
- * This is the one implementation of "which item does this rendered line belong to".
- * `findContinuationOverIndent` measures with it and `render.ts`'s re-alignment pass
- * (WP-2e) rewrites with it, deliberately: a detector and the fix it grades must not be
- * able to disagree about what an item's text column is.
- *
- * Callers pass ANSI-stripped lines and own the stack array, which is mutated in place.
- */
-export function trackListLine(
-  line: string,
-  open: OpenListItem[],
-  measure: Measure = NARROW_MEASURE,
-): OpenListItem | null {
-  if (line.trim() === "") return null; // a loose item's blank line does not close it
-
-  const marker = LIST_MARKER_PREFIX.exec(line);
-  if (marker) {
-    const prefix = marker[1] as string;
-    const markerColumn = measure(prefix.slice(0, prefix.length - prefix.trimStart().length));
-    const textColumn = measure(prefix);
-    // a marker at or left of the top of the stack closes every level it is not inside
-    while (open.length > 0 && (open[open.length - 1] as OpenListItem).markerColumn >= markerColumn) {
-      open.pop();
-    }
-    open.push({ markerColumn, textColumn });
-    return null;
-  }
-
-  if (!isIndentedLine(line)) {
-    open.length = 0; // back at column 0 with real text — every list is closed
-    return null;
-  }
-
-  return open[open.length - 1] ?? null;
-}
 
 /**
  * Orphaned lines inside rendered list items — the WP-2/2b/2c metric, moved here

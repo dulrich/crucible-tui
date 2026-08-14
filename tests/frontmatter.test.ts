@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import stringWidth from "string-width";
-import { stripAnsi } from "../src/detectors";
+import { stripAnsi } from "../src/list-lines";
 import { formatMetaBlock, formatMetaBlockDetailed, splitFrontmatter } from "../src/frontmatter";
 import { renderDocumentDetailed } from "../src/render";
 
