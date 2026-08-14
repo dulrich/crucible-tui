@@ -61,6 +61,10 @@ src/width.ts        display-width measurement + the East Asian Ambiguous probe (
 src/lang.ts         fence-language alias map + supportsLanguage() fallback
 src/config.ts       XDG config load + corpus-manifest path resolution
 src/detectors.ts    orphan / continuation-over-indent detectors (see below)
+src/list-lines.ts   the rendered-line primitives both render.ts and detectors.ts
+                    share — stripAnsi, the marker regexes, trackListLine (WP-5 of
+                    plans/tn-review-remediation.md); imports only width.ts, so
+                    render.ts reaches them without pulling in the detectors
 src/overflow.ts     the width gate and the code-range exemption predicate — one
                     implementation, imported by --check, the sweep and the detectors
 corpus/             the bundled public-safe default manifest
@@ -256,9 +260,17 @@ Four things that must not be simplified away:
   and is guarded with one extra leading space, as both wrapping passes above guard it.
 
 The stack model — "which item does this rendered line belong to" — is
-`trackListLine` in `src/detectors.ts`, shared with `findContinuationOverIndent`
+`trackListLine` in `src/list-lines.ts`, shared with `findContinuationOverIndent`
 deliberately: a detector and the fix it grades must not be able to disagree about where
-an item's text column is. The fixture is `tests/fixtures/nested-list.md`.
+an item's text column is. It sat in `src/detectors.ts` until WP-5 of
+`plans/tn-review-remediation.md` moved it — **relocated, not copied**, precisely because
+one implementation is the property and one *file* is not. The move takes the detector
+module (a second `Marked` instantiation, the block-end probe, the shear classifier, none
+of which has a production caller) out of the graph the shipped binary is compiled from.
+**Its value is cohesion, not size**: measured with `bun build --target=bun`, the bundle
+shrank by **151 bytes of 2.68 MB**, because the bundler already tree-shook every detector
+function `render.ts` could not reach — see `src/list-lines.ts` for what was actually left
+behind and why. The fixture is `tests/fixtures/nested-list.md`.
 
 #### `rewrapListBody` rewrites neither a fence nor a marker
 

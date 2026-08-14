@@ -8,10 +8,10 @@ import {
   probeBlockEnds,
   readBlockEnds,
   isTableLine,
-  stripAnsi,
   type BlockEnds,
   type ClassifiedOrphan,
 } from "../src/detectors";
+import { stripAnsi } from "../src/list-lines";
 import { renderDocumentDetailed } from "../src/render";
 import { parseWidths } from "../scripts/sweep";
 

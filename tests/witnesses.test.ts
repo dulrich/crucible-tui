@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import stringWidth from "string-width";
 import { findFirstOverflow } from "../src/overflow";
-import { stripAnsi } from "../src/detectors";
+import { stripAnsi } from "../src/list-lines";
 import { formatMetaBlockDetailed, splitFrontmatter } from "../src/frontmatter";
 import { renderDocumentDetailed } from "../src/render";
 

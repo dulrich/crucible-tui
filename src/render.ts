@@ -6,7 +6,7 @@ import { formatMetaBlockDetailed, splitFrontmatter } from "./frontmatter";
 import { wrapAnsi } from "./wrap";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
 import { resolveFenceLanguage } from "./lang";
-import { stripAnsi, trackListLine, type OpenListItem } from "./detectors";
+import { stripAnsi, trackListLine, type OpenListItem } from "./list-lines";
 import { NARROW_MEASURE, type Measure } from "./width";
 
 // Obsidian wiki-links aren't markdown; style them before parsing so they render as
