@@ -68,7 +68,8 @@ src/list-lines.ts   the rendered-line primitives both render.ts and detectors.ts
 src/overflow.ts     the width gate and the code-range exemption predicate — one
                     implementation, imported by --check, the sweep and the detectors
 corpus/             the bundled public-safe default manifest
-scripts/sweep.ts    multi-corpus width sweep (see "Corpus sweep" below)
+scripts/corpus.ts   corpus discovery + evaluation — the sweep's library half (WP-4)
+scripts/sweep.ts    the sweep CLI: flags, summary, exit code (see "Corpus sweep")
 tests/              unit tests + markdown fixtures
 tests/helpers/containment.ts  the publication guard's rules (see "Containment" below)
 dist/mdview         compiled binary (gitignored; see PATH install below)
@@ -900,6 +901,27 @@ honoring `codeRanges`. **116 and 346 are two of the user's three real terminal w
 out — the dated full-corpus runs in the private archive's `measurements/` are recorded
 against the older set and have to stay comparable. It replaced a shell loop that spawned the 102 MB binary per file, and is
 ~13× faster.
+
+**The sweep is two files, split in WP-4: `scripts/corpus.ts` is the library, and
+`scripts/sweep.ts` is its CLI.** The library owns the manifest, the walk, the sampling
+policy (`selectCorpusFiles`) and `sweepCorpus`; the CLI owns `parseArgs`, `printResult`
+and the exit code. The split is not tidiness — `scripts/emoji-audit.ts` is a second
+consumer, and it had already **copied** the sampling predicate and drifted: its copy
+ignored `--limit` entirely and read `--all` straight off `process.argv`, so the same flags
+selected different files depending on which script read them, and no gate could see it.
+Both now parse with `parseArgs` and select with `selectCorpusFiles`.
+
+**Anything in the library that looks like a defect is a recorded measurement, not an
+oversight**, and `tests/sweep.test.ts` pins each one: `--limit` does nothing on a corpus
+that declares no `sample`; the missing-root result reports a hardcoded `elapsedSeconds:
+0` where every other path measures wall time; `shearsUnmapped` accumulates the **orphan**
+count; a file-read error is unprefixed while a render error carries `width N: `; widths
+are iterated first-seen, which fixes what lands in `overflow[0]`; and `parseArgs` ignores
+unknown arguments silently. The four `CorpusResult` states are built by one factory that
+**requires** `name`, `skipped` and `elapsedSeconds` at every call site, precisely so the
+hardcoded `0` cannot be defaulted away. `parseArgs` is written flag-by-flag on purpose —
+a declarative flag spec was measured against this parser and deletes nothing, while
+making it harder to audit line-by-line against an archived run.
 
 **Corpus roots are not hardcoded — they load from a versioned JSON manifest** (WP-1).
 This is what lets this tool live in a public repo with zero knowledge of any local path:
