@@ -106,6 +106,28 @@ guard — and the test writes a line to stderr saying the supplement was not app
 test **throws**. A pointer at a file that has moved is precisely how an opt-in check rots
 into one that can never fail, so it is a hard error rather than a quiet fall-back.
 
+**Ordinary words are the neighbour rule's sharp edge, and it constrains code, not only
+prose.** `isDistinctive` lets a name be flagged mid-sentence only when it carries a separator
+or a digit and is at least four characters. Everything else is flagged **only inside a code
+span** — a backtick span or a double-quoted string. Several directories beside this checkout
+are single ordinary English words, and three of them are words you will reach for while
+writing code: 'archive', 'data' and 'scratch'. So a real git subcommand named after the first
+of those, sitting in a spawn argument list; a variable called after the second, interpolated
+into a template literal; or the third inside a double-quoted error message — each turns the
+guard red, while the same words in running prose are fine. This is a live constraint on
+**writing code here**, not just on citing paths, and it is invisible until it fires: WP-1 of
+the renderer-replacement plan tripped all three in one new file.
+
+**The sanctioned escape is a single-quoted string literal.** `CODE_SPAN` matches backtick
+spans and double-quoted strings only; single quotes are excluded deliberately, because in
+prose they are apostrophes and treating them as delimiters mis-brackets whole sentences. A
+single-quoted literal is therefore not code context and does not trip the rule — which is why
+`scripts/render-diff.ts` spells one git subcommand in single quotes where every other string
+literal in that file is double-quoted, with a comment saying so. Renaming the identifier is
+the other fix and usually reads better. **Do not weaken `isDistinctive`, and do not subtract
+these names from the neighbour set** to make a file pass; the rule is load-bearing and these
+collisions are the price of it reading the filesystem instead of a hardcoded list.
+
 **Width-sensitive fixtures are a trap here.** `tests/fixtures/wide-table.md` is the
 `--check` gate's fixture and its whole purpose is being wide, and `table.test.ts`'s
 `LONG_PATH` feeds column-width assertions. When a path in either has to be replaced,
