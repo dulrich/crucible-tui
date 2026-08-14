@@ -1,7 +1,7 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { loadConfig, writeHighlightAlias, type MdviewConfig } from "../src/config";
 import { getBuiltinAliases, isSupportedLanguage, resolveFenceLanguage, setHighlightAliases } from "../src/lang";
 
@@ -226,10 +226,39 @@ describe("writeHighlightAlias (WP-4)", () => {
 // These live here rather than in tests/lang.test.ts because this WP's file scope is
 // `tests/config.test.ts`. `setHighlightAliases` is global, mutable module state (the
 // only way a `highlight-as` write can affect `render.ts`'s single-argument
-// `resolveFenceLanguage(token.lang)` call site without editing render.ts) — every test
-// below restores it to the built-in-only state afterward, so no later test file (bun
-// test does not isolate modules per file) observes a leftover override.
+// `resolveFenceLanguage(token.lang)` call site without editing render.ts).
+//
+// **Module state is shared across test files in the same `bun test` invocation —
+// re-verified on Bun 1.3.11 in WP-6 of `plans/tn-review-remediation.md`, with a
+// two-line probe (one file sets `query -> sql`, a second file that never mentions
+// the symbol observes `sql`, not the built-in default).** Deleting the `afterEach`
+// below reproduces the failure directly: `bun test tests/config.test.ts
+// tests/lang.test.ts` goes from 31 pass to 30 pass / 1 fail, because the last test
+// in this `describe` leaves `query -> sql` set and `tests/lang.test.ts` expects the
+// built-in default. **Today's full-suite gate (`bun test tests`) stays green even
+// without this reset — but only by accident**: `tests/cli.test.ts` happens to run
+// after this file and before `tests/lang.test.ts`, and one of its tests calls the
+// real `main()` against a real file, which loads the real config and calls
+// `setHighlightAliases` as a side effect, incidentally wiping the leak before
+// `tests/lang.test.ts` runs. **That ordering is not alphabetical and is not
+// guaranteed.** Measured on the full suite, the files run in this order: sweep,
+// overflow, glyphs, render, containment, render-lists, config, detectors, wrap,
+// width, witnesses, cli, frontmatter, table, licenses, lang. And the *same two
+// files*, passed to `bun test` in the *same* argument order, ran in opposite
+// orders in two different checkouts of this repo — which is exactly how WP-6's
+// brief reached the wrong conclusion about whether the leak exists at all. The
+// masking above is therefore luck that is re-rolled per machine: a reordering, a
+// rename, or a change to what `tests/cli.test.ts` exercises brings it back. Both
+// hooks: `afterEach` restores the built-in-only state so no later file observes a
+// leftover override, and `beforeEach` protects this describe's own early tests
+// (which assume no user alias is installed) from a leak arriving the other way —
+// from an earlier-running file or test, exactly what `tests/cli.test.ts` does
+// today.
 describe("lang.ts: config-sourced highlight aliases (WP-4)", () => {
+  beforeEach(() => {
+    setHighlightAliases({});
+  });
+
   afterEach(() => {
     setHighlightAliases({});
   });
