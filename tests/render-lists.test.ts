@@ -17,6 +17,7 @@ import {
 } from "../src/detectors";
 import { LIST_BULLET, isIndentedLine, stripAnsi } from "../src/list-lines";
 import { renderDocument, renderDocumentDetailed } from "../src/render";
+import { renderWithForcedColor } from "./helpers/color";
 
 // ---------------------------------------------------------------------------
 // WP-2 / WP-2b — the loose-list double-wrap defect (characterized in WP-2, closed
@@ -1014,5 +1015,212 @@ describe("renderDocument — lists inside blockquotes (WP-2g)", () => {
         expect(`${tier} w${width}: ${over.map((hit) => hit.text.slice(0, 30)).join(" | ")}`).toBe(`${tier} w${width}: `);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-4 of `plans/marked-terminal-replacement.md` — owned list composition.
+//
+// `src/lists.ts` owns `list`, `listitem` and `checkbox`; nothing in this repo executes
+// `marked-terminal` composition any more. Two behaviours changed deliberately, and they
+// are the plan's Verification amendment's two enumerated families:
+//
+// - **B1**, ordered renumbering: the library's `numberedLines` walked a parent list's
+//   already-composed body with one counter, and `isPointedLine` claimed the *nested*
+//   list's markers, so a nested list consumed the parent's numbers and had its own
+//   bullets rewritten into the parent's sequence.
+// - **B2**, task states: `rewriteTaskState`'s source pre-pass cannot match a task item
+//   whose line does not start with a bullet marker — a blockquoted one, or an ordered one
+//   — so `Renderer.prototype.checkbox` fired there instead and emitted an uppercased
+//   bracket plus two spaces, in both glyph tiers. Composition renders those two positions
+//   under the tier rule now. **The pre-pass itself survives**, and the report's §4 records
+//   the class-C measurement that stopped this package from deleting it.
+//
+// Everything else about a rendered list is unchanged, and was gated byte-identical over
+// the private validation corpus before either family was introduced.
+// ---------------------------------------------------------------------------
+
+describe("owned list composition — ordered numbering (WP-4, family B1)", () => {
+  test("a nested unordered list no longer consumes the parent's counter or loses its bullets", () => {
+    const source = "1. alpha\n    - sub one\n    - sub two\n2. beta\n3. gamma\n";
+    const lines = stripAnsi(renderDocument(source, 60, UNICODE_GLYPHS))
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(lines).toEqual([
+      "    1. alpha",
+      "        ◦ sub one",
+      "        ◦ sub two",
+      "    2. beta",
+      "    3. gamma",
+    ]);
+  });
+
+  test("a nested ordered list numbers from 1 at its own level", () => {
+    const source = "1. alpha\n    1. inner one\n    2. inner two\n2. beta\n";
+    const lines = stripAnsi(renderDocument(source, 60, UNICODE_GLYPHS))
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(lines).toEqual(["    1. alpha", "        1. inner one", "        2. inner two", "    2. beta"]);
+  });
+
+  test("an ordered list with nothing nested inside it is numbered exactly as before", () => {
+    const lines = stripAnsi(renderDocument("1. alpha\n2. beta\n3. gamma\n", 60, UNICODE_GLYPHS))
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(lines).toEqual(["    1. alpha", "    2. beta", "    3. gamma"]);
+  });
+
+  test("`token.start` stays deliberately ignored — a list authored `5.` still renders `1.`", () => {
+    // `Renderer.prototype.list` read `listToken.start` at `index.js:142` and never used
+    // it. Honouring it would be a third diff family this package was not granted; pinned
+    // here so a future package changes it on purpose or not at all.
+    const lines = stripAnsi(renderDocument("5. five\n6. six\n", 60, UNICODE_GLYPHS))
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(lines).toEqual(["    1. five", "    2. six"]);
+  });
+});
+
+describe("owned list composition — task states (WP-4, family B2)", () => {
+  // The two positions `rewriteTaskState`'s source pre-pass cannot reach. Its regex is
+  // anchored on a leading bullet marker, so a blockquote's `>` and an ordered list's `1.`
+  // both defeat it, the item reaches `marked` as a real GFM task, and until WP-4
+  // `Renderer.prototype.checkbox` rendered it as an uppercased bracket plus two spaces —
+  // in **both** glyph tiers. Composition renders it under the same tier rule as every
+  // other task item instead.
+  const UNREACHED = "> - [x] quoted\n\n1. [x] ordered\n2. [ ] ordered open\n";
+
+  test("a blockquoted task item renders the tier glyph, not the library's checkbox", () => {
+    const text = stripAnsi(renderDocument(UNREACHED, 70, UNICODE_GLYPHS));
+    expect(text).toContain("✓ quoted");
+    expect(text).not.toContain("[X]");
+  });
+
+  test("an ordered task item renders the tier glyph too, and numbering is unaffected", () => {
+    const lines = stripAnsi(renderDocument(UNREACHED, 70, UNICODE_GLYPHS))
+      .split("\n")
+      .filter((line) => line.includes("ordered"));
+    expect(lines).toEqual(["    1. ✓ ordered", "    2. ○ ordered open"]);
+  });
+
+  test("both positions keep the author's literal in the ASCII tier, single-spaced", () => {
+    const text = stripAnsi(renderDocument(UNREACHED, 70, ASCII_GLYPHS));
+    expect(text).toContain("[x] quoted");
+    expect(text).toContain("[x] ordered");
+    expect(text).toContain("[ ] ordered open");
+    // The library's `checkbox` uppercased every state and `listitem` appended a second
+    // space after it. Neither may survive anywhere.
+    expect(text).not.toContain("[X]");
+    expect(text).not.toContain("]  ");
+  });
+
+  test("the author's own state character survives in the ASCII tier, upper or lower", () => {
+    const text = stripAnsi(renderDocument("> - [x] lower\n> - [X] upper\n", 70, ASCII_GLYPHS));
+    expect(text).toContain("[x] lower");
+    expect(text).toContain("[X] upper");
+  });
+
+  test("extra spaces after the checkbox survive, in both tiers", () => {
+    // `marked` strips every space after the bracket, not one (`marked.cjs:528`), so the
+    // run has to be read back off `item.raw` or the item comes back a column narrower
+    // than it was authored.
+    expect(stripAnsi(renderDocument("> - [x]  two\n", 70, ASCII_GLYPHS))).toContain("[x]  two");
+    expect(stripAnsi(renderDocument("> - [x]  two\n", 70, UNICODE_GLYPHS))).toContain("✓  two");
+  });
+
+  test("a task item carrying inline markup keeps the state ahead of the markup", () => {
+    expect(stripAnsi(renderDocument("> - [x] **bold** tail\n", 70, UNICODE_GLYPHS))).toContain("✓ bold tail");
+  });
+
+  test("the positions the pre-pass DOES reach are untouched by composition", () => {
+    // A top-level task item never reaches `item.task` at all: the pre-pass has already
+    // rewritten the source in the unicode tier, and defeated GFM's lexer with
+    // `TASK_STATE_SENTINEL` in the ASCII tier. This is the byte-identical half.
+    expect(stripAnsi(renderDocument("- [x] top\n", 70, UNICODE_GLYPHS))).toContain("✓ top");
+    expect(stripAnsi(renderDocument("- [x] top\n", 70, ASCII_GLYPHS))).toContain("[x] top");
+  });
+
+  test("an Obsidian custom state inside a blockquote is still literal — the deferred residue", () => {
+    // Characterisation, not endorsement. `[>]` is not GFM tasklist syntax, so `item.task`
+    // is false and composition never sees a state to render; the pre-pass cannot reach a
+    // `>`-prefixed line either. Closing this means deleting the pre-pass, which this
+    // package measured and could not do — see the WP-4 report, §4: the pre-pass and
+    // `marked` disagree about fence pairing, so removing it changes bytes inside recorded
+    // `codeRange`s (parity class C) on 11 of 4,786 corpus files.
+    expect(stripAnsi(renderDocument("> - [>] moved\n", 70, UNICODE_GLYPHS))).toContain("[>] moved");
+    expect(stripAnsi(renderDocument("- [>] moved\n", 70, UNICODE_GLYPHS))).toContain("➤ moved");
+  });
+
+  test("a task-shaped line inside a fence is untouched, in both tiers", () => {
+    const source = "```text\n- [x] literal, not a real task\n```\n";
+    for (const [tier, glyphs] of WP2_TIERS) {
+      const text = stripAnsi(renderDocument(source, 70, glyphs));
+      expect(`${tier}: ${text.includes("- [x] literal, not a real task")}`).toBe(`${tier}: true`);
+    }
+  });
+});
+
+describe("owned list composition — invariants the composer must not break (WP-4)", () => {
+  test("a fenced block inside a list item is reproduced byte-identically", () => {
+    // Every width gate in this repo exempts code ranges, so this channel is the only one
+    // that can see a fence being rewritten — the failure mode `src/AGENTS.md`'s rendering
+    // policy is unqualified about, and the one a green gate is no evidence for.
+    const body = ["* not a bullet, this is code", "1. also not a marker", "- and neither is this"];
+    const source = `- item\n\n  \`\`\`text\n${body.map((line) => `  ${line}`).join("\n")}\n  \`\`\`\n`;
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of [40, 60, 100]) {
+        const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        const lines = stripAnsi(text).split("\n");
+        // The recorded range's first physical line is the one the opening sentinel sits
+        // on, which for a fence inside a list item is the item's own blank continuation;
+        // the block's content is what follows. Blank lines are dropped rather than
+        // asserted on — this test is about the content bytes, and `--check`'s exemption
+        // covers the whole range either way.
+        const inside = codeRanges
+          .flatMap(([start, end]) => lines.slice(start - 1, end).map((line) => line.trim()))
+          .filter((line) => line !== "");
+        expect(`${tier} w${width}: ${inside.join(" | ")}`).toBe(`${tier} w${width}: ${body.join(" | ")}`);
+      }
+    }
+  });
+
+  test("a nested list always begins on its own line", () => {
+    // The corruption a botched marker substitution produced once before: the whole nested
+    // list joined onto its parent's line with no newline at all.
+    const lines = stripAnsi(renderDocument("- level 0\n    - level 1\n", 60, UNICODE_GLYPHS))
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(lines).toEqual(["    • level 0", "        ◦ level 1"]);
+  });
+
+  test("the bullet tier is chosen by rendered indent, so a blockquote shifts it by one", () => {
+    // Pinned, not endorsed: `substituteBullets` reads depth back out of the line's own
+    // indent, and a blockquote contributes four columns of its own *after* its children
+    // have rendered. Composing the bullet from the composer's own list depth would render
+    // the depth-2 glyph here and would be a third, ungranted diff family. See
+    // `src/lists.ts`'s header.
+    const lines = stripAnsi(renderDocument("- outer\n  > - quoted\n", 60, UNICODE_GLYPHS))
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(lines).toEqual(["    • outer", "            ‣ quoted"]);
+  });
+
+  test("every item's composed text is wrapped in chalk.reset under FORCE_COLOR=3", async () => {
+    // `defaultOptions.listitem` is `chalk.reset` (`index.js:37`) and it wraps every item.
+    // A parity run without forced colour cannot see whether that was reproduced at all,
+    // which is exactly how it would have gone missing.
+    const { text } = await renderWithForcedColor("- alpha\n- beta\n", 60);
+    const items = text.split("\n").filter((line) => line.includes("alpha") || line.includes("beta"));
+    expect(items).toHaveLength(2);
+    for (const line of items) {
+      expect(`${JSON.stringify(line)} carries a reset: ${line.includes(`${String.fromCharCode(27)}[0m`)}`).toBe(
+        `${JSON.stringify(line)} carries a reset: true`,
+      );
+    }
+    expect(
+      stripAnsi(text)
+        .split("\n")
+        .filter((line) => line.trim() !== ""),
+    ).toEqual(["    • alpha", "    • beta"]);
   });
 });
