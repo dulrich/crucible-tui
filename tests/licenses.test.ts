@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { main, parseArgs } from "../src/cli";
 
@@ -66,5 +67,59 @@ describe("main --licenses", () => {
     }
 
     expect(chunks.join("")).toContain("Simple fixture");
+  });
+});
+
+/**
+ * The dependency removal WP-6 exists to perform, asserted on the tree rather than on a
+ * green `bun install`.
+ *
+ * `cli-table3` is the checkable consequence and the reason this is a test rather than a
+ * note: it left `dependencies` in WP-3 of `plans/tn-review-remediation.md` but stayed
+ * *physically installed* because `marked-terminal` required `^0.6.5`, so it stayed in the
+ * runtime closure `scripts/gen-licenses.ts` walks and stayed in `THIRD-PARTY-LICENSES.txt`.
+ * Removing `marked-terminal` is what finally removes it, and the licence file is where
+ * that is observable. A future `bun install` that quietly re-hoisted either package would
+ * fail here instead of shipping an inaccurate notice file.
+ */
+describe("WP-6 — the dependency is gone, and so is what only it kept alive", () => {
+  test("package.json declares supports-color and no longer declares marked-terminal", async () => {
+    const pkg = (await Bun.file(resolve(import.meta.dir, "../package.json")).json()) as {
+      dependencies: Record<string, string>;
+    };
+    expect(pkg.dependencies["marked-terminal"]).toBeUndefined();
+    // Promoted from transitive to direct in WP-6: `src/inline.ts` imports it directly for
+    // `detectInlineColor`, and `supports-hyperlinks` already required it, so declaring it
+    // adds no package. Same rule `@colors/colors` and `cli-highlight` are declared under.
+    expect(pkg.dependencies["supports-color"]).toBe("7.2.0");
+    // Still declared, still imported directly, and still wrongly flagged as transitive by
+    // dependency-graph tooling — see the dependency record in the root AGENTS.md.
+    expect(pkg.dependencies["@colors/colors"]).toBeDefined();
+    expect(pkg.dependencies["cli-highlight"]).toBeDefined();
+  });
+
+  test("the runtime closure no longer contains marked-terminal or cli-table3", async () => {
+    const notices = await Bun.file(resolve(import.meta.dir, "../THIRD-PARTY-LICENSES.txt")).text();
+    expect(notices).not.toContain("marked-terminal@");
+    expect(notices).not.toContain("cli-table3@");
+    // Non-vacuity: the file is the generated closure, not an empty or truncated read.
+    expect(notices).toContain("marked@14.1.4");
+    expect(notices).toContain("supports-color@7.2.0");
+  });
+
+  test("nothing under src/ imports the removed library", async () => {
+    const glob = new Bun.Glob("**/*.ts");
+    const root = resolve(import.meta.dir, "../src");
+    const offenders: string[] = [];
+    for await (const relative of glob.scan(root)) {
+      const text = await Bun.file(resolve(root, relative)).text();
+      // The name appears in prose throughout `src/` as the record of what was replaced;
+      // only an actual import is a defect, so this matches the module specifier alone.
+      if (/from\s+["']marked-terminal["']/.test(text)) offenders.push(relative);
+    }
+    expect(offenders).toEqual([]);
+    // Non-vacuity: the scan really did read the renderer, which is the file that used to
+    // carry the import.
+    expect(await Bun.file(resolve(root, "render.ts")).text()).toContain("renderDocumentDetailed");
   });
 });

@@ -186,7 +186,7 @@ export interface RevisionHandle {
   close(): Promise<void>;
 }
 
-interface MaterializedRoot {
+export interface MaterializedRoot {
   root: string;
   label: string;
   cleanup: () => Promise<void>;
@@ -200,7 +200,7 @@ interface MaterializedRoot {
  * nothing" — see this WP's report on why a differ comparing nothing is the failure
  * mode this whole package exists to rule out.
  */
-async function materializeRevisionRoot(spec: string, repoRoot: string): Promise<MaterializedRoot> {
+export async function materializeRevisionRoot(spec: string, repoRoot: string): Promise<MaterializedRoot> {
   const asPath = resolve(spec);
   const info = await stat(asPath).catch(() => null);
   if (info?.isDirectory()) {

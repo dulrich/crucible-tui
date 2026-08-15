@@ -364,10 +364,13 @@ function reflow(ctx: LayoutContext, text: string, budget: number): string {
  * regexp is a global, fully-escaped match on the literal `*#COLON|*`. A `split`/`join` on
  * that literal is the same operation with no escaping to get wrong.
  *
- * `src/inline.ts`'s `codespan` still *emits* the sentinel, because the renderers that undo
- * it were the library's; now two of them are here. If `heading` and `paragraph` stopped
- * undoing it, every code span in a paragraph would render `*#COLON|*` literally wherever the
- * author wrote a colon. The coupling ends when WP-6 removes the last library renderer.
+ * `src/inline.ts`'s `codespan` still *emits* the sentinel, and WP-6 measured that it must
+ * keep doing so. If `heading` and `paragraph` stopped undoing it, every code span in a
+ * paragraph would render `*#COLON|*` literally wherever the author wrote a colon; if
+ * `codespan` stopped emitting it, `emojify` — which runs first in this composition and is
+ * this repo's own pass now, not the library's — would substitute a glyph for every
+ * shortcode inside backticks. Both halves are load-bearing and neither ends with the
+ * dependency. See `COLON_REPLACER`'s own comment for the six probes that measured it.
  */
 function undoColon(text: string): string {
   return text.split(COLON_REPLACER).join(":");

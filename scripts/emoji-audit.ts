@@ -10,28 +10,34 @@
  *
  * **Method, and it is not negotiable — this is what keeps the result from
  * drifting from reality.** For every `:shortcode:`-shaped token found in the
- * corpus, render it twice through `marked-terminal` — once with the library's
- * default `emoji: true`, once with `emoji: false` — and keep only tokens whose
- * rendered bytes actually differ. This is a behavioural test, never a
- * `node-emoji` table lookup: consulting a substitution table would only prove
- * the table exists, not what the library does with it. Rendering both ways and
- * diffing bytes exercises `insertEmojis` itself, so the result cannot drift from
- * whatever version of `marked-terminal` is actually installed.
+ * corpus, render it twice through `renderDocument` — once with shortcode
+ * substitution forced on, once forced off — and keep only tokens whose rendered
+ * bytes actually differ. This is a behavioural test, never a `node-emoji` table
+ * lookup: consulting a substitution table would only prove the table exists, not
+ * what the renderer does with it. Rendering both ways and diffing bytes exercises
+ * `src/inline.ts`'s `emojify` itself, so the result cannot drift from what this
+ * tool actually ships.
  *
- * **Fence-aware, and table-aware for the same reason.** `marked-terminal`'s `code`
- * renderer never calls `insertEmojis`, so a shortcode on a fenced source line is
- * inert. This repo's own `renderTable` override (`src/table.ts`, wired in at
- * `src/render.ts`) is a second, repo-specific exemption of the identical shape:
- * it renders cell text directly rather than dispatching it through the inline
- * tokenizer `insertEmojis` hooks into, so a shortcode inside a table cell is
- * *always* inert here, independent of the `emoji` option's value. Neither
- * exemption is assumed — a fenced-context token is rendered inside a fenced
- * snippet through bare `marked-terminal` and diffed on/off same as prose; a
- * table-context token is rendered inside a one-cell table through this repo's
- * actual `renderDocument` and checked for literal survival, because the thing
- * making it inert is this repo's renderer, not `marked-terminal`'s default table
- * handling (which *does* dispatch inline tokens, and would misreport this case
- * if tested through bare `marked-terminal` the way fence/prose are).
+ * **It rendered through bare `marked-terminal` until WP-6 of
+ * `plans/marked-terminal-replacement.md`**, which removed that dependency. The
+ * substitution it toggled is now this repo's own — same `node-emoji` call, same
+ * stray-space defect, reproduced deliberately — and `renderDocument`'s
+ * `emojiOverride` parameter is the same on/off decision the library's option was.
+ * The change makes the audit stricter rather than looser: it now measures the
+ * renderer that ships instead of a library that no longer runs.
+ *
+ * **Fence-aware, and table-aware for the same reason.** `src/blocks.ts`'s `code`
+ * never runs the transform that substitutes shortcodes (a transcription of
+ * `marked-terminal`'s own behaviour, kept), so a shortcode on a fenced source line
+ * is inert. This repo's `renderTable` (`src/table.ts`) is a second exemption of
+ * the identical shape: it renders cell text directly rather than dispatching it
+ * through the inline tokenizer substitution hooks into, so a shortcode inside a
+ * table cell is *always* inert, independent of the `emoji` decision's value.
+ * Neither exemption is assumed — a fenced-context token is rendered inside a
+ * fenced snippet and diffed on/off same as prose; a table-context token is
+ * rendered inside a one-cell table and checked for literal survival, because
+ * there is nothing to toggle there and an on/off diff would report inertness for
+ * the wrong reason.
  *
  * **Per-root reporting.** Counts are grouped by corpus (manifest entry), never
  * summed into one figure — summing "the user's own documents" with "vendored
@@ -63,11 +69,11 @@
  * it will just report over the small public corpus instead.
  */
 import { readFile } from "node:fs/promises";
-import { Marked } from "marked";
-import { markedTerminal } from "marked-terminal";
 import { loadManifest, resolveCorpusFiles, resolveManifestSource, selectCorpusFiles } from "./corpus";
 import { parseArgs } from "./sweep";
+import { UNICODE_GLYPHS } from "../src/glyphs";
 import { renderDocument } from "../src/render";
+import { NARROW_MEASURE } from "../src/width";
 
 /** Loose enough to catch every real node-emoji shortcode shape; false positives
  * (a timestamp like `:30:`, a Windows drive-adjacent path) are harmless because
@@ -84,24 +90,34 @@ const tokenCache = new Map<string, boolean>();
 /** `token -> did the literal token text survive this repo's real table renderer`. */
 const tableTokenCache = new Map<string, boolean>();
 
-function makeRenderer(emoji: boolean): Marked {
-  const instance = new Marked();
-  // Same construction shape as `src/render.ts`'s three `markedTerminal()` sites —
-  // width is irrelevant to the emoji pass, so a fixed value is fine here.
-  instance.use(markedTerminal({ width: 80, reflowText: true, emoji }) as never);
-  return instance;
+/**
+ * Render a snippet through **this repo's own renderer**, with shortcode substitution
+ * forced on or off.
+ *
+ * **This used to construct a bare `marked-terminal` instance** and toggle its `emoji`
+ * option; WP-6 of `plans/marked-terminal-replacement.md` removed the dependency, and this
+ * is the replacement. The method is unchanged and still behavioural — render twice, diff
+ * bytes, never consult a `node-emoji` table — but the renderer being exercised is now the
+ * one that actually ships, which is strictly the better question: `emojiOverride` is the
+ * same on/off decision the library's option carried, threaded through `LayoutContext` and
+ * `src/inline.ts`'s `emojify`, and the fence exemption it is used to test is now this
+ * repo's own `renderCode` rather than the library's. The table probe below already worked
+ * this way and said so; the two probes now differ only in the snippet they build.
+ *
+ * Width is irrelevant to the emoji pass, so a fixed 80 is fine, and the glyph tier and
+ * measure are pinned explicitly so no environment detection can reach either.
+ */
+function renderSnippet(snippet: string, emoji: boolean): string {
+  return renderDocument(snippet, 80, UNICODE_GLYPHS, NARROW_MEASURE, emoji);
 }
-
-const rendererOn = makeRenderer(true);
-const rendererOff = makeRenderer(false);
 
 function tokenDiffers(token: string, fenced: boolean): boolean {
   const key = `${fenced ? "f" : "p"}:${token}`;
   const cached = tokenCache.get(key);
   if (cached !== undefined) return cached;
   const snippet = fenced ? "```\n" + token + "\n```\n" : token;
-  const withEmoji = rendererOn.parse(snippet, { async: false }) as string;
-  const withoutEmoji = rendererOff.parse(snippet, { async: false }) as string;
+  const withEmoji = renderSnippet(snippet, true);
+  const withoutEmoji = renderSnippet(snippet, false);
   const differs = withEmoji !== withoutEmoji;
   tokenCache.set(key, differs);
   return differs;
@@ -116,7 +132,7 @@ function tokenSurvivesTable(token: string): boolean {
   const cached = tableTokenCache.get(token);
   if (cached !== undefined) return cached;
   const table = `| Col |\n| --- |\n| ${token} |\n`;
-  const rendered = renderDocument(table, 80);
+  const rendered = renderSnippet(table, true);
   const survives = rendered.includes(token);
   tableTokenCache.set(token, survives);
   return survives;

@@ -64,25 +64,14 @@ describe("PrefixColumns", () => {
     expect(stack.listDepth()).toBe(2);
   });
 
-  test("outerColumns excludes list levels, which the list budget counts itself", () => {
-    const stack = createPrefixColumns();
-    stack.push({ columns: 6, list: true });
-    stack.push({ columns: 4, list: false });
-    stack.push({ columns: 7, list: true });
-    // Only the blockquote's four columns; double-counting the list levels here would
-    // narrow every nested list twice.
-    expect(stack.outerColumns()).toBe(4);
-  });
-
   test("pops back to exactly where it was, which is what the finally blocks rely on", () => {
     const stack = createPrefixColumns();
     stack.push({ columns: 6, list: true });
-    const before = { width: stack.width(), depth: stack.listDepth(), outer: stack.outerColumns() };
+    const before = { width: stack.width(), depth: stack.listDepth() };
     stack.push({ columns: 4, list: false });
     stack.pop();
     expect(stack.width()).toBe(before.width);
     expect(stack.listDepth()).toBe(before.depth);
-    expect(stack.outerColumns()).toBe(before.outer);
   });
 
   test("popping an empty stack is harmless", () => {

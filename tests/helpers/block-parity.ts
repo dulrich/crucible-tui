@@ -1,10 +1,10 @@
-import { markedTerminal } from "marked-terminal";
-import type { Token, Tokens } from "marked";
+import type { Tokens } from "marked";
 import { renderCode, renderHr, renderHtml } from "../../src/blocks";
 import { UNICODE_GLYPHS } from "../../src/glyphs";
 import { detectInlineColor } from "../../src/inline";
 import { createLayoutContext, type LayoutContext } from "../../src/layout-context";
 import { NARROW_MEASURE } from "../../src/width";
+import { BLOCK_PARITY_GOLDEN } from "./block-parity-golden";
 
 /**
  * The block-leaf parity table: the three owned block renderers that are **class A** against
@@ -21,16 +21,19 @@ import { NARROW_MEASURE } from "../../src/width";
  * move to instead.
  *
  * Shaped after `tests/helpers/inline-parity.ts` and for the same reason: it has to run
- * **twice, in two processes**. `bun test` is never a TTY, so `chalk` resolves to level 0,
- * the library emits no escape sequences at all, and a colour-blind comparison would pass
- * vacuously on the axis this package changed. The colour-on half runs the same table in a
- * fresh subprocess under `FORCE_COLOR=3` — see `tests/helpers/color.ts` for why setting the
- * variable inside a shared test process does nothing.
+ * **twice, in two processes**. `bun test` is never a TTY, so the colour decision resolves
+ * to off, no escape sequences are emitted at all, and a colour-blind comparison would pass
+ * vacuously on the axis WP-3 changed. The colour-on half runs the same table in a fresh
+ * subprocess under `FORCE_COLOR=3` — see `tests/helpers/color.ts` for why setting the
+ * variable inside a shared test process does nothing. Since WP-6 the split selects between
+ * `colorOff` and `colorOn` in `./block-parity-golden.ts` rather than between two live
+ * library answers.
  *
  * Colour matters more here than it did for the inline group, because `highlight()`
- * (`marked-terminal` `index.js:590-602`) *branches* on it: at level 0 it returns the fence's
- * text unstyled and never calls `cli-highlight` at all, so the unforced half of this table
- * cannot see the highlighting path even in principle.
+ * (`marked-terminal` `index.js:590-602`, transcribed into `src/blocks.ts`) *branches* on
+ * it: with colour off it returns the fence's text unstyled and never calls `cli-highlight`
+ * at all, so the unforced half of this table cannot see the highlighting path even in
+ * principle.
  */
 
 export interface BlockParityCase {
@@ -41,15 +44,21 @@ export interface BlockParityCase {
 
 const WIDTH = 80;
 
-/** `parseInline`, stubbed: the children's own text, concatenated. */
-function stubParseInline(tokens: Token[]): string {
-  return tokens.map((token) => (token as { text?: string }).text ?? "").join("");
+/**
+ * The library's side of the table, frozen (WP-6).
+ *
+ * These bytes used to come from `markedTerminal({ width: 80, reflowText: true, emoji: true })`,
+ * called with a receiver carrying `{ options: { gfm: true }, parser }` — the two fields each
+ * extension wrapper rebound onto its private renderer, `gfm` because `code` reads it. WP-6
+ * removed the dependency, so the same values are read from `./block-parity-golden.ts`,
+ * captured from that exact call on the commit before the removal. A missing entry throws
+ * rather than skipping the case.
+ */
+function goldenBytes(color: boolean, name: string): string {
+  const value = BLOCK_PARITY_GOLDEN[color ? "colorOn" : "colorOff"][name];
+  if (value === undefined) throw new Error(`no frozen byte string for block case ${name} (color=${color})`);
+  return value;
 }
-
-/** The receiver each library extension method rebinds onto its private renderer. */
-const libraryReceiver = { options: { gfm: true }, parser: { parseInline: stubParseInline } };
-
-type LibraryMethod = (this: typeof libraryReceiver, token?: unknown) => string | false;
 
 function context(color: boolean): LayoutContext {
   return createLayoutContext({
@@ -76,20 +85,12 @@ function context(color: boolean): LayoutContext {
 const ASCII_RULE = "-".repeat(WIDTH - 1);
 
 export function blockParityCases(): BlockParityCase[] {
-  const ctx = context(detectInlineColor());
-  const library = markedTerminal({ width: WIDTH, reflowText: true, emoji: true }).renderer as unknown as Record<
-    string,
-    LibraryMethod
-  >;
-  const method = (name: string): LibraryMethod => {
-    const fn = library[name];
-    if (!fn) throw new Error(`marked-terminal exposes no block ${name} method`);
-    return fn;
-  };
+  const color = detectInlineColor();
+  const ctx = context(color);
 
   const cases: BlockParityCase[] = [];
-  const add = (name: string, ours: string, theirs: string | false): void => {
-    cases.push({ name, ours, theirs: theirs === false ? "<false>" : theirs });
+  const add = (name: string, ours: string): void => {
+    cases.push({ name, ours, theirs: goldenBytes(color, name) });
   };
 
   const codeCases: Array<[string, string, string | undefined]> = [
@@ -111,10 +112,10 @@ export function blockParityCases(): BlockParityCase[] {
   ];
   for (const [label, text, lang] of codeCases) {
     const token = { type: "code", raw: text, text, lang, escaped: false } as unknown as Tokens.Code;
-    add(`code/${label}`, renderCode(ctx, token), method("code").call(libraryReceiver, token));
+    add(`code/${label}`, renderCode(ctx, token));
   }
 
-  add("hr", renderHr(ctx, ASCII_RULE), method("hr").call(libraryReceiver, { type: "hr", raw: "---" }));
+  add("hr", renderHr(ctx, ASCII_RULE));
 
   const htmlCases: Array<[string, string]> = [
     ["single line", "<div>hello</div>"],
@@ -129,7 +130,7 @@ export function blockParityCases(): BlockParityCase[] {
     const token = { type: "html", raw: text, text, block: true } as unknown as Tokens.HTML;
     // A budget far wider than any case here, so the owned line-wrap is a provable no-op and
     // this compares the emission — which is all the library ever did for `html`.
-    add(`html/${label}`, renderHtml(ctx, token, 1000), method("html").call(libraryReceiver, token));
+    add(`html/${label}`, renderHtml(ctx, token, 1000));
   }
 
   return cases;

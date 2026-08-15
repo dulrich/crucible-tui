@@ -23,7 +23,7 @@ rule describes what this repo's *own* content looks like and flags everything el
 
 | Rule | Flags |
 |---|---|
-| `foreign-path` | a path-shaped citation whose first segment is not a directory this repo has, not an installed package, and not the sanctioned fake root — i.e. a neighbour's internal layout |
+| `foreign-path` | a path-shaped citation whose first segment is not a directory this repo has, not an installed package (nor a listed former one — see below), and not the sanctioned fake root — i.e. a neighbour's internal layout |
 | `home-path` | an absolute path under a home-like root naming any account but the sanctioned fake one — i.e. the machine's directory layout |
 | `neighbour-name` | a bare mention of a directory that actually sits around this checkout, read from the filesystem at run time and never written down — i.e. a name in prose, which is not path-shaped and which no path rule can see |
 
@@ -82,6 +82,21 @@ directory proves it is that package: a `package.json` naming itself. Otherwise r
 `marked-terminal`'s source next door — which `src/AGENTS.md` tells you to do — would turn
 every mention of it into a finding, and a guard that fails for reasons unrelated to your
 change is a guard that gets switched off.
+
+**A dependency this repo *removed* still gets cited, and the guard has to allow that.** The
+`foreign-path` rule reads its package whitelist from `node_modules`, so uninstalling a
+dependency turns every citation of its internals — in the plan that removed it, in the
+forensics that justified the replacement — into a finding overnight. That is what happened
+when WP-6 of `plans/marked-terminal-replacement.md` dropped `marked-terminal` and the plan's
+own citation of the file it replaced was flagged. `DOCUMENTED_FORMER_PACKAGES` in
+`tests/helpers/containment.ts` names the two packages that removal took out, with the reason
+each is there. **It is not a general escape hatch and must not become one:** an entry is
+legitimate only for a package that was genuinely a declared dependency of *this* repo and
+was genuinely removed by a recorded work package, both checkable from
+`THIRD-PARTY-LICENSES.txt`'s history. It cannot launder a private sibling's name, because a
+sibling was never an npm dependency here, and it changes nothing about rules 2 and 3 — a
+neighbour directory that happens to carry one of those names still has to prove itself with
+a self-naming `package.json`, exactly as an installed one does.
 
 **Do not "simplify" that by subtracting every installed package name from the neighbour
 set.** The path rule already treats a package name as a safe first segment (it must, so
