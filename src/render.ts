@@ -26,13 +26,7 @@ import {
 } from "./inline";
 import { resolveFenceLanguage, type FenceLanguageResolver } from "./lang";
 import { createLayoutContext } from "./layout-context";
-import {
-  MARKER_SHAPED_LINE,
-  isGuardShapedLine,
-  stripAnsi,
-  trackListLine,
-  type OpenListItem,
-} from "./list-lines";
+import { MARKER_SHAPED_LINE, isGuardShapedLine } from "./list-lines";
 import { TASK_GLYPHS, renderList, substituteBullets } from "./lists";
 import { NARROW_MEASURE, type Measure } from "./width";
 
@@ -231,41 +225,18 @@ function preprocessBody(body: string, glyphs: GlyphSet): string {
 // ancestor's own `list()` call is still on the stack (a nested list is reached via
 // `this.parser.parse(item.tokens, …)` inside `composeItem`), a simple
 // enter/exit counter on our `list` renderer is accurate at the point each level's
-// body is produced.
+// body is produced — `listDepth()` below is that counter, and `substituteBullets`'
+// outermost-list gate is its one remaining consumer.
 //
-// Geometry: composition prefixes every item's own bullet line with `"* "` (2
-// cols), then blanket-indents the *entire* composed body (bullets,
-// continuations, and any already-rendered nested sublists alike) by `tab` (4 cols)
-// once per enclosing `list()` call — including once more for every ancestor list
-// still on the stack above the current one, applied *after* this renderer returns.
-// So immediately after our own `renderList` call returns (i.e. before
-// any of those still-pending ancestor blankets are applied), a line's width already
-// includes this level's own contribution (2 bullet + 4 indent = 6) but *not* the
-// `4 * (ancestors still to come)` that will land on top of it later. If `depth` is
-// this override's 1-indexed enter counter (1 for the outermost list, 2 for its
-// direct nested lists, …), the number of ancestors still to apply their blanket
-// after this frame returns is `depth - 1`, so the *current* line, right now, must
-// already fit within `targetWidth - 4 * (depth - 1)`.
-//
-// **A list is not the only thing that can still owe a blanket indent** (WP-2g).
-// `blockquote` applies `indentify(this.tab, …)` to its whole rendered body for exactly
-// the same reason and at exactly the same moment — after its children have returned —
-// so a list inside a blockquote is `BLOCKQUOTE_INDENT_PER_LEVEL` columns wider than
-// this arithmetic believed, at every level. `outerColumns` is those still-pending
-// non-list columns, read off the same `pendingPrefix` stack the `paragraph`/`text`
-// overrides already subtract in full: without it the two disagree about the same item,
-// `paragraph` wrapping the text narrow enough and this pass then re-splitting the
-// composed line against a budget four columns too generous.
-function currentListBudget(depth: number, targetWidth: number, outerColumns: number): number {
-  return Math.max(1, targetWidth - 4 * (depth - 1) - outerColumns);
-}
-
-// Matches a rendered list line's own leading prefix: `marked-terminal`'s blanket
-// indent (plain spaces) optionally followed by a bullet/number marker it emits for
-// the item's first line (`"* "` or `"12. "`). Continuation lines have no marker, just
-// the indent. Measuring this per line (rather than assuming a fixed width) is what
-// makes ordered-list markers — wider than `"* "` — work without special-casing them.
-const LIST_LINE_PREFIX = /^(\s*)((?:\*|\d+\.)\s)?/;
+// The widest-marker budget estimate that used to live here (`listMarkerWidth`,
+// `markerLineCount`, `nestedMarkerLineCount`) is gone (WP-5): every wrapping seam reads
+// the item's exact budget off the prefix stack — the level pushes its 4-column indent,
+// the item pushes its own marker's width (`src/lists.ts`'s `composeItem`). What remains
+// below (`currentListBudget`, `LIST_LINE_PREFIX`, `rewrapListBody`) is not the old
+// repair net but the *primary wrap for uncoalesced tight items* — see
+// `rewrapListBody`'s comment for the measured reason it cannot move into the `text`
+// seam, and this WP's report for the identity-substitution gate that bounds exactly
+// what it still touches.
 
 // `marked-terminal`'s own blanket indent is `this.tab` (4) columns per nesting level,
 // applied even at the outermost level — see the brief's worked example (`"    * alpha"`
@@ -282,53 +253,6 @@ const LIST_INDENT_PER_LEVEL = 4;
 // `trimKeepingFirstIndent`).
 const BLOCKQUOTE_INDENT_PER_LEVEL = 4;
 
-// `"* "`, the literal `marked-terminal` emits for every unordered item
-// (`BULLET_POINT`, `index.js:539`). Continuation lines of an unordered item get
-// `toSpaces(BULLET_POINT)` — the same 2 columns — so this width is uniform per line
-// kind, and our own glyph substitution preserves it (every tier bullet is 1 column).
-const UNORDERED_MARKER_WIDTH = 2;
-
-// `". "` — what `numberedPoint(n)` (`index.js:551`) appends after the number itself.
-const ORDERED_MARKER_SUFFIX_WIDTH = 2;
-
-/**
- * How many marker lines a list level can renumber, i.e. the largest number it can emit.
- *
- * **Not `token.items.length`, and deliberately still not, after WP-4.** The library's
- * `numberedLines` (`index.js:565-578`) walked the composed body counting *pointed* lines,
- * and `isPointedLine`'s regex is `^(?:<tab>)*(?:\*|\d+\.)`, so an already-rendered nested
- * list's marker lines counted against the *parent's* counter and a 3-item ordered list
- * with nested lists numbered well past 3. `src/lists.ts`' `composeOrdered` fixed that
- * (family B1), which makes the true maximum exactly `token.items.length` and makes this an
- * over-estimate.
- *
- * **It is left over-estimating on purpose.** This feeds `pendingPrefix`, hence every wrap
- * budget in the document, so narrowing it moves text that has nothing to do with markers —
- * a diff belonging to no enumerated family. The item budget is WP-5's; the follow-up is
- * recorded here rather than taken.
- *
- * `token.start` is deliberately ignored: `Renderer.prototype.list` read it
- * (`index.js:142`) and never used it, so a list authored `5.` still renders `1.`, and
- * `composeOrdered` keeps ignoring it.
- */
-function markerLineCount(token: Tokens.List): number {
-  let count = token.items.length;
-  for (const item of token.items) count += nestedMarkerLineCount(item.tokens);
-  return count;
-}
-
-function nestedMarkerLineCount(tokens: Token[] | undefined): number {
-  let count = 0;
-  for (const token of tokens ?? []) {
-    if (token.type === "list") {
-      count += markerLineCount(token as Tokens.List);
-    } else {
-      count += nestedMarkerLineCount((token as { tokens?: Token[] }).tokens);
-    }
-  }
-  return count;
-}
-
 // `MARKER_SHAPED_LINE` and `COLUMN_ZERO_MARKER` moved to `src/list-lines.ts` in WP-4 of
 // `plans/marked-terminal-replacement.md`, and `isGuardShapedLine` is the union both
 // wrapping seams below guard with. The second of the two used to be declared here *and* in
@@ -336,24 +260,6 @@ function nestedMarkerLineCount(tokens: Token[] | undefined): number {
 // kept in step by hand with no gate able to see them drift; this file's own note said the
 // move belonged to whichever of WP-4 or WP-7 next had both files open. See those regexes'
 // doc comments for what each one is asking and why they are two shapes rather than one.
-
-/**
- * The width of the widest marker this list level can emit — 2 for `"* "`, but 4 for an
- * ordered list that reaches `"10. "`. **Hardcoding 2 is the bug this function exists to
- * prevent**: an ordered list with ten or more marker lines pushes its own text two
- * columns further right than an unordered one, and a budget computed with 2 leaves the
- * tail of every long item over budget — which is exactly the shear this WP closes.
- *
- * The widest marker is used for every item of the level rather than the exact per-item
- * marker, because at paragraph time no marker has been emitted yet and the item index is
- * not reachable (`listitem` is a dead seam — see above). The cost is that items 1-9 of a
- * ten-item ordered list wrap one column early; the alternative — guessing narrow — is an
- * orphaned line, which is strictly worse and invisible to every gate.
- */
-function listMarkerWidth(token: Tokens.List): number {
-  if (!token.ordered) return UNORDERED_MARKER_WIDTH;
-  return String(Math.max(1, markerLineCount(token))).length + ORDERED_MARKER_SUFFIX_WIDTH;
-}
 
 /**
  * `marked-terminal`'s `HARD_RETURN` (`index.js:26`), the marker `Renderer.prototype.br`
@@ -442,180 +348,80 @@ function coalesceTightItemLines(text: string): { segments: string[]; coalesced: 
 }
 
 /**
- * `isPointedLine` (`index.js:532-534`, transcribed into `src/lists.ts`) as it is actually
- * called on a composed list body — `this.tab`, i.e. exactly four spaces, repeated zero or more
- * times, then a literal marker. The **exact-multiple-of-four** indent is the whole
- * point: a line one column off that grid can never be claimed as a marker, which is
- * what makes the one-space guard in `realignNestedContinuations` (and in the two
- * wrapping overrides, via `MARKER_SHAPED_LINE`) work.
+ * The one budget the post-compose wrap needs: what a line of *this* level's body may
+ * measure right now, before the ancestors above it apply their blanket indents.
+ *
+ * A line composed at level `depth` will still gain exactly four columns per ancestor
+ * list level (their `indentLines`) and four per enclosing blockquote (its `indentify`) —
+ * and nothing else: an ancestor's *pad* is added to embedded continuations and then
+ * subtracted again by `realignEmbeddedContinuations` (`src/lists.ts`), so it nets to
+ * zero and must not be budgeted for. That is why this takes the enclosing blockquotes'
+ * columns explicitly (`quoteColumns`, tracked by the `blockquote` renderer below) and
+ * **not** `layout.prefix.outerColumns()`: since WP-5 the prefix stack also carries one
+ * non-list entry per open *item* (`composeItem`'s exact marker width), and counting
+ * those here would narrow this budget by every ancestor item's marker — the
+ * double-count its own brief warned about.
  */
-const LIBRARY_POINTED_LINE = new RegExp(`^(?: {${LIST_INDENT_PER_LEVEL}})*(?:\\*|\\d+\\.)`);
-
-/**
- * Pull a nested item's continuation lines back to their own item's text column (WP-2e).
- *
- * **The defect.** `marked-terminal`'s `list()` calls `bulletPointLines` (unordered) or
- * `numberedLines` (ordered) over the whole composed body, and both prepend a marker's
- * width in spaces — `toSpaces(BULLET_POINT)`, 2, or `toSpaces(numberedPoint(n))`, 3+ —
- * to every line `isPointedLine` does *not* recognize (`index.js:539-578`; `src/lists.ts`
- * since WP-4). For this
- * level's **own** items that is exactly right: it aligns a continuation under its own
- * marker's text. But the body it walks also contains an inner list that already
- * rendered, and there the same pass moves the inner items' *continuation* lines while
- * leaving their *marker* lines alone (`isPointedLine` recognizes those — bullet glyphs
- * are substituted only at `listDepth === 1`, so the literal `*` is still there). So every
- * continuation inside a nested item drifts one marker-width per
- * ancestor level past the column its own first line starts at. `indentLines`
- * (`index.js:501`) then adds `this.tab` to every line equally and contributes nothing
- * to the *relative* drift.
- *
- * Measured: 29,035 over-indents against 6,469 orphans in the WP-2d regression tier, and
- * 64-72% of the orphan residual at the user's real widths after WP-2c. It is not
- * cosmetic — a continuation shifted right is a continuation over budget, and the
- * shallower `rewrapListBody` then shears its tail word onto a line of its own. Running
- * *before* `rewrapListBody` is what makes the orphan disappear with the indent rather
- * than in addition to it.
- *
- * **This subtracts the drift; it does not snap lines to a column.** The distinction is
- * load-bearing and was found by measurement, not reasoning: a blockquote or a fenced
- * block inside a list item is *legitimately* indented past its item's text column by its
- * own renderer (`Renderer.prototype.blockquote`/`code` indent by `this.tab` before the
- * list ever sees them), and `findContinuationOverIndent` reports those too. Snapping
- * every flagged line to `item.textColumn` would flatten them. Subtracting exactly the
- * width this level just added preserves every legitimate *relative* offset underneath
- * it, at every depth, and leaves that class of detector hit standing — correctly.
- *
- * **How much did this level add?** Exactly the marker width of *its own* item, which is
- * `textColumn - markerColumn` of the item at the bottom of the stack (this level's items
- * are the ones whose marker sits at `LIST_INDENT_PER_LEVEL`, since `indentLines` has run
- * by the time we see the body). That derivation is what makes ordered lists work without
- * a special case: `numberedLines` pads with `String(n).length + 2`, and so does the
- * bottom-of-stack item's own marker. It is also why this pass must run **per level**
- * rather than once at the outermost list — see the call site.
- *
- * **Fenced code is never rewritten**, including a fence nested in a list item. Same
- * mechanism as `substituteBullets`: `code`'s override resolves depth-first, so every
- * fence in this body is already bracketed in `SENTINEL` pairs. A line that *starts*
- * inside a fence, or that carries a sentinel of its own (the opening and closing lines
- * of a block, where the marker sits mid-line), is returned untouched and is not allowed
- * to move the item stack either.
- *
- * **A de-indented line may not be allowed to become a marker.** Landing on the
- * four-column grid with a leading `*` or `12.` is all `isPointedLine` asks for, and an
- * ancestor's `numberedLine` would then hand that line the item's number and rewrite it.
- * Unordered text columns are never on the grid (`4d + 2`), but a ten-item ordered list's
- * are (`4d + 4`), so the case is live. Guarded the same way both wrapping overrides
- * guard it: one extra leading space, which the grid cannot match.
- */
-function realignNestedContinuations(body: string, measure: Measure): string {
-  const open: OpenListItem[] = [];
-  let insideCode = false;
-
-  return body
-    .split("\n")
-    .map((line) => {
-      const startedInsideCode = insideCode;
-      let carriesSentinel = false;
-      for (const ch of line) {
-        if (ch === SENTINEL) {
-          insideCode = !insideCode;
-          carriesSentinel = true;
-        }
-      }
-      if (startedInsideCode || carriesSentinel) return line;
-
-      const bare = stripAnsi(line);
-      const item = trackListLine(bare, open, measure);
-      if (item === null) return line;
-
-      // This level's own items sit at `LIST_INDENT_PER_LEVEL`; anything deeper came from
-      // an inner list that already rendered, and only those drifted.
-      if (item.markerColumn <= LIST_INDENT_PER_LEVEL) return line;
-      const ownItem = open[0];
-      if (ownItem === undefined || ownItem.markerColumn !== LIST_INDENT_PER_LEVEL) return line;
-      const addedWidth = ownItem.textColumn - ownItem.markerColumn;
-      if (addedWidth <= 0) return line;
-
-      const indent = (/^ */.exec(line) as RegExpExecArray)[0].length;
-      // Leading whitespace must be literal spaces on both the raw and the stripped line,
-      // or the slice below would cut into an escape sequence. Anything else is left alone.
-      if (indent !== (/^ */.exec(bare) as RegExpExecArray)[0].length) return line;
-      if (indent <= item.textColumn) return line;
-
-      const rest = line.slice(indent);
-      const target = Math.max(item.textColumn, indent - addedWidth);
-      const realigned = `${" ".repeat(target)}${rest}`;
-      if (LIBRARY_POINTED_LINE.test(bare) || !LIBRARY_POINTED_LINE.test(stripAnsi(realigned))) return realigned;
-      return `${" ".repeat(target + 1)}${rest}`;
-    })
-    .join("\n");
+function currentListBudget(depth: number, targetWidth: number, quoteColumns: number): number {
+  return Math.max(1, targetWidth - 4 * (depth - 1) - quoteColumns);
 }
 
+// Matches a rendered list line's own leading prefix: the composer's blanket
+// indent (plain spaces) optionally followed by a bullet/number marker it emits for
+// the item's first line (`"* "` or `"12. "`). Continuation lines have no marker, just
+// the indent. Measuring this per line (rather than assuming a fixed width) is what
+// makes ordered-list markers — wider than `"* "` — work without special-casing them.
+const LIST_LINE_PREFIX = /^(\s*)((?:\*|\d+\.)\s)?/;
+
 /**
- * Re-wrap only the lines of a rendered list body that are still over budget at this
- * nesting level. Lines already within budget are left untouched — that is what makes
- * this idempotent and safe to run on a body that already contains a correctly
- * (tighter-budgeted) wrapped nested sublist: nested content was wrapped against a
- * strictly smaller budget (deeper depth), so it always already fits the shallower
- * budget here and this pass never touches it.
+ * Wrap the lines of a composed list body that are still over budget at this nesting
+ * level. Lines already within budget are left untouched — that is what makes this
+ * idempotent and safe to run on a body that already contains a correctly
+ * (tighter-budgeted) wrapped nested sublist.
+ *
+ * **This is not a repair net any more, and it is not deletable — both halves of that
+ * were measured in WP-5.** The plan expected this pass to become a provable no-op once
+ * every seam wrapped at the item's exact budget, and for the *coalesced* tight path,
+ * the loose `paragraph` path, `heading`, `html` and tables, that is now true: those
+ * seams read the exact per-item budget off the prefix stack and nothing they produce
+ * is ever over budget here. What the plan's model missed is that an **uncoalesced**
+ * tight item — a single authored line, or hard-break segments, which is *most* tight
+ * items — was never wrapped by any seam at all: this pass was its primary wrap, not a
+ * repair. And it cannot move to the `text` seam: `marked`'s inline lexer hands that
+ * seam `&#39;`-spelled entities that `transform` only decodes during composition, so a
+ * seam-side wrap measures five columns where the terminal shows one and moves the wrap
+ * point of nearly every apostrophe-carrying item (measured on this repo's own plans
+ * corpus while building WP-5). This pass sees the decoded bytes; the seam does not.
+ * So it stays, with one change: its budget is exact now (see `currentListBudget` — the
+ * old `outerColumns` argument double-counts since `composeItem` pushes per-item
+ * entries), and everything it wraps is an uncoalesced item's line or an unbreakable
+ * long token, which the identity-substitution gate in WP-5's report enumerates.
  *
  * **Fenced code is never rewritten, including a fence nested in a list item (WP-2f).**
- * This pass shipped without the `SENTINEL` walk `substituteBullets` and
- * `realignNestedContinuations` both use, and split fence content mid-command like any
- * other over-budget line. **No gate could see it**: `--check` and both sweeps exempt
- * recorded `codeRanges` from width checking, so corrupting a line *inside* one can never
- * make a width gate fail. Same mechanism as the other two passes — `code`'s override
- * (`wrapCode`) resolves depth-first, so every fence in this body is already bracketed in
- * `SENTINEL` pairs by the time `list` composes it.
+ * A line that starts inside a fence **or** merely carries a sentinel is returned
+ * untouched — the stricter of the two walks in this file, because `wrapCode` emits
+ * `SENTINEL + firstContentLine` and a one-line fenced block carries its whole content
+ * on a line that both opens and closes the pair. Nothing but `wrapCode` ever emits a
+ * sentinel, so the stricter form can only ever spare a genuine fence line. An
+ * over-budget fence line therefore overflows, inside a recorded `codeRange`, exempt
+ * from every width gate — self-consistent rather than a new exemption.
  *
- * **The strictness here is the stricter of the two forms already in this file, and the
- * one-line fence is what decides it.** `substituteBullets` may bail on `startedInsideCode`
- * alone because it only ever rewrites a line's *leading* marker, and a fence's opening
- * physical line begins with the sentinel character itself, so its marker regex cannot
- * match there. This pass rewrites the *whole* line, and `wrapCode` emits
- * `SENTINEL + firstContentLine` — the opening physical line already carries real code,
- * and a one-line fenced block carries its entire content on a line that both opens and
- * closes the pair, where `startedInsideCode` is `false`. Bailing only on lines that
- * *start* inside a fence would therefore still split exactly the content this WP exists
- * to protect. So, as in `realignNestedContinuations`: a line that starts inside a fence
- * **or** merely carries a sentinel is returned untouched. Nothing but `wrapCode` ever
- * emits a sentinel, so the stricter form can only ever spare a genuine fence line.
- *
- * **An over-budget fence line therefore overflows**, exactly as fenced code does
- * everywhere else in this tool — the rendering policy is unqualified, and the width gates
- * already exempt these lines by construction, so the overflow is self-consistent rather
- * than a new exemption. Verified rather than assumed: such lines land inside a recorded
- * `codeRange` and stay exempt from `--check` and the sweep.
- *
- * **A continuation line this pass creates may not start `*` or `N.`.** It chooses where
- * lines break, so it chooses whether `isPointedLine` claims one of them — and in an
- * ordered list `numberedLine` then hands that line the item's number and renumbers every
- * later item, while `substituteBullets` (which runs after this pass, over the same body)
- * rewrites a leading `*` into a bullet glyph. Both wrapping overrides guard this via
- * `MARKER_SHAPED_LINE`; this pass shipped without it. Same remedy — re-wrap one column
- * narrower, then give the colliding continuation line one leading guard space, which the
- * exact-multiple-of-four indent group cannot match.
- *
- * **But the trigger is not the overrides' trigger, and copying it verbatim makes this
- * pass *cause* the collision.** Those overrides wrap text that starts at column 0, which
- * is on the four-column grid, so a marker-shaped continuation there is always claimable
- * and one space always takes it off the grid. Here the continuation prefix is whatever
- * the line's own prefix measured — `"    1. "` is **7** columns, already off the grid and
- * already safe — and adding a space to it moves the line *onto* the grid, manufacturing
- * exactly the claimable line the guard exists to prevent. Reproduced on
- * `tests/fixtures/fenced-list.md` at width 55: with the unconditional guard the author's
- * bare `*` was still rewritten to a bullet glyph, and only because the guard had shifted
- * the line from column 7 to column 8. So the guard fires only when the composed
- * continuation would land on the grid.
+ * **A continuation line this pass creates may not start `*` or `N.`** — a leading `*`
+ * on the four-column grid is rewritten into a bullet glyph by `substituteBullets`,
+ * which runs after this pass. The guard fires only when the composed continuation
+ * would land on the grid: its prefix is the line's own (`"    1. "` is seven columns,
+ * off the grid and already safe), and the unconditional form was measured *causing*
+ * the collision it defends against — width 55 on `fenced-list.md`, where the guard
+ * space itself moved the line from column 7 onto the grid at 8.
  */
 function rewrapListBody(
   body: string,
   depth: number,
   targetWidth: number,
-  outerColumns: number,
+  quoteColumns: number,
   measure: Measure,
 ): string {
-  const budget = currentListBudget(depth, targetWidth, outerColumns);
+  const budget = currentListBudget(depth, targetWidth, quoteColumns);
   let insideCode = false;
   return body
     .split("\n")
@@ -1012,10 +818,6 @@ export function renderDocumentDetailed(
     const pendingPrefix = layout.prefix;
     const pendingPrefixWidth = (): number => layout.prefix.width();
     const listDepth = (): number => layout.prefix.listDepth();
-    // The still-pending columns that are *not* a list's own — today, an enclosing
-    // blockquote's `indentify`. `currentListBudget` counts list levels itself (from
-    // `depth`), so double-counting them here would narrow every nested list twice.
-    const outerColumns = (): number => layout.prefix.outerColumns();
 
     // Non-zero while a renderer that dispatches *inline* tokens is on the stack. Only
     // `paragraph` and `heading` do so anywhere a list can reach (`table` is replaced
@@ -1025,41 +827,46 @@ export function renderDocumentDetailed(
     // `text` override below.
     let inlineDepth = 0;
 
-    // **The owned list composer** (WP-4 of `plans/marked-terminal-replacement.md`).
-    // `src/lists.ts` owns `list`, `listitem` and `checkbox`; nothing here delegates to
-    // `marked-terminal` any more. `parse` is handed in as a closure over `this` for the
-    // same reason the inline visitors' `parseInline` is: it is the *parser's* recursion,
-    // per call, and belongs to `marked` rather than to the layout context.
+    // Columns of enclosing blockquote indent, tracked here because `rewrapListBody`'s
+    // budget needs *quote* columns alone and the prefix stack cannot give them to it any
+    // more: since WP-5 its non-list entries are a mix of blockquote indents and
+    // `composeItem`'s per-item marker widths, and the pass must not budget for the
+    // latter (see `currentListBudget`). The `blockquote` renderer below keeps this in
+    // step with its own push/pop, in the same try/finally.
+    let quoteColumns = 0;
+
+    // **The owned list composer** (WP-4 of `plans/marked-terminal-replacement.md`;
+    // layout owned in WP-5). `src/lists.ts` owns `list`, `listitem` and `checkbox`;
+    // nothing here delegates to `marked-terminal` any more. `parse` is handed in as a
+    // closure over `this` for the same reason the inline visitors' `parseInline` is: it
+    // is the *parser's* recursion, per call, and belongs to `marked` rather than to the
+    // layout context.
     //
-    // The three passes below it are unchanged and are WP-5's: they operate on a composed
-    // body that is byte-identical to the library's, which is what let this package be
-    // gated class A before either deliberate diff was introduced.
+    // Since WP-5 composition owns the whole layout of the body it returns: the pad, the
+    // per-level de-drift that used to be `realignNestedContinuations` here (now
+    // `realignEmbeddedContinuations`, `src/lists.ts`, run inside `renderList` after
+    // `fixNestedLists`), and the marker/fence-line claims, decided on ANSI-stripped
+    // bytes so the coloured and colourless renders agree (family C1). The level pushes
+    // only its own 4-column blanket indent; the exact width of each item's marker is
+    // pushed per item by `composeItem`, which is what lets `paragraph`/`text`/`heading`
+    // wrap at the item's true budget (families B1/B2) and is why the `rewrapListBody`
+    // repair pass that used to run here could be deleted (proven a no-op first — see
+    // this WP's report).
     renderer.list = function ownedList(token: Tokens.List) {
-      pendingPrefix.push({ columns: LIST_INDENT_PER_LEVEL + listMarkerWidth(token), list: true });
+      pendingPrefix.push({ columns: LIST_INDENT_PER_LEVEL, list: true });
       const depth = listDepth();
-      const outer = outerColumns();
       try {
-        const result = renderList(layout, token, (tokens: Token[], top: boolean) =>
-          this.parser.parse(tokens, top),
+        const result = renderList(
+          layout,
+          token,
+          (tokens: Token[], top: boolean) => this.parser.parse(tokens, top),
+          SENTINEL,
         );
-        // **Per level, and before `rewrapListBody` — both are load-bearing** (WP-2e).
-        //
-        // *Per level*, because the drift this pass subtracts is the marker width
-        // *this* call's `composeUnordered`/`composeOrdered` just added, and that is
-        // only knowable here: at the outermost list the drifts of every ancestor have
-        // already summed, and with ordered levels of differing marker widths (`"* "`
-        // is 2, `"1. "` is 3, `"10. "` is 4) the sum cannot be decomposed back into
-        // the per-level amounts a legitimate nested blockquote or fence has to be
-        // measured against. Correcting at every level also means the drift never
-        // reaches an inner `rewrapListBody` at all, so `currentListBudget`'s
-        // 4-columns-per-ancestor arithmetic becomes exactly true rather than an
-        // under-estimate.
-        //
-        // *Before* `rewrapListBody`, because a line that is no longer over-indented is
-        // no longer over budget, so there is nothing left to shear — the orphan goes
-        // away as a consequence of the indent being right, not as a second fix.
-        const realigned = realignNestedContinuations(result, measure);
-        const rewrapped = rewrapListBody(realigned, depth, targetWidth, outer, measure);
+        // The post-compose wrap — the primary wrap for *uncoalesced* tight items, and
+        // provably idle for everything else now that every seam reads the exact
+        // per-item budget; see `rewrapListBody`'s comment for why it cannot move into
+        // the `text` seam (entity decoding happens between the two).
+        const rewrapped = rewrapListBody(result, depth, targetWidth, quoteColumns, measure);
         // Bullet substitution runs once this is the outermost call for this top-level
         // list (`depth === 1`) — see `src/lists.ts`'s header for the two measurements
         // that keep it a separate pass rather than folding it into composition.
@@ -1187,12 +994,21 @@ export function renderDocumentDetailed(
       const result = parsed.split(HARD_RETURN).join(`${HARD_RETURN}\n`);
       const settle = (text: string): string => text.split(HARD_RETURN).join("");
 
-      if (!result.includes("\n")) return settle(result);
-
-      const { segments, coalesced } = coalesceTightItemLines(result);
+      const { segments, coalesced } = result.includes("\n")
+        ? coalesceTightItemLines(result)
+        : { segments: [result], coalesced: false };
       // Nothing was joined — the item is a single line, or every break in it is a
-      // genuine hard break. Leave it on the pre-WP-2c path rather than re-wrapping
-      // text this WP has no reason to touch.
+      // genuine hard break. Leave it unwrapped: `rewrapListBody` wraps these lines
+      // after composition, and that division of labour is deliberate (WP-5 measured
+      // the alternative). `marked`'s inline lexer escapes `'`, `"`, `&`, `<` and `>`
+      // as HTML entities in the text this seam sees, and `transform` (`src/blocks.ts`)
+      // only decodes them *after* composition — so a wrap decided here measures
+      // `&#39;` at five columns where the terminal will show one, and moves the wrap
+      // point of nearly every tight item that contains an apostrophe. The composed
+      // body the post-compose wrap sees is already decoded, so its measurements are
+      // the terminal's. (The coalesced path below accepts that skew deliberately —
+      // it always has, its bytes are pinned by the parity gate, and re-ordering it
+      // would move every soft-wrapped item in the corpus.)
       if (!coalesced) return settle(result);
 
       const budget = Math.max(1, targetWidth - pendingPrefixWidth());
@@ -1209,6 +1025,8 @@ export function renderDocumentDetailed(
 
       const wrapped = wrapAt(budget);
       // Same landmine, same guard as the `paragraph` renderer — see `MARKER_SHAPED_LINE`.
+      // Unconditional here, unlike the uncoalesced path above — this is the coalesced
+      // path's own pre-WP-5 rule, kept byte-for-byte.
       // Every line after the first is still at column 0 when `bulletPointLines` /
       // `numberedLines` run, so one that *starts* `*` or `12.` is taken for a marker
       // line and, in an ordered list, is handed that item's number and rewritten.
@@ -1351,10 +1169,12 @@ export function renderDocumentDetailed(
       // heading or list wrap at the width it will actually occupy rather than at the full
       // target and then need repairing.
       pendingPrefix.push({ columns: BLOCKQUOTE_INDENT_PER_LEVEL, list: false });
+      quoteColumns += BLOCKQUOTE_INDENT_PER_LEVEL;
       let body: string;
       try {
         body = this.parser.parse(token.tokens);
       } finally {
+        quoteColumns -= BLOCKQUOTE_INDENT_PER_LEVEL;
         pendingPrefix.pop();
       }
       return renderBlockquote(layout, body);

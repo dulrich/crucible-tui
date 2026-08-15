@@ -64,14 +64,25 @@
  *
  * What owning composition *does* remove is the reason the substitution was restricted to
  * the outermost list: it is no longer racing `fixNestedLists`' marker detection for
- * ancestors still on the stack, it is simply the last pass over a finished body. Deleting
- * it outright belongs with the other post-composition passes, in WP-5.
+ * ancestors still on the stack, it is simply the last pass over a finished body.
+ *
+ * **WP-5 re-ran that investigation under its stop condition and kept the pass.** Both
+ * measured reasons above still stand — WP-5 left `isPointedLine` in composition (see
+ * `claimLine` for why token-type tagging cannot reproduce the bytes), so reason 1 never
+ * lapsed, and reason 2 is structural: the tier is a function of *rendered* indent, which
+ * a blockquote shifts after composition has returned. A third blocker surfaced while
+ * checking: `fixNestedLists`' `POINT_REGEX` must find the literal `*` on the hybrid join
+ * line (F10) to split it, so composition-time glyphs would leave every tight item's
+ * nested list glued to its parent's text. Pinned by the blockquote-tier test in
+ * `tests/render-lists.test.ts`.
  */
 import type { Token, Tokens } from "marked";
 import { transform } from "./blocks";
 import type { GlyphSet } from "./glyphs";
 import { applyStyle, createStyler } from "./inline";
 import type { LayoutContext } from "./layout-context";
+import { stripAnsi, trackListLine, type OpenListItem } from "./list-lines";
+import type { Measure } from "./width";
 
 /**
  * `this.tab` — `index.js:59`, `sanitizeTab(this.o.tab, 4)` with no `tab` option passed by
@@ -302,9 +313,33 @@ function composeItem(
   ctx: LayoutContext,
   item: Tokens.ListItem,
   parse: (tokens: Token[], top: boolean) => string,
+  markerWidth: number,
 ): string {
   let text = renderTaskState(ctx, item);
-  text += parse(item.tokens, !!item.loose);
+  // **The item's own budget — WP-5, §6.2 of its brief.** The exact width of *this*
+  // item's marker (`"* "` is 2, `"7. "` is 3, `"12. "` is 4) is pushed for the duration
+  // of the item's own parse, so `src/render.ts`'s `paragraph`/`text`/`heading`/`html`
+  // seams — which all wrap at `width - prefix.width()` — see the columns this item
+  // actually owes rather than the widest marker the whole level could emit. Before this,
+  // the level pushed one `4 + widest` entry for every item, which wrapped items 1–9 of a
+  // ten-item ordered list one column early (family B1) and, because the widest-marker
+  // estimate counted *nested* lists' markers too, over-narrowed every item of an
+  // ordered list containing one (family B2).
+  //
+  // `list: false`, deliberately: the level's own `4` is the `list: true` entry
+  // `src/render.ts` pushes, and a second `list: true` here would double `listDepth()`
+  // and break `substituteBullets`' outermost-list gate. The entry does land in
+  // `outerColumns()`, which is why `rewrapListBody`'s budget stopped reading that
+  // accessor — it takes the enclosing blockquotes' columns alone (`quoteColumns`,
+  // tracked in `src/render.ts`), because an item's marker width must not be
+  // double-counted there. After that change `outerColumns()` has no production reader;
+  // see this WP's report for the audit.
+  ctx.prefix.push({ columns: markerWidth, list: false });
+  try {
+    text += parse(item.tokens, !!item.loose);
+  } finally {
+    ctx.prefix.pop();
+  }
   const isNested = text.indexOf("\n") !== -1;
   if (isNested) text = text.trim();
   return applyStyle(ctx, LIST_ITEM, transform(ctx, text));
@@ -335,8 +370,17 @@ export function renderList(
   ctx: LayoutContext,
   token: Tokens.List,
   parse: (tokens: Token[], top: boolean) => string,
+  sentinel: string,
 ): string {
-  const segments = token.items.map((item) => `${BULLET_POINT}${composeItem(ctx, item, parse)}`);
+  const segments = token.items.map(
+    (item, index) =>
+      `${BULLET_POINT}${composeItem(
+        ctx,
+        item,
+        parse,
+        token.ordered ? numberedPoint(index + 1).length : BULLET_POINT.length,
+      )}`,
+  );
   if (segments.length > 0) {
     // `body.trim()` (`index.js:581`), split across the only two segments it can reach.
     segments[0] = (segments[0] as string).replace(/^\s+/, "");
@@ -345,26 +389,71 @@ export function renderList(
   }
   const groups = segments.map((segment) => segment.split("\n").filter((line) => line !== ""));
 
-  const lines = token.ordered ? composeOrdered(groups) : composeUnordered(groups);
-  return section(fixNestedLists(indentLines(TAB, lines.join("\n")), TAB));
+  const lines = token.ordered ? composeOrdered(groups, sentinel) : composeUnordered(groups, sentinel);
+  const body = fixNestedLists(indentLines(TAB, lines.join("\n")), TAB);
+  // WP-5: the de-drift that used to be `src/render.ts`'s `realignNestedContinuations`,
+  // run per level, after `fixNestedLists` has split every hybrid join line (F10) so that
+  // an embedded list's first marker is visible to the tracker. See the function's own
+  // doc comment for what changed (structural, ANSI-blind decisions) and what did not
+  // (every column of the colourless arithmetic).
+  return section(realignEmbeddedContinuations(body, ctx.measure, sentinel));
+}
+
+/**
+ * Whether a composed line is claimed as a marker line — `isPointedLine`, applied the way
+ * WP-5 owns it: **on the ANSI-stripped bytes for prose, on the raw bytes for fence lines.**
+ *
+ * The split is the whole fix for the colour/colourless divergence (family C1). Under any
+ * colour level, `applyStyle`'s newline encasing re-emits the open code at the head of
+ * every line of an item's text, so a raw-byte claim can never match an embedded list's
+ * marker line — which is why the coloured and colourless renderings of a nested list
+ * disagreed at the base commit. Claiming on `stripAnsi(line)` makes the decision about
+ * the columns a reader sees, at both colour settings, which is what a *layout* decision
+ * was always about.
+ *
+ * Fence lines are the deliberate exception, in both directions. A line that starts inside
+ * a `SENTINEL` pair or carries one is content inside a recorded `codeRange`, where every
+ * byte — including the accident that a raw-byte claim behaves differently under colour —
+ * is parity class C and must not move. So those lines keep the library's raw-byte claim
+ * verbatim: a colourless fence line whose content begins `"    * "` still loses its pad
+ * (the library's own dent, shipped in every render to date), and a coloured one still
+ * keeps it. Reproducing a defect inside a fence is the contract; fixing it is forbidden.
+ */
+function claimLine(line: string, startedInsideCode: boolean, carriesSentinel: boolean): boolean {
+  const subject = startedInsideCode || carriesSentinel ? line : stripAnsi(line);
+  return isPointedLine(subject, TAB);
 }
 
 /**
  * `bulletPointLines()` — `index.js:545-548`. Every line `isPointedLine` does not claim is
  * padded by the marker's own width, which aligns a continuation under its item's text.
  *
- * It pads a nested list's continuation lines too, because they are not marker lines; that
- * drift is what `realignNestedContinuations` in `src/render.ts` subtracts back off. It is
- * reproduced here rather than fixed at source: not padding them would move the indent of a
- * fenced block nested inside a list item, which is content inside a `codeRange` and
- * therefore class C. Removing the drift *and* the pass that subtracts it, together, is
- * WP-5's — it owns every pass that sits beside it.
+ * It pads an embedded list's continuation lines too, because they are not marker lines;
+ * that drift is subtracted back off by `realignEmbeddedContinuations` below (the pass
+ * that was `src/render.ts`'s `realignNestedContinuations` until WP-5). It is reproduced
+ * here rather than fixed at source: not padding them would move the indent of a fenced
+ * block nested inside a list item, which is content inside a `codeRange` and therefore
+ * class C — measured at this WP's dispatch, a fence inside a nested item sits exactly one
+ * pad-width right of its item's code column per ancestor level *today*, and un-padding it
+ * would move every one of those lines. The claim itself is `claimLine`'s, structural for
+ * prose and raw for fences — see its comment.
  */
-function composeUnordered(groups: string[][]): string[] {
+function composeUnordered(groups: string[][], sentinel: string): string[] {
   const pad = toSpaces(BULLET_POINT);
   const lines: string[] = [];
+  let insideCode = false;
   for (const group of groups) {
-    for (const line of group) lines.push(isPointedLine(line, TAB) ? line : pad + line);
+    for (const line of group) {
+      const startedInsideCode = insideCode;
+      let carriesSentinel = false;
+      for (const ch of line) {
+        if (ch === sentinel) {
+          insideCode = !insideCode;
+          carriesSentinel = true;
+        }
+      }
+      lines.push(claimLine(line, startedInsideCode, carriesSentinel) ? line : pad + line);
+    }
   }
   return lines;
 }
@@ -425,20 +514,110 @@ function composeUnordered(groups: string[][]): string[] {
  * this package was not granted; it is recorded here as a deliberate deferral, not an
  * oversight.
  */
-function composeOrdered(groups: string[][]): string[] {
+function composeOrdered(groups: string[][], sentinel: string): string[] {
   const lines: string[] = [];
+  let insideCode = false;
   groups.forEach((group, index) => {
     const marker = numberedPoint(index + 1);
     const pad = toSpaces(marker);
     group.forEach((line, position) => {
+      const startedInsideCode = insideCode;
+      let carriesSentinel = false;
+      for (const ch of line) {
+        if (ch === sentinel) {
+          insideCode = !insideCode;
+          carriesSentinel = true;
+        }
+      }
       if (position === 0) {
         lines.push(line.replace(BULLET_POINT, marker));
         return;
       }
-      lines.push(isPointedLine(line, TAB) ? line : pad + line);
+      lines.push(claimLine(line, startedInsideCode, carriesSentinel) ? line : pad + line);
     });
   });
   return lines;
+}
+
+/**
+ * Pull an embedded item's continuation lines back to their own item's text column.
+ *
+ * This is `src/render.ts`'s `realignNestedContinuations` (WP-2e), owned by composition
+ * since WP-5 — same per-level call point (after `fixNestedLists`, so a hybrid join line's
+ * embedded marker is already on its own line), same arithmetic, same skips. The defect it
+ * subtracts is the one `composeUnordered`/`composeOrdered` above still add on purpose: a
+ * pad on every unclaimed line, which is exactly right for this level's own continuations
+ * and one marker-width of drift for an embedded list's. The pad is kept because dropping
+ * it would move fence bytes (class C — see `composeUnordered`); the subtraction is kept
+ * because token-type tagging cannot see every embedded list (a list inside a *blockquote*
+ * child is own-content by token type and still an embedded list on the page, F10's hybrid
+ * join hides a marker inside a text line until `fixNestedLists` splits it, and the claim
+ * dents inside fences must survive byte-for-byte). What WP-5 changed is *what bytes the
+ * decisions read*:
+ *
+ * - the tracked line and every column in the arithmetic were already ANSI-stripped;
+ * - the **rewrite** no longer demands that the raw line's leading indent be literal
+ *   spaces end-to-end. It removes the drift from the raw line's own leading spaces,
+ *   leaving any interleaved escape bytes exactly where they were. Colourless the two
+ *   spellings are byte-identical (the leading run is all spaces, so removing `k` from the
+ *   front is the old slice-and-repad); under colour the old spelling bailed on every line
+ *   (`applyStyle` encases newlines, so the open code sits ahead of the line's indent) and
+ *   was measured **inert — 0 lines rewritten against 115,472 colourless**. That is the
+ *   ANSI-blindness this WP discharges: family C1, the coloured render converging on the
+ *   colourless one.
+ *
+ * Everything the old pass refused to touch, this one still refuses to touch: a line that
+ * starts inside a fence or carries a `SENTINEL` (returned untouched, and not allowed to
+ * move the item stack), a line already at or left of its item's text column, and a marker
+ * line. The one-space guard against `isPointedLine` claiming a de-indented line is kept
+ * unchanged, on the stripped bytes it always tested.
+ */
+function realignEmbeddedContinuations(body: string, measure: Measure, sentinel: string): string {
+  const open: OpenListItem[] = [];
+  let insideCode = false;
+
+  return body
+    .split("\n")
+    .map((line) => {
+      const startedInsideCode = insideCode;
+      let carriesSentinel = false;
+      for (const ch of line) {
+        if (ch === sentinel) {
+          insideCode = !insideCode;
+          carriesSentinel = true;
+        }
+      }
+      if (startedInsideCode || carriesSentinel) return line;
+
+      const bare = stripAnsi(line);
+      const item = trackListLine(bare, open, measure);
+      if (item === null) return line;
+
+      // This level's own items sit at `TAB.length`; anything deeper came from an embedded
+      // list that already rendered, and only those drifted.
+      if (item.markerColumn <= TAB.length) return line;
+      const ownItem = open[0];
+      if (ownItem === undefined || ownItem.markerColumn !== TAB.length) return line;
+      const addedWidth = ownItem.textColumn - ownItem.markerColumn;
+      if (addedWidth <= 0) return line;
+
+      const indent = (/^ */.exec(bare) as RegExpExecArray)[0].length;
+      if (indent <= item.textColumn) return line;
+
+      const target = Math.max(item.textColumn, indent - addedWidth);
+      // Remove the drift from the raw line's leading literal spaces. Under colour an
+      // escape can sit inside the stripped indent; the removal takes only leading spaces
+      // the raw line actually has, and bails when it has fewer than the drift — never
+      // slicing into an escape sequence.
+      const remove = indent - target;
+      const rawLead = (/^ */.exec(line) as RegExpExecArray)[0].length;
+      if (rawLead < remove) return line;
+      const realigned = line.slice(remove);
+      const bareRealigned = bare.slice(remove);
+      if (isPointedLine(bare, TAB) || !isPointedLine(bareRealigned, TAB)) return realigned;
+      return ` ${realigned}`;
+    })
+    .join("\n");
 }
 
 /**

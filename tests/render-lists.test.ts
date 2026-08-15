@@ -445,9 +445,11 @@ describe("renderDocument — tight-list authored soft breaks (WP-2c)", () => {
 // line, one marker width per ancestor level, because `marked-terminal`'s
 // `bulletPointLines` / `numberedLines` pad every line their `isPointedLine` does not
 // recognize — which is every continuation of an inner list that already rendered, but
-// none of that inner list's marker lines. See `realignNestedContinuations` in
-// `src/render.ts` for the mechanism, and for why the fix subtracts the drift instead of
-// snapping lines to a column.
+// none of that inner list's marker lines. See `realignEmbeddedContinuations` in
+// `src/lists.ts` (the pass WP-5 moved into composition, structural on stripped bytes;
+// it was `realignNestedContinuations` in `src/render.ts` until then) for the
+// mechanism, and for why the fix subtracts the drift instead of snapping lines to a
+// column.
 //
 // **It is not a cosmetic defect and it is not a second metric.** A continuation shifted
 // right is a continuation over budget, so the shallower `rewrapListBody` sheared its
@@ -665,8 +667,8 @@ describe("renderDocument — nested-list continuation over-indent (WP-2e)", () =
 // checking, so a pass that *corrupts* a line inside one cannot make a width gate fail — and a
 // continuation line that starts `*` is under the width by definition. `rewrapListBody`
 // shipped from WP-2 with neither the `SENTINEL` walk `substituteBullets` and
-// `realignNestedContinuations` both have, nor the `MARKER_SHAPED_LINE` guard both
-// wrapping overrides have.
+// the de-drift pass (now `realignEmbeddedContinuations`, `src/lists.ts`) both have,
+// nor the `MARKER_SHAPED_LINE` guard both wrapping overrides have.
 //
 // Measured on the parent commit over a 1,000-file corpus sample of fence-carrying files
 // at 80 and 116: **154 of 37,246 fenced source lines did not survive verbatim; 0 after**
@@ -1222,5 +1224,169 @@ describe("owned list composition — invariants the composer must not break (WP-
         .split("\n")
         .filter((line) => line.trim() !== ""),
     ).toEqual(["    • alpha", "    • beta"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-5 (`plans/marked-terminal-replacement.md`) — owned list-item layout.
+//
+// The item's own budget: `composeItem` pushes the *exact* width of the item's marker
+// (`"* "` 2, `"7. "` 3, `"12. "` 4) for the duration of its parse, so the wrapping
+// seams read the item's true budget instead of the widest marker the whole level could
+// emit (family B1), and instead of an estimate inflated by nested lists' markers
+// (family B2). Composition decides pad, claim and de-drift on ANSI-stripped bytes
+// (`src/lists.ts`), so the coloured and colourless renders of a nested list agree
+// (family C1) — they did not, at any width, before this package.
+// ---------------------------------------------------------------------------
+describe("owned list-item layout — exact per-item budgets (WP-5, families B1/B2)", () => {
+  test("items 1-9 of a ten-item ordered list wrap one column later than item 10", () => {
+    // 33 columns of content fit exactly in item 1's budget at width 40 (40 - 4 - 3);
+    // item 10's marker is one wider, so the same content must wrap. Before WP-5 both
+    // wrapped: every item was budgeted for the widest marker the level could emit.
+    const fits33 = "abcde fghij klmno pqrst uvwxy zab";
+    expect(fits33).toHaveLength(33);
+    const filler = Array.from({ length: 8 }, (_, i) => `${i + 2}. f${i}`).join("\n");
+    const source = `1. ${fits33}\n${filler}\n10. ${fits33}`;
+    const lines = renderDocument(source, 40).split("\n");
+    const first = lines.find((line) => line.includes("1. abcde"));
+    const tenth = lines.find((line) => line.includes("10. abcde"));
+    expect(first).toBe(`    1. ${fits33}`); // 40 columns exactly — no early wrap
+    expect(tenth).toBe("    10. abcde fghij klmno pqrst uvwxy"); // one column narrower: wraps
+    expect(lines).toContain("        zab"); // item 10's continuation, at its own text column
+  });
+
+  test("a three-item ordered list is not budgeted for its nested lists' markers", () => {
+    // The deleted `markerLineCount` counted nested markers against the parent, so this
+    // list (3 items + 9 nested markers = 12) was budgeted for `"12. "` — every item
+    // wrapped two columns early. The exact budget is `"1. "`.
+    const fits33 = "abcde fghij klmno pqrst uvwxy zab";
+    const nested = "\n    - a\n    - b\n    - c";
+    const source = `1. ${fits33}${nested}\n2. two${nested}\n3. three${nested}`;
+    const lines = renderDocument(source, 40).split("\n");
+    expect(lines.find((line) => line.includes("1. abcde"))).toBe(`    1. ${fits33}`);
+    // and the nested lists still compose under their own budgets, unrenumbered
+    expect(lines.filter((line) => /^\s+[◦]\s/.test(line))).toHaveLength(9);
+    expect(lines.filter((line) => /^\s+\d+\.\s/.test(stripAnsi(line)))).toHaveLength(3);
+  });
+
+  test("a table inside a ten-item ordered list is allocated the item's exact width", () => {
+    // The table allocator reads the same prefix stack, so the exact per-item entry
+    // widens item 1's table by the column item 10's wider marker used to cost it.
+    // Wide enough that the allocator is budget-constrained: before WP-5 the level's
+    // widest marker ("10. ") capped this table at 38 columns; the exact "1. " budget
+    // is 39 (46 - 4 - 3), and the allocator uses every column it is given.
+    const row = `| ${"a".repeat(40)} | b |\n| --- | --- |\n| c | d |`;
+    const items = Array.from({ length: 10 }, (_, i) => `${i + 1}. item ${i + 1}`);
+    items[0] = `1. head\n\n   ${row.split("\n").join("\n   ")}`;
+    const lines = renderDocument(items.join("\n"), 46)
+      .split("\n")
+      .map((line) => stripAnsi(line));
+    const border = lines.find((line) => line.trimStart().startsWith("┌"));
+    expect(border).toBeDefined();
+    expect(stringWidth((border as string).trimStart())).toBe(46 - 7);
+  });
+});
+
+describe("owned list-item layout — colour/colourless convergence (WP-5, family C1)", () => {
+  const NESTED = [
+    "- alpha item with a fairly long text that wraps at narrow width for sure yes",
+    "  - sub item with also a fairly long text that wraps at narrow width for sure",
+    "- beta",
+  ].join("\n");
+
+  test("a nested list's geometry is identical with and without colour", async () => {
+    // Before WP-5 the composed pad and the de-drift both read raw bytes, and
+    // `chalk.reset`'s newline encasing puts an escape ahead of every line's indent —
+    // so under colour the pad landed on marker lines too and the de-drift was inert
+    // (measured in WP-4: 0 lines rewritten forced vs 115,472 colourless). The
+    // decisions are made on stripped bytes now; only styling may differ.
+    const plain = renderDocument(NESTED, 40)
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    const { text } = await renderWithForcedColor(NESTED, 40);
+    const coloured = stripAnsi(text)
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(coloured).toEqual(plain);
+  });
+
+  test("a nested list inside an ordered item agrees at both colour settings", async () => {
+    const source = [
+      "1. alpha parent item with enough text here to wrap at the chosen narrow width",
+      "    - sub one with a long enough text to wrap at the chosen narrow width here",
+      "    - sub two",
+      "2. beta",
+    ].join("\n");
+    const plain = renderDocument(source, 44)
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    const { text } = await renderWithForcedColor(source, 44);
+    const coloured = stripAnsi(text)
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(coloured).toEqual(plain);
+  });
+
+  test("a fence inside a nested list item renders its content at one indent, byte-identical, at three widths", () => {
+    const source = [
+      "- alpha",
+      "  - sub item",
+      "",
+      "    ```sh",
+      "    echo hello",
+      "    * decoy line",
+      "    echo world",
+      "    ```",
+      "- beta",
+    ].join("\n");
+    const per = [40, 80, 120].map((width) =>
+      renderDocument(source, width)
+        .split("\n")
+        .filter((line) => line.includes("echo") || line.includes("decoy")),
+    );
+    // Byte-identical across widths — a fence never rewraps — and identical to the
+    // base-commit bytes (pinned literally: the claim dent on the marker-shaped decoy
+    // is the library's own rendering, inside a recorded code range, class C to move).
+    expect(per[0]).toEqual(per[1] as string[]);
+    expect(per[1]).toEqual(per[2] as string[]);
+    expect(per[0]).toEqual(["                echo hello", "            * decoy line", "                echo world"]);
+  });
+});
+
+describe("owned list-item layout — the surviving guards (WP-5)", () => {
+  test("a continuation wrapped onto `12.` in a two-digit ordered list is guarded, and numbering holds", () => {
+    // A ten-item list's continuation column (4 + 4) is on the composer's grid, so a
+    // continuation starting `12.` would be claimed as a marker line and lose its pad.
+    // `rewrapListBody`'s on-grid guard adds the one space the grid cannot match.
+    const items = Array.from({ length: 10 }, (_, i) => `${i + 1}. item ${i + 1}`);
+    items[9] = `10. padding words sized so the break lands just before 12. release notes follow here`;
+    const lines = renderDocument(items.join("\n"), 40)
+      .split("\n")
+      .map((line) => stripAnsi(line));
+    const numbers = lines
+      .map((line) => /^ {4}(\d+)\.\s/.exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => Number(match[1]));
+    expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    // the author's "12." survives as text, never as a marker line on the grid
+    const flowed = lines.join("\n").replace(/\s+/g, " ");
+    expect(flowed).toContain("12. release notes");
+    for (const line of lines) {
+      expect(/^(?: {4})+12\.\s/.test(line)).toBe(false);
+    }
+  });
+
+  test("the bullet tier follows rendered indent through a blockquote, not nesting depth", () => {
+    // `- outer` / `  > - quoted` renders `•` then `‣` — the quote contributes four
+    // columns of its own, so the quoted list is drawn with the depth-3 bullet at
+    // nesting depth 2. This is the measured reason `substituteBullets` reads depth
+    // from `indent.length / 4` and stays a post-composition pass (§6.5 of this WP's
+    // brief records the stop condition that kept it).
+    const source = "- outer\n  > - quoted";
+    const lines = renderDocument(source, 60)
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    expect(lines[0]).toBe("    • outer");
+    expect(lines.find((line) => line.includes("quoted"))).toBe("            ‣ quoted");
   });
 });
