@@ -27,14 +27,20 @@ deleting it.
 ## Stack
 
 - Bun + TypeScript, single flat package (no workspaces).
-- `marked` (lexer) + `marked-terminal` (prose/list/code rendering) with a custom
-  table renderer (`src/table.ts`, added in WP-3) — `marked-terminal` never passes
-  terminal width to tables and drops `token.align` entirely.
+- `marked` (lexer only) + **this repo's own terminal renderer** — every renderer
+  method lives in `src/inline.ts`, `src/blocks.ts`, `src/lists.ts`, `src/table.ts`
+  and `src/render.ts`. `marked-terminal` did prose/list/code rendering until
+  `plans/marked-terminal-replacement.md` replaced it method by method (WP-2 to WP-5)
+  and removed it (WP-6, landing byte-identical); `src/AGENTS.md` carries the measured
+  reasons each behaviour is required, and reads its `index.js:NNN` citations as
+  historical evidence rather than live code.
 - `yaml` for frontmatter parsing, `string-width` for CJK/emoji-correct column
   measurement. **Table borders, padding and alignment are emitted by `src/table.ts`
   itself** — `cli-table3` assembled the finished string until WP-3 of
   `plans/tn-review-remediation.md`; see `src/AGENTS.md`'s "The residual, named rather
-  than papered over" for why that had to stop being true.
+  than papered over" for why that had to stop being true. The replaced library's own
+  table renderer never received the terminal width and dropped `token.align`
+  entirely, which is why the allocator was the first thing this repo owned.
 - **Bun/TypeScript over the Rust default the in-house scaffolding skill prescribes
   (its Gate 2)** — recorded per that gate's "record every choice" rule. Justification:
   `marked@^14` was already pinned across the sibling tools this tool was written beside;
@@ -47,17 +53,32 @@ deleting it.
 
 ```text
 src/cli.ts          arg parsing, width resolution, pager, --check, glyph flags
-src/render.ts       marked/marked-terminal wiring + renderer overrides
+src/render.ts       marked lexer wiring, the owned extension object, the two
+                    sentinels and the code-range walk, the tight-item text seam,
+                    and the post-compose list wrap
+src/layout-context.ts  the one immutable per-render value the visitors read —
+                    width, glyph tier, Measure, prefix stack, fence-language
+                    resolver, emoji and colour (WP-2)
+src/inline.ts       the owned inline visitors, the emoji pass and the colon
+                    sentinel, and detectInlineColor() (WP-2)
+src/blocks.ts       the owned block leaves — code, hr, html, paragraph, heading,
+                    blockquote — and the shared transform (WP-3)
+src/lists.ts        owned list composition: list, listitem, checkbox, ordered
+                    numbering, task states, the per-item budget, the per-level
+                    de-drift and bullet substitution (WP-4/WP-5)
 src/frontmatter.ts  YAML split and metadata block formatting
 src/table.ts        the wide-table allocator — the reason the tool exists — and,
                     since WP-3 of plans/tn-review-remediation.md, the border/cell
                     emitter that used to be cli-table3
 src/text.ts         grapheme splitting + display-width padding, shared by table.ts
                     and wrap.ts (which used to reach into table.ts for them)
-src/wrap.ts         ANSI-safe prose wrapping for what marked-terminal won't
+src/wrap.ts         ANSI-safe prose wrapping — the renderer's reflow engine
 src/glyphs.ts       Unicode/ASCII capability tier — the only module that reads env
 src/width.ts        display-width measurement + the East Asian Ambiguous probe (WP-3);
                     the only module that imports string-width
+src/supports-color.d.ts  minimal ambient shim for supports-color, which ships no
+                    types at this major; replaced src/marked-terminal.d.ts in role,
+                    with no cast (WP-6)
 src/lang.ts         fence-language alias map + supportsLanguage() fallback
 src/config.ts       XDG config load + corpus-manifest path resolution
 src/detectors.ts    orphan / continuation-over-indent detectors
@@ -86,7 +107,7 @@ child.
 
 | File | Carries |
 |---|---|
-| `src/AGENTS.md` | the `marked-terminal` override forensics, the two sentinels, the glyph tier, the command-line surface, ambiguous width and the probe, the rendering policy, the `emoji` re-decision |
+| `src/AGENTS.md` | what the owned renderer must do and the measured defect behind each requirement, the parity classes, the list pipeline, the sentinels, the glyph tier, the command-line surface, ambiguous width and the probe, the rendering policy, the `emoji` re-decision |
 | `scripts/AGENTS.md` | the corpus sweep and its manifests, the corpus growth findings, the defect detectors, the fast and durable measurement tiers |
 | `tests/AGENTS.md` | the publication containment guard's rules and internals, and the width-sensitive fixture trap |
 
@@ -195,7 +216,7 @@ until the cache goes stale again.
   The symlink points at the build output, so a rebuild takes effect immediately — but
   editing source without rebuilding leaves `mdview` silently running the old code.
 
-### Dependencies (WP-5)
+### Dependencies (WP-5, re-measured at WP-6/WP-7)
 
 The premise this WP started from — "trim dependency fat to shrink the binary" —
 inverted once it was measured. Record that inversion here so nobody re-derives it and
@@ -204,39 +225,47 @@ re-opens a removal pass that costs review time for zero benefit.
 **Binary size is not a dependency problem.** The compiled binary (`bun build
 --compile`, see "Conventions" above) is ~102 MB, almost entirely Bun's own embedded
 runtime — present in every Bun-compiled binary regardless of what a project imports.
-The actual runtime dependency closure (`marked`, `marked-terminal`, `cli-highlight`,
-`@colors/colors`, `string-width`, `yaml`, and everything each pulls in transitively,
-which still includes `cli-table3` — see below) is
-**60 packages, ~8 MB**. The other **~57 MB of `node_modules`** (122 packages total) is
-devDependency tooling — `eslint`, `typescript`, `typescript-eslint`, `jiti`,
-`@types/bun`, and their own transitive closures — that never ships in the binary at
-all. Dependency weight is therefore **~2% of the compiled artifact**. "Remove a
-dependency to shrink the binary" is the wrong frame for this tool; no dependency was
-removed on that basis, and none should be without re-measuring what actually changes.
+The actual runtime dependency closure — `marked`, `cli-highlight`, `@colors/colors`,
+`node-emoji`, `ansi-escapes`, `supports-color`, `supports-hyperlinks`, `string-width`,
+`yaml`, and everything each pulls in transitively — is **46 packages, ~8.6 MB**
+(measured at WP-7; `bun run gen-licenses --check` walks exactly that closure and prints
+the count). The rest of `node_modules` — **~63 MB installed in total** — is
+devDependency tooling: `eslint`, `typescript`, `typescript-eslint`, `jiti`,
+`@types/bun`, and their own transitive closures, which never ship in the binary at
+all. Dependency weight is therefore a **couple of percent of the compiled artifact**.
+"Remove a dependency to shrink the binary" is the wrong frame for this tool; no
+dependency was removed on that basis, and none should be without re-measuring what
+actually changes. (This section recorded 60 packages when it was written at WP-5; the
+count is a measurement, not a target, and it is re-measured rather than adjusted.)
 
-**`cli-highlight` and `@colors/colors` must stay declared in `dependencies`, even though
-a dependency-pruning tool will flag both as reachable transitively through
-`marked-terminal`.** `src/lang.ts:13` imports `supportsLanguage` from `cli-highlight`
-directly, and `src/table.ts:1` imports `@colors/colors/safe` directly — neither import
-goes through `marked-terminal`'s own copy of either package. Dropping either
-declaration would leave those imports resolving only because `marked-terminal` happens
-to hoist a compatible version of the same package into `node_modules` — code that
-works by accident of a *different* package's dependency tree, for **zero** install-size
-saving, since the packages are already present in `node_modules` either way. **Do not
-remove either declaration on a dependency-graph tool's say-so**; the tool is reading
-reachability, not who actually imports what.
+**`cli-highlight` and `@colors/colors` must stay declared in `dependencies`, and the
+premise that used to justify that has changed while the conclusion has not.** The
+original argument was that a dependency-pruning tool would flag both as reachable
+transitively through `marked-terminal`, so a declaration looked redundant. There is no
+such path now — that package is gone — and the reason to keep both declared is simply
+the plainer one it always rested on: `src/lang.ts` imports `supportsLanguage` from
+`cli-highlight` directly and `src/table.ts` imports `@colors/colors/safe` directly, so
+both are **first-party imports of this repo's own source**. The same rule covers the
+four promoted in WP-6 — `node-emoji`, `ansi-escapes`, `supports-hyperlinks` and
+`supports-color` — each of which `src/inline.ts` imports by name. **A package this
+repo's source imports is declared here, whatever a reachability tool says**; the tool
+is reading reachability, not who actually imports what.
 
-**`cli-table3` left `dependencies` in WP-3 of `plans/tn-review-remediation.md` and is
-still physically installed, and both halves of that matter.** `src/table.ts` no longer
-imports it — it emits its own borders — so declaring it would be declaring a package
-this repo does not use. But `marked-terminal` requires `^0.6.5`, so it stays hoisted in
-`node_modules`, stays in the runtime closure `scripts/gen-licenses.ts` walks, and stays
-in `THIRD-PARTY-LICENSES.txt`. Verified by asserting on the tree, not by a green
-`bun install`. Its physical removal belongs to the separate `marked-terminal`
-replacement plan, not here. `@colors/colors` took the declaration slot it vacated,
-deliberately: the emitter has to reproduce the old `style: { head: ["bold"], border:
-["grey"] }` bytes, that package decides whether to colour at all, and reproducing its
-decision by hand would be fidelity risk spent to change nothing on purpose.
+**`cli-table3` is gone from `node_modules` entirely, and that closes a two-part note
+this section used to carry.** It left `dependencies` in WP-3 of
+`plans/tn-review-remediation.md`, when `src/table.ts` stopped importing it and started
+emitting its own borders, but stayed physically installed because `marked-terminal`
+required `^0.6.5` — so it stayed in the closure `scripts/gen-licenses.ts` walks and in
+`THIRD-PARTY-LICENSES.txt`. WP-6 of `plans/marked-terminal-replacement.md` removed the
+only thing requiring it, and it left with a nested `chalk@5.6.2`; the licence file went
+1,059 → 990 lines, 49 → 46 packages. `@colors/colors` took the declaration slot it
+vacated, deliberately: the emitter has to reproduce the old `style: { head: ["bold"],
+border: ["grey"] }` bytes, that package decides whether to colour at all, and
+reproducing its decision by hand would be fidelity risk spent to change nothing on
+purpose. **A `chalk@4.1.2` still sits in the tree** as `cli-highlight`'s and eslint's
+transitive; this repo neither imports it nor reads its level — `src/inline.ts` asks
+`supports-color`, which is the same implementation `chalk` wraps and was measured to
+agree with it on a 36-cell environment matrix (`src/AGENTS.md`, "Colour").
 
 **`highlight.js` is pinned at `10.7.3`** (a transitive pin, via `cli-highlight`), two
 majors behind upstream, **and cannot be subset to shrink it**: `cli-highlight`
@@ -248,12 +277,16 @@ rediscovers and "fixes" by bumping a major version with no compatibility check a
 this tool's fence-language handling (`src/lang.ts`).
 
 **Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
-installed and exercised by this test suite — `marked@14.1.4`, `marked-terminal@7.3.0`,
-`cli-highlight@2.1.11`, `@colors/colors@1.5.0`, `string-width@7.2.0`, `yaml@2.9.0` —
-rather than left on `^` ranges that could silently resolve to an untested minor on a fresh
-`bun install` on a different machine. **This WP pins; it does not upgrade.** Bumping any
-of these is a separate, deliberate decision with its own corpus/sweep verification
-pass, not a side effect of installing on a new machine.
+installed and exercised by this test suite — `marked@14.1.4`, `cli-highlight@2.1.11`,
+`@colors/colors@1.5.0`, `node-emoji@2.2.0`, `ansi-escapes@7.3.0`,
+`supports-color@7.2.0`, `supports-hyperlinks@3.2.0`, `string-width@7.2.0`,
+`yaml@2.9.0` — rather than left on `^` ranges that could silently resolve to an
+untested minor on a fresh `bun install` on a different machine. The four promoted from
+transitive to direct in WP-6 of `plans/marked-terminal-replacement.md` were pinned at
+**the versions already installed**, so the promotion added no package and moved no
+byte. **This rule pins; it does not upgrade.** Bumping any of these is a separate,
+deliberate decision with its own corpus/sweep verification pass, not a side effect of
+installing on a new machine.
 
 Plans: `plans/mdview.md` (the original build) and `plans/vault-readiness.md` (glyph tier,
 fence languages, divider, embeds, and the multi-corpus sweep). The two sat at different

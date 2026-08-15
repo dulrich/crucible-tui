@@ -173,9 +173,43 @@ revisions, extract the `codeRanges`-covered text, and diff. A green sweep plus a
 code-range dump is the real bar.
 
 This is the fourth time a gate here passed for a narrower reason than it appeared (the
-fixture had no long bullets; the highlight path is dead under tests because
-`marked-terminal` skips highlighting when stdout isn't a TTY; tier purity was unmeasured;
-code ranges are exempt). **When a gate passes, check that it passes for the right reason.**
+fixture had no long bullets; the highlight path is dead under tests because the renderer
+skips highlighting whenever the colour decision is false — `src/blocks.ts`'s `highlightCode`
+returns raw code when `LayoutContext.color` is false, which is every non-TTY run; tier purity
+was unmeasured; code ranges are exempt). **When a gate passes, check that it passes for the
+right reason.**
+
+That third one is worth naming precisely, because the mechanism outlived the dependency that
+introduced it: the rule was `marked-terminal`'s `highlight()` short-circuiting at
+`chalk.level === 0`, and WP-3 of `plans/marked-terminal-replacement.md` transcribed it into
+this repo's own renderer, where the same decision is `supports-color`'s answer. Same gate,
+same blindness, owned — see `src/AGENTS.md`'s "Colour" section and its rendering policy.
+
+#### The differential harness is the instrument for that bar
+
+`scripts/render-diff.ts` (WP-1 of `plans/marked-terminal-replacement.md`) is the committed
+form of the byte-comparison above — the same library-plus-CLI shape as
+`scripts/corpus.ts` + `scripts/sweep.ts`, with `import.meta.main` gating the CLI so
+`tests/render-diff.test.ts` imports the functions directly. It renders a
+`(file × width × tier × ambiguous-mode)` grid on two revisions and records four channels
+per combo — `textSha`, `codeContentSha`, `codeRanges`, `detectors` — never bodies, so a
+baseline over the private corpus stays a reviewable artifact. **`codeContentSha` is the
+channel this section exists to demand**; the parity classes it feeds are documented once,
+in `src/AGENTS.md`'s "Parity: three classes".
+
+Two traps, each recorded because it already cost a package real time:
+
+- **`--baseline`/`--against` is unsound against a live working tree.** It compares two
+  reads that can be half an hour apart, so a file the user edits mid-run reports as a
+  failure that re-renders identical. Use `--rev-a`/`--rev-b` for any binding gate.
+- **The file is binary to `grep` and `rg`.** It embeds three raw NUL bytes as a composite
+  group-key separator (~line 537, `` `${r.width}\x00${r.tier}\x00${r.ambiguous}` ``), so
+  both tools skip it silently without `-a`/`--text` — a search for a symbol that is right
+  there returns nothing and reads exactly like "that channel does not exist". Recorded
+  rather than fixed: the key works, and changing it is a source edit no measurement has
+  asked for. Note that `src/render.ts` deliberately avoids the same hazard, spelling its
+  own sentinel `String.fromCharCode(0)` because a raw NUL twice landed in that file during
+  editing; this script did not get the same treatment.
 
 #### Defect detectors — the gates that can see *under* the width
 
@@ -230,10 +264,13 @@ Seven things about this module are load-bearing:
   known, tracked reasons and destroy their value as a signal.
 - **The loose-list blind spot is real but small, and it is NOT why the detector fires so
   often.** This is the correction that matters most in this section, because the opposite
-  belief drove a whole sprint. `findListOrphans`' docblock documents that `marked-terminal`
-  drops the blank line between two paragraphs of a loose item, making a paragraph boundary
-  and a genuine shear the same shape in rendered text — and the reasonable inference was
-  that a detector firing on ~39–51% of real files was mostly that artefact. WP-8 measured
+  belief drove a whole sprint. `findListOrphans`' docblock documents that the list composer
+  drops the blank line between two paragraphs of a loose item — `bulletPointLines`'
+  `.filter(identity)` in the renderer this repo replaced, transcribed into `src/lists.ts`'s
+  `renderList` in WP-4 and kept deliberately, because not dropping it would move bytes —
+  making a paragraph boundary and a genuine shear the same shape in rendered text — and
+  the reasonable inference was that a detector firing on ~39–51% of real files was
+  mostly that artefact. WP-8 measured
   it against the token stream: over 479 files, 2,395 file-widths and 3,223 hits, the split
   is **2,837 `shear` / 144 `paragraph-boundary` / 242 `block-boundary`**. The blind spot is
   **4.5% of the metric**, and subtracting it moves the firing rate by about two points.
