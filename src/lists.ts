@@ -328,12 +328,11 @@ function composeItem(
   //
   // `list: false`, deliberately: the level's own `4` is the `list: true` entry
   // `src/render.ts` pushes, and a second `list: true` here would double `listDepth()`
-  // and break `substituteBullets`' outermost-list gate. The entry does land in
-  // `outerColumns()`, which is why `rewrapListBody`'s budget stopped reading that
-  // accessor — it takes the enclosing blockquotes' columns alone (`quoteColumns`,
-  // tracked in `src/render.ts`), because an item's marker width must not be
-  // double-counted there. After that change `outerColumns()` has no production reader;
-  // see this WP's report for the audit.
+  // and break `substituteBullets`' outermost-list gate. The entry is why
+  // `rewrapListBody`'s budget stopped reading the stack's non-list total — it takes the
+  // enclosing blockquotes' columns alone (`quoteColumns`, tracked in `src/render.ts`),
+  // because an item's marker width must not be double-counted there. That left the
+  // `outerColumns()` accessor with no production reader at all, and WP-6 deleted it.
   ctx.prefix.push({ columns: markerWidth, list: false });
   try {
     text += parse(item.tokens, !!item.loose);

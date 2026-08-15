@@ -1,4 +1,3 @@
-import { markedTerminal } from "marked-terminal";
 import type { Token, Tokens } from "marked";
 import { UNICODE_GLYPHS } from "../../src/glyphs";
 import {
@@ -14,6 +13,7 @@ import {
 } from "../../src/inline";
 import { createLayoutContext, type LayoutContext } from "../../src/layout-context";
 import { NARROW_MEASURE } from "../../src/width";
+import { INLINE_PARITY_GOLDEN } from "./inline-parity-golden";
 
 /**
  * The inline parity table — every owned visitor against the library method it replaced,
@@ -26,17 +26,20 @@ import { NARROW_MEASURE } from "../../src/width";
  * children, a link whose text is its href.
  *
  * It lives in a helper rather than in the test file because it has to run **twice, in two
- * processes**: `bun test` is never a TTY, so `chalk` resolves to level 0 and the library
- * emits no escape sequences at all, which would make a colour-blind comparison pass
- * vacuously on exactly the axis this package changed. The colour-on half runs the same
- * table in a fresh subprocess under `FORCE_COLOR=3`, for the reason
- * `tests/helpers/color.ts` documents at length: `chalk` fixes its level at module load,
- * so setting the variable afterwards inside a shared test process does nothing.
+ * processes**: `bun test` is never a TTY, so the colour decision resolves to off and no
+ * escape sequences are emitted at all, which would make a colour-blind comparison pass
+ * vacuously on exactly the axis WP-2 changed. The colour-on half runs the same table in a
+ * fresh subprocess under `FORCE_COLOR=3`, for the reason `tests/helpers/color.ts` documents
+ * at length: the decision is fixed at module load, so setting the variable afterwards
+ * inside a shared test process does nothing. **That split survived WP-6 unchanged and now
+ * selects between two frozen tables** — `colorOff` and `colorOn` in
+ * `./inline-parity-golden.ts` — rather than between two live library answers.
  *
- * The stub parser is what makes arbitrary inputs reachable. Both sides call
- * `parseInline(token.tokens)`; this returns the concatenated `text` of those child tokens,
- * so a case can inject a newline, a carriage return or a raw escape sequence into a
- * visitor's children directly, without needing markdown that happens to produce one.
+ * The stub parser is what makes arbitrary inputs reachable. It is what the *library* side
+ * was called with when these bytes were captured, and it is still what the owned side is
+ * called with here: it returns the concatenated `text` of a token's children, so a case can
+ * inject a newline, a carriage return or a raw escape sequence into a visitor's children
+ * directly, without needing markdown that happens to produce one.
  */
 
 export interface ParityCase {
@@ -55,25 +58,25 @@ function children(text: string): Token[] {
   return [{ type: "text", raw: text, text } as unknown as Token];
 }
 
-/** The receiver each library extension method rebinds onto its private renderer. */
-const libraryReceiver = { options: {}, parser: { parseInline: stubParseInline } };
-
-type LibraryMethod = (this: typeof libraryReceiver, token: unknown) => string | false;
-
-function libraryMethods(emoji: boolean): Record<string, LibraryMethod> {
-  // Same three options `renderDocumentDetailed` constructs the real extension with.
-  const renderer = markedTerminal({ width: 80, reflowText: true, emoji }).renderer as unknown as Record<
-    string,
-    LibraryMethod
-  >;
-  return renderer;
-}
-
-/** One extension method, or a loud failure — the shim types every entry as optional. */
-function libraryMethod(renderer: Record<string, LibraryMethod>, name: string): LibraryMethod {
-  const method = renderer[name];
-  if (!method) throw new Error(`marked-terminal exposes no inline ${name} method`);
-  return method;
+/**
+ * The library's side of the table, frozen (WP-6).
+ *
+ * These bytes used to come from `markedTerminal({ width: 80, reflowText: true, emoji })`,
+ * called live with a receiver carrying `options` and `parser` — the two fields each
+ * extension wrapper rebound onto its private renderer. WP-6 removed the dependency, so the
+ * same values are read from `./inline-parity-golden.ts`, captured from that exact call on
+ * the commit before the removal. What is compared, and on how many cases, is unchanged;
+ * only where the right-hand side comes from moved. A missing entry is a loud failure
+ * rather than a skipped case, so adding a case below without capturing its counterpart
+ * cannot pass quietly.
+ */
+function goldenBytes(emoji: boolean, color: boolean, name: string): string {
+  const table = INLINE_PARITY_GOLDEN[color ? "colorOn" : "colorOff"][emoji ? "emojiOn" : "emojiOff"];
+  const value = table[name];
+  if (value === undefined) {
+    throw new Error(`no frozen byte string for inline case ${name} (emoji=${emoji}, color=${color})`);
+  }
+  return value;
 }
 
 function context(emoji: boolean, color: boolean): LayoutContext {
@@ -100,14 +103,13 @@ const BOLD_OFF = `${ESC}[22m`;
  * the comparison is meaningful whichever process it runs in.
  */
 export function inlineParityCases(emoji: boolean): ParityCase[] {
-  const ctx = context(emoji, detectInlineColor());
-  const library = libraryMethods(emoji);
+  const color = detectInlineColor();
+  const ctx = context(emoji, color);
   const cases: ParityCase[] = [];
 
-  const add = (name: string, ours: string, theirs: string | false): void => {
-    cases.push({ name, ours, theirs: theirs === false ? "<false>" : theirs });
+  const add = (name: string, ours: string): void => {
+    cases.push({ name, ours, theirs: goldenBytes(emoji, color, name) });
   };
-
   const strongCases: Array<[string, string]> = [
     ["plain", "bold words"],
     ["nested style", `has ${YELLOW}code${YELLOW_OFF} inside`],
@@ -119,7 +121,7 @@ export function inlineParityCases(emoji: boolean): ParityCase[] {
   ];
   for (const [label, text] of strongCases) {
     const token = { type: "strong", raw: text, text, tokens: children(text) } as unknown as Tokens.Strong;
-    add(`strong/${label}`, renderStrong(ctx, token, stubParseInline), libraryMethod(library, "strong").call(libraryReceiver, token));
+    add(`strong/${label}`, renderStrong(ctx, token, stubParseInline));
   }
 
   const emCases: Array<[string, string]> = [
@@ -131,7 +133,7 @@ export function inlineParityCases(emoji: boolean): ParityCase[] {
   ];
   for (const [label, text] of emCases) {
     const token = { type: "em", raw: text, text, tokens: children(text) } as unknown as Tokens.Em;
-    add(`em/${label}`, renderEm(ctx, token, stubParseInline), libraryMethod(library, "em").call(libraryReceiver, token));
+    add(`em/${label}`, renderEm(ctx, token, stubParseInline));
   }
 
   const codespanCases: Array<[string, string]> = [
@@ -143,7 +145,7 @@ export function inlineParityCases(emoji: boolean): ParityCase[] {
   ];
   for (const [label, text] of codespanCases) {
     const token = { type: "codespan", raw: text, text } as unknown as Tokens.Codespan;
-    add(`codespan/${label}`, renderCodespan(ctx, token), libraryMethod(library, "codespan").call(libraryReceiver, token));
+    add(`codespan/${label}`, renderCodespan(ctx, token));
   }
 
   const delCases: Array<[string, string]> = [
@@ -155,7 +157,7 @@ export function inlineParityCases(emoji: boolean): ParityCase[] {
   ];
   for (const [label, text] of delCases) {
     const token = { type: "del", raw: text, text, tokens: children(text) } as unknown as Tokens.Del;
-    add(`del/${label}`, renderDel(ctx, token, stubParseInline), libraryMethod(library, "del").call(libraryReceiver, token));
+    add(`del/${label}`, renderDel(ctx, token, stubParseInline));
   }
 
   const linkCases: Array<[string, string, string]> = [
@@ -176,7 +178,7 @@ export function inlineParityCases(emoji: boolean): ParityCase[] {
       text,
       tokens: children(text),
     } as unknown as Tokens.Link;
-    add(`link/${label}`, renderLink(ctx, token, stubParseInline), libraryMethod(library, "link").call(libraryReceiver, token));
+    add(`link/${label}`, renderLink(ctx, token, stubParseInline));
   }
 
   const imageCases: Array<[string, string, string | null, string]> = [
@@ -186,10 +188,10 @@ export function inlineParityCases(emoji: boolean): ParityCase[] {
   ];
   for (const [label, href, title, text] of imageCases) {
     const token = { type: "image", raw: href, href, title, text } as unknown as Tokens.Image;
-    add(`image/${label}`, renderImage(token), libraryMethod(library, "image").call(libraryReceiver, token));
+    add(`image/${label}`, renderImage(token));
   }
 
-  add("br", renderBr(), libraryMethod(library, "br").call(libraryReceiver, { type: "br", raw: "" }));
+  add("br", renderBr());
 
   for (const [label, text] of [
     ["plain", "some text"],
@@ -197,7 +199,7 @@ export function inlineParityCases(emoji: boolean): ParityCase[] {
     ["with shortcode", "ship :rocket: it"],
   ] as Array<[string, string]>) {
     const token = { type: "text", raw: text, text } as unknown as Tokens.Text;
-    add(`text/${label}`, renderInlineText(token), libraryMethod(library, "text").call(libraryReceiver, token));
+    add(`text/${label}`, renderInlineText(token));
   }
 
   return cases;

@@ -1,7 +1,7 @@
 import colors from "@colors/colors/safe";
 import ansiEscapes from "ansi-escapes";
-import { markedTerminal } from "marked-terminal";
 import * as nodeEmoji from "node-emoji";
+import supportsColor from "supports-color";
 import supportsHyperlinks from "supports-hyperlinks";
 import type { Token, Tokens } from "marked";
 import type { LayoutContext } from "./layout-context";
@@ -26,16 +26,28 @@ import type { LayoutContext } from "./layout-context";
  */
 
 /**
- * The colon sentinel, `marked-terminal` `index.js:15`.
+ * The colon sentinel, originally `marked-terminal` `index.js:15` and now this repo's.
  *
  * `codespan` replaces every `:` in a code span with this, and the block renderers undo it
- * (`undoColon`, `:65`, composed into `this.transform` and applied by `heading` `:121`,
- * `listitem` `:186`, `paragraph` `:205` and `table` `:247`). Its purpose is to stop
- * `insertEmojis` from turning `:smile:` inside backticks into an emoji glyph.
+ * (`undoColon`, `src/blocks.ts`, composed into `transform` and applied by `heading`,
+ * `paragraph` and `src/lists.ts`'s `listitem`). Its purpose is to stop shortcode
+ * substitution from turning `:smile:` inside backticks into an emoji glyph.
  *
- * **An owned `codespan` must keep emitting it byte-for-byte**, because the renderers that
- * undo it are still the library's. It stops being needed only when the last of those is
- * owned, which is WP-6.
+ * **WP-6 expected to delete this round-trip with the dependency and measurement said no.**
+ * The reasoning that predicted its death was that it exists "only to survive the library's
+ * emoji pass". It does not: the pass is *this repo's* now (`emojify`, below) and it still
+ * runs over composed block text, after inline rendering, so a code span's colons are still
+ * exposed to it unless something hides them. Substituting the round-trip with identity on
+ * both sides and rendering six probes measured the consequence directly — `` `:rocket:` ``
+ * renders 🚀, `` `:smile:` `` in a list item renders 😄, `` `:tada:` `` in a blockquote
+ * renders 🎉 — which is emoji substitution *inside verbatim content*, the one thing a code
+ * span exists to prevent. See this WP's report.
+ *
+ * The literal spelling is kept rather than swapped for a control character like the other
+ * two sentinels. It is unobservable either way — every renderer that can receive a code
+ * span runs `undoColon` — and an authored `*#COLON|*` cannot reach it, because `marked`
+ * tokenizes the surrounding asterisks as emphasis long before this pass. Changing it would
+ * be churn against a measured no-op.
  */
 export const COLON_REPLACER = "*#COLON|*";
 
@@ -224,54 +236,51 @@ const LINK = createStyler("blue"); // chalk.blue
 const HREF = createStyler("underline", createStyler("blue")); // chalk.blue.underline
 
 /**
- * Whether the renderer's inline styling emits SGR codes — **asked of the library, not
- * re-derived.**
+ * Whether the renderer's inline styling emits SGR codes — **`supports-color`'s answer,
+ * measured equal to the library's, not a hand-rolled approximation.**
  *
  * The rule that has always governed this tool's rendered output is `chalk`'s, and `chalk`'s
  * rule is not "is stdout a TTY". It is ~150 lines of stream, flag and environment
- * inspection (`chalk@5.6.2` vendors `supports-color`), and the cases where a hand-rolled
- * approximation would get it wrong are not exotic: under GitHub Actions there is no TTY at
- * all and `chalk` still colours, because `CI` plus `GITHUB_ACTIONS` short-circuits to
- * level 3. A tool that reproduced only the TTY half would stop colouring in CI, silently,
+ * inspection, and a tool that reproduced only the TTY half would answer differently the
+ * first time it met `--color`, `FORCE_COLOR=false`, `TERM=dumb` or a CI runner — silently,
  * with every local gate still green.
  *
- * So this asks. A throwaway extension is built from the same library, its `strong` — which
- * is `chalk.bold` and nothing else — is handed a plain probe string, and the answer is
- * whether anything came back around it. That is `chalk`'s decision, made by `chalk`, using
- * the same module instance the still-library-owned block renderers use, so the two halves
- * of a half-migrated renderer cannot disagree. It is the same argument `src/table.ts:489-506`
- * makes for styling through `@colors/colors` rather than hand-writing `cli-table3`'s rule:
- * unchanged *by construction* instead of by measurement.
+ * Until WP-6 this asked `marked-terminal`: a throwaway extension was built, its `strong`
+ * (which is `chalk.bold` and nothing else) was handed a probe string, and the answer was
+ * whether anything came back around it. That made the decision `chalk@5.6.2`'s, made by
+ * `chalk`, *by construction* — and it was the one deliberate library coupling this module
+ * carried, recorded here as a debt owed an owned answer once the library went.
  *
- * **This is the one deliberate library coupling left in this module, and it is temporary.**
- * When WP-6 removes `marked-terminal` there is no library left to ask, and that package
- * owes an owned answer — promoting a colour-detection dependency, or vendoring the rule and
- * pinning it against the matrix this package's tests already describe. Recorded here so it
- * is a known debt rather than a discovery.
+ * **The owned answer is `supports-color`, promoted from transitive to direct**, and it is a
+ * promotion in exactly the sense `@colors/colors` and `cli-highlight` already are: the
+ * package is already in the runtime closure — `supports-hyperlinks@3.2.0`, a direct
+ * dependency two lines above, requires `supports-color@^7.0.0` — so declaring it adds
+ * **zero** packages and zero install size, and the alternative of promoting `chalk` itself
+ * is what `plans/marked-terminal-replacement.md`'s decision 1 already rejected. It is also
+ * the same module `chalk` is a wrapper over: `chalk@5.6.2` vendors a copy of this exact
+ * library and its `level` is that copy's answer, so "ask `supports-color`" and "ask
+ * `chalk`" are the same question put to two builds of one implementation.
  *
- * Cheap enough to call once per render (`new Renderer` is an `Object.assign` over a
- * 25-key literal), and deliberately not memoised at module scope: this module holds no
- * process state.
+ * **Two builds is not one build, so the equality was measured rather than assumed.** The
+ * two spellings were run against a 36-cell environment matrix — bare non-TTY, a real pty,
+ * `FORCE_COLOR` at `0/1/2/3/true/false/empty`, `NO_COLOR`, `TERM` at
+ * `dumb/vt100/linux/screen/xterm-256color`, `COLORTERM`, `CI` alone and with
+ * `GITHUB_ACTIONS`/`TRAVIS`, `TEAMCITY_VERSION`, `TERM_PROGRAM`, and the `--color`,
+ * `--no-color`, `--color=256/always/never` argv flags — and **agreed on all 36**. See this
+ * WP's report for the matrix. One cell is worth naming because this comment used to assert
+ * the opposite: under `CI=1 GITHUB_ACTIONS=1` with a non-TTY stdout **both** answer *false*,
+ * because the non-TTY early return runs before the CI table is ever consulted. The old
+ * "under GitHub Actions chalk still colours" claim was wrong about both libraries; it is
+ * removed rather than carried forward, and the conclusion it was offered in support of —
+ * do not hand-roll a TTY check — is unaffected and still the reason this is a dependency.
+ *
+ * Resolved at module load, like `chalk`'s level was, which is why
+ * `tests/inline.test.ts`'s forced-colour case runs in a subprocess. Cheap enough to call
+ * once per render (a property read), and deliberately not memoised at module scope: this
+ * module holds no process state.
  */
 export function detectInlineColor(): boolean {
-  const probe = "m";
-  const renderer = markedTerminal().renderer as Record<string, unknown> | undefined;
-  const strong = renderer?.strong;
-  if (typeof strong !== "function") {
-    throw new Error("mdview: marked-terminal's renderer extension no longer exposes an inline strong method");
-  }
-  // Each extension method re-binds `options` and `parser` onto the private Renderer from
-  // its own `this` before delegating (`index.js:392-396`), so the probe needs a receiver
-  // carrying both. Neither is read on this path: a string argument skips `parseInline`
-  // entirely and goes straight to `this.o.strong`.
-  const styled = (strong as (this: { options: unknown; parser: unknown }, text: string) => unknown).call(
-    { options: {}, parser: {} },
-    probe,
-  );
-  if (typeof styled !== "string") {
-    throw new Error("mdview: marked-terminal's inline strong method returned a non-string for a probe");
-  }
-  return styled !== probe;
+  return supportsColor.stdout !== false;
 }
 
 /**
@@ -346,7 +355,8 @@ export function renderEm(ctx: LayoutContext, token: Tokens.Em, parseInline: Pars
  * markdown inside backticks stays literal. Then `fixHardReturn`, then every `:` becomes
  * `COLON_REPLACER` *before* the style is applied — the sentinel is inside the yellow, which
  * is where the library put it and therefore where the block renderers' `undoColon` expects
- * to find it.
+ * to find it. WP-6 measured what happens if this stops emitting it, and the answer is emoji
+ * substitution inside a code span; see `COLON_REPLACER`.
  */
 export function renderCodespan(ctx: LayoutContext, token: Tokens.Codespan): string {
   const text = fixHardReturn(token.text);
@@ -356,10 +366,12 @@ export function renderCodespan(ctx: LayoutContext, token: Tokens.Codespan): stri
 /**
  * `br` — `index.js:291-293`: `this.o.reflowText ? HARD_RETURN : '\n'`.
  *
- * All three `markedTerminal` constructions in `src/render.ts` pass `reflowText: true` — the
- * main one and both per-budget caches — so the branch is constant and the marker is what
- * ships. It is not a context field because `reflowText` is a property of the
- * library's own reflow pass, which WP-3 replaces outright.
+ * Every `markedTerminal` construction `src/render.ts` ever made passed `reflowText: true`
+ * — the main one and both per-budget caches — so the branch was constant and the marker is
+ * what ships. There are no constructions left (WP-6) and this stays a constant rather than
+ * becoming a context field, because `reflowText` was a property of the library's own reflow
+ * pass and WP-3 replaced that outright: the marker survives, the option it was gated on
+ * does not.
  */
 export function renderBr(): string {
   return HARD_RETURN;

@@ -260,3 +260,62 @@ describe("detectInlineColor — the renderer's own enablement rule", () => {
     expect(stdout).toBe("true");
   });
 });
+
+/**
+ * The colour decision, pinned by behaviour rather than by implementation.
+ *
+ * WP-6 moved `detectInlineColor` off `marked-terminal`'s `chalk` probe and onto
+ * `supports-color`, the library `chalk` is a wrapper over, on the evidence of a 36-cell
+ * environment matrix the two agreed on completely (see `src/inline.ts`). These four cases
+ * are the part of that matrix a test can run without a pty, and they are chosen for one
+ * property: **each one fails if the rule is ever replaced by a TTY check.** A hand-rolled
+ * `process.stdout.isTTY` answers *false* for all four, so a reimplementation that "looked
+ * fine locally" cannot pass them. Each runs in a fresh subprocess because the answer is
+ * resolved at module load, exactly as `chalk`'s level was.
+ */
+describe("detectInlineColor — the environment cases a TTY check would get wrong", () => {
+  const ask = async (env: Record<string, string>, argv: string[] = []): Promise<string> => {
+    const modulePath = resolve(import.meta.dir, "../src/inline.ts");
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `const { detectInlineColor } = await import(process.argv[process.argv.length - 1]);
+         process.stdout.write(String(detectInlineColor()));`,
+        // After the `--`, deliberately: `bun -e` consumes anything flag-shaped before it,
+        // so a flag placed earlier never reaches the child's `process.argv` and the case
+        // would pass or fail for a reason that has nothing to do with the rule under test.
+        "--",
+        ...argv,
+        modulePath,
+      ],
+      { env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" },
+    );
+    const stdout = await new Response(proc.stdout).text();
+    expect(await proc.exited).toBe(0);
+    return stdout;
+  };
+
+  test("FORCE_COLOR=1 turns it on with no TTY anywhere", async () => {
+    expect(await ask({ FORCE_COLOR: "1" })).toBe("true");
+  });
+
+  test("FORCE_COLOR=false turns it off, and is not read as the truthy string it is", async () => {
+    expect(await ask({ FORCE_COLOR: "false" })).toBe("false");
+  });
+
+  test("a --color flag on the command line turns it on", async () => {
+    expect(await ask({}, ["--color"])).toBe("true");
+  });
+
+  test("an empty FORCE_COLOR still means on — presence is the signal, not the value", async () => {
+    expect(await ask({ FORCE_COLOR: "" })).toBe("true");
+  });
+
+  test("--no-color turns it off, and loses to an explicit FORCE_COLOR", async () => {
+    expect(await ask({}, ["--no-color"])).toBe("false");
+    // Measured, not assumed, and it is the order the replaced `chalk` probe also had:
+    // the environment variable is consulted first and short-circuits the flag sniff.
+    expect(await ask({ FORCE_COLOR: "1" }, ["--no-color"])).toBe("true");
+  });
+});

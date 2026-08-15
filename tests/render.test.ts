@@ -481,6 +481,27 @@ describe("renderDocument — emoji shortcode substitution follows the glyph tier
     }
   });
 
+  test("a shortcode inside a code span stays literal — the colon round-trip's whole job", () => {
+    // WP-6 expected to delete `COLON_REPLACER` with `marked-terminal` and measurement said
+    // no. The substitution pass is this repo's own now and still runs over composed block
+    // text, *after* inline rendering, so a code span's colons are exposed to it unless the
+    // sentinel hides them. Substituting both halves of the round-trip with identity turns
+    // every one of these into a glyph — inside verbatim content, which is the one thing a
+    // code span exists to prevent. All three positions are covered because all three run
+    // the composition that undoes the sentinel: a paragraph, a list item and a blockquote.
+    for (const source of ["Run `:rocket:` now.\n", "- item with `:smile:` inside\n", "> quoted `:tada:` here\n"]) {
+      const plain = stripAnsi(renderDocument(source, 80, UNICODE_GLYPHS, undefined, true));
+      expect(plain).toContain(source.includes("rocket") ? ":rocket:" : source.includes("smile") ? ":smile:" : ":tada:");
+      expect(plain).not.toContain("🚀");
+      expect(plain).not.toContain("😄");
+      expect(plain).not.toContain("🎉");
+    }
+    // And the sentinel itself never reaches the terminal, at either tier.
+    for (const glyphs of [UNICODE_GLYPHS, ASCII_GLYPHS]) {
+      expect(renderDocument("Run `a:b` now.\n", 80, glyphs)).not.toContain("#COLON");
+    }
+  });
+
   test("no trailing space the source did not have, anywhere: mid-line, paragraph end, heading end", () => {
     // `insertEmojis` returns `emojiSign + ' '` — the glyph plus a space that was never
     // in the source. Mid-line, reflow rejoins it against the following word so the

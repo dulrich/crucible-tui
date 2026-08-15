@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -11,6 +11,7 @@ import {
   extractCodeContent,
   loadBaseline,
   loadRevision,
+  materializeRevisionRoot,
   pairRecords,
   parseArgs,
   selectCorpora,
@@ -502,22 +503,45 @@ describe("loadRevision", () => {
     }
   });
 
+  /**
+   * **This asserted the wrong thing until WP-6, and the reason is worth keeping.**
+   *
+   * It used to call `loadRevision("HEAD")` and require the ref's render to be
+   * byte-identical to the working tree's, on the stated assumption that "HEAD and the
+   * working tree carry the same `src/` for this WP (no `src/` edits)". That assumption
+   * holds for exactly one work package — the one that wrote this file. Every package
+   * after it edits `src/`, so from the moment the first edit lands until the commit does,
+   * the test asserts that a deliberate change did not happen. WP-6 made the failure
+   * unmissable rather than merely wrong: it removes a dependency, so HEAD's `src/render.ts`
+   * cannot even be imported from a tree where that package is no longer installed, and the
+   * test died on module resolution instead of on the comparison.
+   *
+   * What the mechanism actually promises is what is checked here — the tree is exported
+   * outside the checkout, `src/` arrives, `node_modules` is symlinked to the invoking
+   * checkout's, the label carries the resolved sha, and `cleanup` really removes it. None
+   * of that depends on what any revision's source happens to contain, so it cannot rot
+   * against the next package's edits. The render-through-a-revision half is covered by the
+   * `dir:` case above, which uses the working tree and is therefore always current.
+   */
   test("a git ref is materialized by exporting its src/ tree, with node_modules symlinked in", async () => {
-    const handle = await loadRevision("HEAD", REPO_ROOT);
+    const materialized = await materializeRevisionRoot("HEAD", REPO_ROOT);
     try {
-      expect(handle.label).toMatch(/^git:HEAD@[0-9a-f]{12}$/);
-      const source = "# Hi\n\nSome text.\n";
-      const fromGitRef = handle.render(source, 80, "unicode", "narrow");
-      const direct = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, NARROW_MEASURE);
-      // HEAD and the working tree carry the same src/ for this WP (no src/ edits),
-      // so the two must render byte-identically — this is the mechanism's own null
-      // check, exercised through the real git-archive path rather than the `dir:`
-      // shortcut the test above takes.
-      expect(fromGitRef.text).toBe(direct.text);
-      expect(fromGitRef.codeRanges).toEqual(direct.codeRanges);
+      expect(materialized.label).toMatch(/^git:HEAD@[0-9a-f]{12}$/);
+      // Outside the checkout: a materialized revision must never land inside the repo.
+      expect(materialized.root.startsWith(REPO_ROOT)).toBe(false);
+      expect((await stat(join(materialized.root, "src", "render.ts"))).isFile()).toBe(true);
+      const link = await readlink(join(materialized.root, "node_modules"));
+      expect(await realpath(link)).toBe(await realpath(join(REPO_ROOT, "node_modules")));
     } finally {
-      await handle.close();
+      await materialized.cleanup();
     }
+  });
+
+  test("cleanup removes the materialized tree rather than leaving it in the temp directory", async () => {
+    const materialized = await materializeRevisionRoot("HEAD", REPO_ROOT);
+    expect((await stat(materialized.root)).isDirectory()).toBe(true);
+    await materialized.cleanup();
+    await expect(stat(materialized.root)).rejects.toThrow();
   });
 
   test("rejects a spec that is neither an existing directory nor a resolvable git ref", async () => {

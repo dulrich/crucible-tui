@@ -296,10 +296,43 @@ function ownNames(root: string): Set<string> {
 }
 
 /**
+ * Packages this repo **used to install and still documents by name**.
+ *
+ * Rule 1 whitelists a path citation whose first segment is an installed package, because
+ * `<package>/index.js` is a public npm path and not a neighbour's internal layout.
+ * (Angle brackets for the same reason this file's own header uses them.) That
+ * whitelist reads `node_modules`, so the moment a dependency is *removed* every citation of
+ * its internals in this repo's own plans and forensics turns into a finding — which is what
+ * happened when WP-6 of `plans/marked-terminal-replacement.md` removed `marked-terminal`
+ * and the plan's own line 56, citing the file it replaced, was flagged.
+ *
+ * That is a false positive of the sharpest kind: the plan's whole subject is that package,
+ * and the citation is the evidence for a decision. Deleting the citation to satisfy the
+ * guard would delete the reason. So the two packages that removal took out are listed here,
+ * explicitly and with their reason.
+ *
+ * **This list is not a general escape hatch and must not become one.** An entry is only
+ * legitimate for a package that was genuinely a declared dependency of *this* repo and was
+ * genuinely removed by a recorded work package — both checkable from
+ * `THIRD-PARTY-LICENSES.txt`'s history. It can never launder a private neighbour's name,
+ * because a neighbour was never an npm dependency here. Rules 2 and 3 are untouched by it.
+ */
+const DOCUMENTED_FORMER_PACKAGES = new Set([
+  // Removed in WP-6 of `plans/marked-terminal-replacement.md` — the renderer this repo
+  // replaced method by method, cited throughout `src/`, `plans/` and `reviews/`.
+  "marked-terminal",
+  // Undeclared since WP-3 of `plans/tn-review-remediation.md` and physically removed with
+  // `marked-terminal`, which was the only thing still requiring it.
+  "cli-table3",
+]);
+
+/**
  * Installed package names. A missing `node_modules` is a hard error rather than an
  * empty set: silently treating every dependency citation as foreign would bury the
  * real findings in noise, and silently treating them as fine would be the inert-gate
  * failure this guard exists to avoid.
+ *
+ * Plus `DOCUMENTED_FORMER_PACKAGES` above, for the same reason read the other way round.
  */
 function packageNames(root: string): Set<string> {
   const modules = join(root, "node_modules");
@@ -320,6 +353,7 @@ function packageNames(root: string): Set<string> {
       names.add(entry);
     }
   }
+  for (const name of DOCUMENTED_FORMER_PACKAGES) names.add(name);
   return names;
 }
 

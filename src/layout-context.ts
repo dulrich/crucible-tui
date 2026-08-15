@@ -102,14 +102,19 @@ export interface PrefixColumns {
   pop(): void;
   /** Total owed columns — how much narrower than the target this text must be. */
   width(): number;
-  /** How many *list* levels are on the stack. */
-  listDepth(): number;
   /**
-   * The still-pending columns that are **not** a list's own — today, an enclosing
-   * blockquote's indent. `currentListBudget` counts list levels itself, so
-   * double-counting them here would narrow every nested list twice.
+   * How many *list* levels are on the stack.
+   *
+   * `outerColumns()` — the non-list columns, for a budget that counted list levels
+   * itself — sat beside this until WP-6 of `plans/marked-terminal-replacement.md`. WP-5
+   * took its last production reader away (`src/lists.ts`'s note at `renderList`: the
+   * stack's non-list entries became a mix of blockquote indents and per-item marker
+   * widths, so `rewrapListBody`'s budget had to stop reading it and track quote columns
+   * directly), leaving one accessor and two tests that only each other used. It is
+   * deleted rather than kept: a passing test asserting an accessor nothing calls reads
+   * as coverage and is not.
    */
-  outerColumns(): number;
+  listDepth(): number;
 }
 
 /** A fresh, empty prefix stack. One per render. */
@@ -127,9 +132,6 @@ export function createPrefixColumns(): PrefixColumns {
     },
     listDepth() {
       return entries.reduce((count, entry) => count + (entry.list ? 1 : 0), 0);
-    },
-    outerColumns() {
-      return entries.reduce((sum, entry) => sum + (entry.list ? 0 : entry.columns), 0);
     },
   };
 }
