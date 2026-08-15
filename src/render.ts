@@ -2,6 +2,14 @@ import { Marked } from "marked";
 import type { Token, Tokens } from "marked";
 import { markedTerminal } from "marked-terminal";
 import { renderTable } from "./table";
+import {
+  renderBlockquote,
+  renderCode as renderBlockCode,
+  renderHeading as renderBlockHeading,
+  renderHr as renderBlockHr,
+  renderHtml as renderBlockHtml,
+  renderParagraph as renderBlockParagraph,
+} from "./blocks";
 import { formatMetaBlockDetailed, splitFrontmatter } from "./frontmatter";
 import { wrapAnsi } from "./wrap";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
@@ -16,7 +24,7 @@ import {
   renderLink,
   renderStrong,
 } from "./inline";
-import { resolveFenceLanguage } from "./lang";
+import { resolveFenceLanguage, type FenceLanguageResolver } from "./lang";
 import { createLayoutContext } from "./layout-context";
 import { stripAnsi, trackListLine, type OpenListItem } from "./list-lines";
 import { NARROW_MEASURE, type Measure } from "./width";
@@ -296,10 +304,12 @@ const UNORDERED_MARKER_LINE = /^((?: {4})+)\*(\s)/;
 // matters), its nesting depth can be read straight back out of its own indentation.
 const LIST_INDENT_PER_LEVEL = 4;
 
-// `Renderer.prototype.blockquote` (`index.js:106`) indents its whole rendered body by
-// `this.tab` — the same 4 columns — once its children have already rendered. It also
-// `trim()`s that body first, which costs the first line its own indent — see
-// `firstLineIndentTrimmedAway` (WP-2g).
+// A blockquote indents its whole rendered body by 4 columns once its children have already
+// rendered — `Renderer.prototype.blockquote`'s `indentify(this.tab, …)` (`index.js:106`)
+// until WP-3, and `src/blocks.ts`'s `renderBlockquote` since. The library also `trim()`ed
+// that body first, which cost the first line its own indent and needed a save/restore dance
+// to put back; the owned renderer simply does not trim it away (see
+// `trimKeepingFirstIndent`).
 const BLOCKQUOTE_INDENT_PER_LEVEL = 4;
 
 // `"* "`, the literal `marked-terminal` emits for every unordered item
@@ -357,7 +367,7 @@ function nestedMarkerLineCount(tokens: Token[] | undefined): number {
  * This is a `marked-terminal` landmine, not ours, and it predates WP-2b — but WP-2b
  * decides where a loose item's lines break, so it decides whether the landmine is
  * stepped on, and re-wrapping a corpus sample lit it once in 1,000 files where the old
- * wrap lit it zero times. `wrappedParagraph` defuses it for the lines it owns: a
+ * wrap lit it zero times. The `paragraph` renderer defuses it for the lines it owns: a
  * continuation line that starts like a marker is given a single leading space, which
  * `isPointedLine` cannot match (its indent group is *exactly* four spaces at a time),
  * so the library pads and numbers the line as the continuation it is. That paragraph is
@@ -368,6 +378,30 @@ function nestedMarkerLineCount(tokens: Token[] | undefined): number {
  * lands in front of it anyway.
  */
 const MARKER_SHAPED_LINE = /^(?:\*|\d+\.)/;
+
+/**
+ * A rendered line that *reads* as a stray list marker sitting at column 0.
+ *
+ * **A second marker shape, and the two are answering different questions.**
+ * `MARKER_SHAPED_LINE` above is `isPointedLine`'s shape: what `marked-terminal` will
+ * mistake for a marker of its own and renumber. This one is `src/detectors.ts`'s
+ * `COLUMN_ZERO_MARKER` — a broader bullet set, and a required space after it — and it asks
+ * the human question instead: does this line look, to a reader, like a bullet that escaped
+ * its list? A wrapped prose line beginning `+ sources` immediately above an indented list
+ * is not a renumbering hazard (`isPointedLine` does not recognise `+` at all) and is still
+ * a line nobody meant to write.
+ *
+ * **It is a copy, and that is a constraint, not a convenience.** `src/render.ts`
+ * deliberately does not import `src/detectors.ts` — `src/list-lines.ts` exists precisely so
+ * the re-alignment pass can share the detectors' line vocabulary without pulling the
+ * detector module into the shipped binary's import graph — and neither of those two files
+ * is in this package's scope. The right home for this regex is `list-lines.ts`, beside
+ * `LIST_BULLET`, with `detectors.ts` importing it; **that move belongs to whichever of WP-4
+ * or WP-7 next has both files open**, and until it happens the two spellings must be kept
+ * in step by hand. Recorded here rather than left for someone to discover.
+ */
+const COLUMN_ZERO_SHAPED_LINE = /^(?:[\u2022*\-\u25e6\u2023+]|\d+\.)\s/;
+
 
 /**
  * The width of the widest marker this list level can emit — 2 for `"* "`, but 4 for an
@@ -917,208 +951,27 @@ function stripEmojiTrailingSpace(body: string, codeRanges: ReadonlyArray<readonl
 }
 
 /**
- * How many columns `Renderer.prototype.blockquote`'s `quote.trim()` is about to strip
- * off the **first content line** of an already-rendered blockquote body — the second,
- * milder half of WP-2g.
- *
- * `blockquote` is `section(this.o.blockquote(indentify(this.tab, quote.trim())))`
- * (`index.js:106`; `indentify` is `index.js:505`). `indentify` then adds `tab` to
- * *every* line equally, so the trim is the only asymmetry — and it is a real one
- * whenever the body's first line is indented, which is exactly when the first child is
- * a list (`indentLines` has added 4) or a nested blockquote. The rendered list's first
- * item then sits four columns left of its own siblings: visible at any width, and the
- * whole defect at widths where nothing wraps.
- *
- * Only a run of literal spaces counts. `trimStart` also eats tabs and newlines, and a
- * leading blank line is genuinely nothing to restore — the columns to give back are the
- * ones on the *last* line of what the trim removes.
- */
-function firstLineIndentTrimmedAway(body: string): number {
-  const removed = body.slice(0, body.length - body.trimStart().length);
-  const lastLine = removed.slice(removed.lastIndexOf("\n") + 1);
-  return /^ *$/.test(lastLine) ? lastLine.length : 0;
-}
-
-/**
- * Give those columns back, on the rendered result rather than the input, because the
- * library trims what it is handed and there is no spelling of a leading indent that
- * `String.prototype.trim` will not eat.
- *
- * The spaces go at the very start of the line, *outside* any ANSI the blockquote style
- * opened it with. That is deliberate and it is safe: the default `o.blockquote` is a
- * foreground+italic chalk style, so unstyled leading spaces are indistinguishable from
- * styled ones, and every gate, sweep and detector in this tool measures ANSI-stripped
- * text where the two are literally the same string. Inserting *inside* the escape run
- * would mean parsing it, for no observable difference.
- */
-function restoreFirstLineIndent(rendered: string, columns: number): string {
-  if (columns <= 0) return rendered;
-  const lines = rendered.split("\n");
-  const index = lines.findIndex((line) => stripAnsi(line).trim() !== "");
-  if (index === -1) return rendered;
-  lines[index] = `${" ".repeat(columns)}${lines[index] as string}`;
-  return lines.join("\n");
-}
-
-/**
- * Re-wrap only the lines of already-rendered output that are still over budget.
- * Idempotent and safe on already-correct input: a line within `targetWidth` is
- * returned untouched, so calling this on output that was already reflowed
- * correctly is a no-op.
- *
- * Two distinct callers need this:
- *
- * - `html`: needed because a line *starting* with a block-level tag (e.g.
- *   `<script>`) makes marked open an `html` token that swallows the rest of the
- *   paragraph, and `marked-terminal`'s own `html` renderer returns that
- *   unreflowed — unlike `paragraph`/`heading`/`blockquote`, it never reads
- *   `reflowText` at all. This does not attempt to re-parse the swallowed
- *   markdown; the width guarantee is what matters, not recovering inline
- *   formatting.
- * - `paragraph`/`heading`/`blockquote`: these *do* read `reflowText`, but
- *   `marked-terminal`'s own reflow measures word width with plain `.length`
- *   (UTF-16 code units), not `string-width`. For most text that is the same
- *   number, but for a handful of Unicode punctuation marks `string-width`
- *   counts wider than `.length` does (measured against this repo's corpus:
- *   e.g. `↔`, `—`), so a line `marked-terminal` believes fits exactly at
- *   `targetWidth` can come out 1-2 columns over by the stricter measurement
- *   `--check` uses. This is a safety net over an already-working reflow, not a
- *   replacement for it — confirmed by corpus sweep, this only ever touches a
- *   small residual (worst case 3 lines across the whole corpus at three
- *   widths) *for top-level prose*.
- *
- * **The `paragraph` caller is not confined to top-level prose.** A *loose* list
- * item is parsed into a paragraph token and dispatched through that override
- * with the list still on the stack (`listitem`/`checkbox` are dead seams;
- * `paragraph` is a live one). Until WP-2b that meant every loose item was
- * wrapped here at the **full** `targetWidth`, *before* `list` glued on its
- * marker and indent — leaving the text 6 columns over budget at depth 1 — and
- * `rewrapListBody` then reflowed it a second time, shearing the tail word onto a
- * line of its own: the orphaned-line defect, 12/9/6/7 orphans in
- * `tests/fixtures/loose-list.md` at widths 80/100/120/172.
- *
- * **Closed in WP-2b, and not here.** The fix is in the `paragraph` override
- * itself: inside a list it renders the item through a `marked-terminal` renderer
- * constructed at the item's *real* budget (`targetWidth` minus every marker and
- * indent still to be glued on — see `pendingPrefix` at the call site), so the
- * text arrives already fitting and `rewrapListBody` has nothing to shear. This
- * function is still that path's safety net, just measured against the budget
- * rather than the full width.
- *
- * **Three levers that look right and are not — all measured, do not retry:**
- *
- * - `reflowText: false` leaves list rendering byte-identical (orphans 47 -> 47
- *   over a 300-file corpus sample at width 100): the flag decides *who* wraps
- *   first, not at what width. It also regresses 60 of those 300 documents'
- *   non-list prose, because without the library's reflow the source's own line
- *   breaks survive and this function only touches lines that *exceed* the width.
- * - Wrapping here at `currentListBudget(depth, targetWidth)` is a no-op at depth
- *   1 by construction — that budget accounts only for *ancestor* indents still
- *   pending, and at depth 1 there are none.
- * - Correcting the arithmetic to the true paragraph-time budget and re-wrapping
- *   *here* still does not fix it: this function is a splitter, not a reflower. It
- *   only touches lines already over budget, and the library has by then wrapped
- *   the text at `targetWidth`, so the tail stays sheared.
- *
- * See `plans/crucible-tui-launch.md` WP-2/WP-2b; the fixture is
- * `tests/fixtures/loose-list.md` and the metric lives in `tests/render.test.ts`
- * (no width gate can see this defect — an orphan is *under* the width).
- *
- * **It re-wraps under the line's own prefix, and until WP-2g it did not** — it was
- * `wrapAnsi(line, targetWidth)`, which discards a line's leading indent outright.
- * `src/wrap.ts` tokenizes into words and inter-word spaces and starts each emitted line
- * at a word, so the indent is dropped whether or not the line actually has to be split:
- * an 81-column indented line at width 80 comes back as **one** line at **column 0**.
- * For `paragraph` and `heading` that is harmless — their text starts at column 0 anyway — but the
- * **`blockquote`** caller passes a body `indentify` has already indented, so every
- * over-budget line of a blockquote escaped the blockquote entirely. With a list inside
- * it, the escapee is a *marker* line: the rendered list's bullet at column 0, its
- * siblings still at 8. Measured over the 95 corpus files that put a list inside a
- * blockquote, at widths 80 and 116: **235 column-0 marker lines across 56 files**.
- *
- * The remedy is the shape `rewrapListBody` already uses — `LIST_LINE_PREFIX`, the
- * prefix's width, a continuation prefix of that many spaces — and it is applied here,
- * in the shared helper, rather than on the `blockquote` path alone: dropping a line's
- * indent is never the correct thing to do, so the caller is not what makes it wrong.
- * **`paragraph`/`heading` stay byte-identical by construction, not by measurement**:
- * the new path is entered only for a line with leading whitespace, and both of those
- * callers hand this function text that starts at column 0. Verified anyway — 1,181
- * corpus files at two widths, zero differing lines outside blockquote-carrying files.
- *
- * **No marker-shaped-line guard here, deliberately** (contrast `rewrapListBody`). The
- * callers that need one already have it — `wrappedParagraph` tests its own result — and
- * preserving the prefix strictly *reduces* the exposure this function creates, because
- * column 0 is itself on `isPointedLine`'s four-column grid and a preserved list prefix
- * (`"    • "`, 6) usually is not. Adding one would change `paragraph`/`heading` bytes to
- * defuse a collision this change does not introduce.
- *
- * **Fenced code is never rewritten, and this pass had no `SENTINEL` walk either
- * (WP-2g).** A fence inside a blockquote reaches here already bracketed — `wrapCode`
- * resolves depth-first — and an over-budget command line was being split mid-command,
- * invisibly, exactly as `rewrapListBody` split them until WP-2f. The strictness is that
- * pass's stricter form for that pass's reason: this function rewrites the *whole* line,
- * and a one-line fenced block carries all of its content on a line that both opens and
- * closes the sentinel pair, where "started inside a fence" is false. Reproduced on both
- * shapes before the walk went in; both are covered by `tests/fixtures/blockquote-list.md`.
- */
-function wrapOverBudgetLines(rendered: string, targetWidth: number, measure: Measure): string {
-  let insideCode = false;
-  return rendered
-    .split("\n")
-    .map((line) => {
-      const startedInsideCode = insideCode;
-      let carriesSentinel = false;
-      for (const ch of line) {
-        if (ch === SENTINEL) {
-          insideCode = !insideCode;
-          carriesSentinel = true;
-        }
-      }
-      if (startedInsideCode || carriesSentinel) return line;
-      if (measure(line) <= targetWidth) return line;
-
-      const match = LIST_LINE_PREFIX.exec(line);
-      const indent = match?.[1] ?? "";
-      const prefix = `${indent}${match?.[2] ?? ""}`;
-      const rest = line.slice(prefix.length);
-      // Two fall-throughs to the pre-WP-2g behaviour, both load-bearing. A line with no
-      // leading whitespace is what `paragraph`/`heading` always hand us, and taking the
-      // old path for it makes those two callers byte-identical rather than merely
-      // measured-equal — note `LIST_LINE_PREFIX` would otherwise claim a *paragraph*
-      // opening `"1. "` as a marker. And a line that is nothing but indent has no text
-      // to hang a continuation under, so preserving its prefix would just leave the
-      // whitespace over budget where the old path collapsed it away.
-      if (indent === "" || rest === "") return wrapAnsi(line, targetWidth, measure).join("\n");
-
-      const prefixWidth = measure(prefix);
-      const continuationPrefix = " ".repeat(prefixWidth);
-      return wrapAnsi(rest, Math.max(1, targetWidth - prefixWidth), measure)
-        .map((wrapped, index) => (index === 0 ? `${prefix}${wrapped}` : `${continuationPrefix}${wrapped}`))
-        .join("\n");
-    })
-    .join("\n");
-}
-
-/**
  * Render a markdown document to ANSI for the terminal: the frontmatter block (when
  * present) as a readable metadata block, followed by the rendered prose body. Wires
- * `marked` + `marked-terminal`, overriding:
+ * `marked` as the lexer. **`marked-terminal` is now delegated to for `list`, `listitem`,
+ * `checkbox` and nothing else** — the strangler fig is two thirds of the way through
+ * `plans/marked-terminal-replacement.md`:
  *
- * - `table` with WP-3's `renderTable` — `marked-terminal`'s own table renderer never
- *   receives the terminal width and must not be left in place;
- * - `list` to track nesting depth, reflow over-budget lines (`marked-terminal` never
- *   reflows list items at all — see `currentListBudget` above), and substitute the
- *   glyph tier's bullet for the leading `"* "` marker (WP-2);
- * - `hr` to draw the glyph tier's rule character instead of `marked-terminal`'s
- *   hardcoded `-` (WP-2);
- * - `code` to bracket fenced output in sentinels so `--check` can exempt it;
- * - `html` to reflow swallowed block-HTML paragraphs;
- * - `paragraph`/`heading`/`blockquote` with a thin safety-net re-wrap (see
- *   `wrapOverBudgetLines`) over `marked-terminal`'s own `reflowText`, which measures
- *   width with plain `.length` and can undercount a handful of Unicode punctuation
- *   marks relative to `string-width`. `paragraph` does one thing more: inside a list
- *   it is the *only* wrap of a loose item's text, and renders it at the item's own
- *   budget rather than the full width (WP-2b — the orphaned-line defect).
+ * - `table` is `renderTable` (`src/table.ts`) — `marked-terminal`'s own table renderer
+ *   never receives the terminal width and must not be left in place;
+ * - every inline visitor is `src/inline.ts`'s (WP-2), byte-identical to the library's;
+ * - `hr`, `code`, `html`, `paragraph`, `heading` and `blockquote` are `src/blocks.ts`'s
+ *   (WP-3), with `src/wrap.ts`'s `wrapAnsi` as the reflow engine, measuring through the
+ *   `LayoutContext`'s `Measure` rather than the library's `String.prototype.length`;
+ * - `list` is still the library's, wrapped here to track nesting depth, re-wrap
+ *   over-budget lines (`marked-terminal` never reflows list items at all — see
+ *   `currentListBudget` above) and substitute the glyph tier's bullet for the leading
+ *   `"* "` marker (WP-2 of the launch plan; WP-4 of the replacement plan owns it next);
+ * - `text` is `src/inline.ts`'s, wrapped here because a *tight* list item's own body is
+ *   the one place the library never parsed inline markup at all.
+ *
+ * `code` is still bracketed in sentinels here so `--check` can exempt it; that mechanism
+ * survives until WP-6 carries code/prose metadata on rendered lines instead.
  *
  * `glyphs` defaults to `UNICODE_GLYPHS` rather than reading the environment — every
  * environment-dependent decision is concentrated in `cli.ts`'s call to
@@ -1142,6 +995,7 @@ export function renderDocumentDetailed(
   glyphs: GlyphSet = UNICODE_GLYPHS,
   measure: Measure = NARROW_MEASURE,
   emojiOverride?: boolean,
+  resolveFenceLanguageFor: FenceLanguageResolver = resolveFenceLanguage,
 ): RenderResult {
   const { meta, body } = splitFrontmatter(source);
   // The divider is appended *into* `metaBlock` itself, before `metaLineOffset` below is
@@ -1172,21 +1026,16 @@ export function renderDocumentDetailed(
   // renders the glyph, ASCII cannot and keeps the literal shortcode — with
   // `emojiOverride` (threaded from `MdviewConfig.emoji`, `src/config.ts`) able to
   // force either direction regardless of tier. `emojiOverride ?? tier-based` is
-  // deliberately computed **once, here**, and handed to all three `markedTerminal`
-  // constructions below (this one and the two per-budget caches) so substitution
-  // can never disagree between a document's top-level text and a loose list
-  // item's or blockquote's, which render through a second, separately-constructed
-  // extension — see `paragraphRendererAt`/`headingRendererAt`.
+  // deliberately computed **once, here**.
   //
-  // The caches themselves need no *key* change: `budgetedParagraphs` and
-  // `budgetedHeadings` are declared inside this function (recreated on every call
-  // to `renderDocumentDetailed`), so every entry in a given call's map is already
-  // built under this same call's single `emoji` value — there is no cross-tier
-  // reuse for a compound key to prevent. The bug this WP actually guards against
-  // is subtler: forgetting to pass `emoji` to those two constructions at all,
-  // which would silently default them to the library's own `true` regardless of
-  // tier — making list/blockquote-nested substitution disagree with top-level
-  // substitution at the ASCII tier specifically. Pinned in
+  // **The hazard this guards against was three-way and is now two-way** (WP-3). Until this
+  // package there were *three* `markedTerminal` constructions per render — this one plus
+  // two per-budget caches, built because the library takes its width only at construction
+  // — and forgetting to pass `emoji` to either cache would have made shortcode
+  // substitution depend on whether a paragraph happened to sit inside a list. Both caches
+  // are gone: the owned block renderers take the budget as a parameter. What remains is
+  // this construction and the `LayoutContext`, and they are handed the same value on the
+  // next two statements. Pinned in
   // `tests/render.test.ts`'s emoji-tier describe block.
   //
   // `insertEmojis` (`marked-terminal`) appends a stray space after every glyph
@@ -1220,7 +1069,7 @@ export function renderDocumentDetailed(
     width: targetWidth,
     glyphs,
     measure,
-    resolveFenceLanguage,
+    resolveFenceLanguage: resolveFenceLanguageFor,
     emoji,
     color: detectInlineColor(),
   });
@@ -1228,7 +1077,26 @@ export function renderDocumentDetailed(
   const extension = markedTerminal({ width: targetWidth, reflowText: true, emoji });
   const renderer = extension.renderer;
   if (renderer) {
-    renderer.table = (token: Tokens.Table) => renderTable(token, targetWidth, glyphs, measure);
+    // **The allocator gets the budget, not the target width** (WP-3), and that changed
+    // here because the thing that used to hide the difference is gone.
+    //
+    // A table is the one block whose rendered lines nothing downstream can re-wrap without
+    // destroying them: its columns are a fixed allocation and its borders are a grid. Until
+    // this package a table inside a blockquote was allocated the full `targetWidth`,
+    // indented four columns afterwards, and then handed to `wrapOverBudgetLines`, which
+    // duly split every border row in half — output that satisfied the width gate by being
+    // wrong, which is exactly the failure mode `scripts/AGENTS.md` records when it says the
+    // sweep proves width and only width. With that pass deleted the same table would simply
+    // overflow, so the allocation has to be right the first time.
+    //
+    // `layout.prefix.width()` rather than the `pendingPrefixWidth` alias below only because
+    // this assignment sits above the aliases; it is the same stack. At the top level it is
+    // zero and the allocation is byte-identical to before. Inside a list item it is the
+    // marker plus the indent, which is exactly what `list` glues back on afterwards, so the
+    // composed line lands at `targetWidth` and `rewrapListBody`'s pass over it is the no-op
+    // it documents itself as.
+    renderer.table = (token: Tokens.Table) =>
+      renderTable(token, Math.max(1, targetWidth - layout.prefix.width()), glyphs, measure);
 
     // **The owned inline visitors** (WP-2). These are no longer overrides *of* the
     // library — nothing delegates to `marked-terminal` here any more — but the block
@@ -1264,9 +1132,9 @@ export function renderDocumentDetailed(
     // list level's own marker plus its blanket indent, a blockquote's indent. Each
     // block renderer pushes its own contribution for the duration of its call, so at
     // any point inside, the sum is exactly how much narrower than `targetWidth` the
-    // text being produced has to be. This is what lets the `paragraph` override wrap a
+    // text being produced has to be. This is what lets the `paragraph` renderer wrap a
     // *loose* list item once, at the width the item will actually occupy — see its
-    // comment below and `wrapOverBudgetLines`'s.
+    // comment below.
     //
     // The stack itself now lives on the `LayoutContext` (`src/layout-context.ts`), which
     // is what makes it reachable from a visitor that is no longer a closure declared
@@ -1470,7 +1338,7 @@ export function renderDocumentDetailed(
         segments.map((segment) => wrapAnsi(segment, Math.max(1, width), measure).join("\n")).join("\n");
 
       const wrapped = wrapAt(budget);
-      // Same landmine, same guard as `wrappedParagraph` — see `MARKER_SHAPED_LINE`.
+      // Same landmine, same guard as the `paragraph` renderer — see `MARKER_SHAPED_LINE`.
       // Every line after the first is still at column 0 when `bulletPointLines` /
       // `numberedLines` run, so one that *starts* `*` or `12.` is taken for a marker
       // line and, in an ordered list, is handed that item's number and rewritten.
@@ -1486,214 +1354,142 @@ export function renderDocumentDetailed(
       );
     };
 
-    // One `marked-terminal` renderer per distinct list budget, built lazily and reused.
-    // Rendering a loose list item's paragraph through a renderer constructed at that
-    // budget is what makes the library's *own* reflow produce correctly-sized lines,
-    // rather than us un-wrapping and re-wrapping text it already broke — see the
-    // `paragraph` override below for why re-wrapping is not an option.
-    const budgetedParagraphs = new Map<number, NonNullable<typeof renderer.paragraph>>();
-    const paragraphRendererAt = (budget: number): typeof renderer.paragraph => {
-      const cached = budgetedParagraphs.get(budget);
-      if (cached) return cached;
-      // Same `emoji` value as the main construction above, deliberately — see that
-      // comment. A per-budget renderer built with a different `emoji` setting would
-      // make shortcode substitution depend on whether a paragraph happened to sit
-      // inside a list, which is not a distinction this tool's output should make.
-      const paragraph = markedTerminal({ width: budget, reflowText: true, emoji }).renderer?.paragraph;
-      if (paragraph) budgetedParagraphs.set(budget, paragraph);
-      return paragraph;
-    };
-
-    // `marked-terminal`'s own `hr` hardcodes `-` (`Renderer.prototype.hr`, `index.js:135`,
-    // via its internal `hr()` helper at `index.js:612`: `new Array(width).join('-')`,
-    // i.e. `width - 1` dashes — an off-by-one baked into the library, preserved here
-    // rather than corrected, since WP-3's frontmatter divider must match it exactly).
-    // For the ASCII tier this override is a provable no-op: `glyphs.rule === "-"`
-    // short-circuits before touching `result` at all, so the ASCII path returns
-    // byte-identical output to today's. For the Unicode tier, the dash run is exactly
-    // `targetWidth - 1` characters (this function's own `targetWidth`, matching
-    // `this.o.width` the extension was constructed with), so replacing that exact
-    // literal run — whatever styling/section wrapping `originalHr` added around it —
-    // swaps the glyph without touching anything else in the string.
-    const originalHr = renderer.hr;
-    if (originalHr) {
-      renderer.hr = function wrappedHr(token: Tokens.Hr) {
-        const result = originalHr.call(this, token);
-        if (result === false || glyphs.rule === "-") return result;
-        const dashes = "-".repeat(Math.max(0, targetWidth - 1));
-        if (dashes === "") return result;
-        return result.split(dashes).join(renderRule(glyphs, targetWidth, measure));
-      };
-    }
-
-    const originalCode = renderer.code;
-    if (originalCode) {
-      renderer.code = function wrappedCode(token: Tokens.Code) {
-        // Normalize the declared language before it reaches marked-terminal's own
-        // `highlight()`, which does not throw on an unknown language (its
-        // `try`/`catch` never fires) — it logs via `console.error` unconditionally.
-        // Never mutate `token`, which `marked` owns; pass a shallow copy carrying the
-        // rewritten `lang` instead.
-        // Through the context, not the module import (WP-2). The resolver is a field so
-        // that F4 — making `src/lang.ts`'s `effectiveAliases` global an immutable value —
-        // has somewhere to land in WP-3, which rewrites this renderer. The global itself is
-        // untouched here: this is the seam, not the fix.
-        const normalizedLang = layout.resolveFenceLanguage(token.lang);
-        const normalizedToken = normalizedLang === token.lang ? token : { ...token, lang: normalizedLang };
-        const result = originalCode.call(this, normalizedToken);
-        return result === false ? false : wrapCode(result);
-      };
-    }
-
-    const originalHtml = renderer.html;
-    if (originalHtml) {
-      renderer.html = function wrappedHtml(token: Tokens.HTML | Tokens.Tag) {
-        const result = originalHtml.call(this, token);
-        return result === false ? false : wrapOverBudgetLines(result, targetWidth, measure);
-      };
-    }
-
-    // Safety net over `marked-terminal`'s own `reflowText` — see
-    // `wrapOverBudgetLines`'s doc comment for why these three still occasionally
-    // need it despite already being reflowed.
+    // **The owned block leaves** (WP-3 of `plans/marked-terminal-replacement.md`): `hr`,
+    // `code`, `html`, `paragraph`, `heading` and `blockquote`. See `src/blocks.ts` for what
+    // each reproduces, line by line — including the three branches of `highlight()` that
+    // decide whether a fence is coloured by `cli-highlight`, by `chalk.yellow`, or not at
+    // all, and the two orders `paragraph` and `heading` apply styling and reflow in.
     //
-    // **Inside a list this override is not a safety net, it is the wrap** (WP-2b).
-    // Every item of a *loose* list is parsed into a paragraph token and dispatched
-    // here with the list still on the stack, so rendering it at the full
-    // `targetWidth` — as this did until WP-2b — hands `list` text that is already
-    // `pendingPrefixWidth()` columns too wide, and `rewrapListBody` then shears the
-    // tail of each line onto a line of its own. Rendering it through a renderer built
-    // at the item's real budget instead means the text arrives already fitting, and
-    // `rewrapListBody`'s pass over it becomes the no-op it documents itself as.
+    // `hr`, `code` and `html` never called the library's `reflowText` and never read
+    // `this.o.width`, so owning those three was a transcription and was gated on
+    // byte-identical output across the private corpus at both colour settings before the
+    // other three were touched at all.
     //
-    // Why route through a second `markedTerminal` renderer rather than coalesce this
-    // one's output and re-wrap it: by the time a result gets here, `reflowText` has
-    // already destroyed the information needed to put it back together. Its wraps and
-    // an author's own hard break are both a bare `\n` (`reflowText` splits on the
-    // `HARD_RETURN` its `br` emits and joins every section back with `\n`), and a word
-    // longer than the width has been hard-split mid-word with no marker, so rejoining
-    // with a space corrupts long URLs and paths. Letting the library wrap at the right
-    // width in the first place keeps both cases correct by construction, and keeps
-    // multi-paragraph items separate for free — each paragraph is its own call here,
-    // with nothing joining across them.
-    const originalParagraph = renderer.paragraph;
-    if (originalParagraph) {
-      renderer.paragraph = function wrappedParagraph(token: Tokens.Paragraph) {
-        // A paragraph dispatches inline tokens, so anything reaching the `text`
-        // override from inside this call is an *inline* text token, never a tight list
-        // item's own body — see that override's three conditions.
-        inlineDepth += 1;
-        try {
-          // **The condition is "does anything still owe columns", not "are we in a
-          // list"** (WP-2g). It read `listDepth() === 0` until then, on the WP-2b
-          // reasoning that a top-level blockquote's own rendering was a separate
-          // change — and that was true only while `wrapOverBudgetLines` was quietly
-          // *deleting* the blockquote's indent instead of honouring it. A blockquote
-          // reflows its children at the full `targetWidth` and then indents the result
-          // by 4, so every wrapped line of blockquoted prose is 4 columns over budget;
-          // once the safety net stopped discarding the indent to hide that, the net
-          // started shearing a word off each of those lines instead — one-word
-          // continuations through every quoted paragraph in the corpus. Same defect,
-          // same remedy, same seam as a loose list item: render it at the width it
-          // will actually occupy and the net goes back to being a no-op.
-          if (pendingPrefixWidth() === 0) {
-            const result = originalParagraph.call(this, token);
-            return result === false ? false : wrapOverBudgetLines(result, targetWidth, measure);
-          }
+    // `renderRule` is passed in rather than reached for: it is shared with the frontmatter
+    // divider above and must stay the only place that computes a rule. The pre-WP-3 `hr`
+    // override called the library and then string-replaced its exact `targetWidth - 1` dash
+    // run with this same value, which is the same string as styling the rule directly —
+    // byte-identical by construction, including in the ASCII tier where that override
+    // short-circuited and returned the library's output untouched.
+    renderer.hr = () => renderBlockHr(layout, renderRule(glyphs, targetWidth, measure));
 
-          const budget = Math.max(1, targetWidth - pendingPrefixWidth());
-          // The library reflows by `.length`, so the safety net still applies — just at
-          // the list's budget rather than the full width.
-          const renderAt = (width: number): string | false => {
-            const render = paragraphRendererAt(width) ?? originalParagraph;
-            const rendered = render.call(this, token);
-            return rendered === false ? false : wrapOverBudgetLines(rendered, width, measure);
-          };
+    // `wrapCode` and `SENTINEL` are unchanged and stay `src/render.ts`'s job until WP-6
+    // carries code/prose metadata on rendered lines instead of reconstructing ranges from
+    // sentinel bytes. The fence-language normalisation that used to shallow-copy the token
+    // now happens inside `renderBlockCode`, through the same `ctx.resolveFenceLanguage`
+    // seam WP-2 built — so nothing mutates a token `marked` owns, and there is no copy to
+    // make either.
+    renderer.code = (token: Tokens.Code) => wrapCode(renderBlockCode(layout, token));
 
-          const result = renderAt(budget);
-          if (result === false) return false;
-          const collides = (text: string): boolean =>
-            text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
-          if (!collides(result)) return result;
+    // The one block renderer the library never reflowed, so its width pass is this repo's
+    // own and moves into `src/blocks.ts` with it — at the real budget now rather than the
+    // full `targetWidth`, which is the same number for every HTML block outside a
+    // blockquote or a list item.
+    renderer.html = (token: Tokens.HTML | Tokens.Tag) =>
+      renderBlockHtml(layout, token, Math.max(1, targetWidth - pendingPrefixWidth()));
 
-          // See `MARKER_SHAPED_LINE`: re-wrap a column narrower to make room, then give
-          // each colliding continuation line the guard space.
-          const guarded = renderAt(Math.max(1, budget - 1));
-          if (guarded === false) return result;
-          return guarded
-            .split("\n")
-            .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
-            .join("\n");
-        } finally {
-          inlineDepth -= 1;
-        }
-      };
-    }
-
-    // The same lazy per-budget cache as `budgetedParagraphs`, for the same reason: a
-    // heading inside a blockquote or a list item is reflowed by the library at the full
-    // `targetWidth` and *then* indented, so every wrapped line of it is over budget and
-    // the safety net shears a word off each one. Re-wrapping the result is not an option
-    // here either — `reflowText` has already rendered its own breaks and an author's
-    // hard break as the same bare `\n`.
-    const budgetedHeadings = new Map<number, NonNullable<typeof renderer.heading>>();
-    const headingRendererAt = (budget: number): typeof renderer.heading => {
-      const cached = budgetedHeadings.get(budget);
-      if (cached) return cached;
-      // Same `emoji` value as the main construction above, for the same reason as
-      // `paragraphRendererAt`.
-      const heading = markedTerminal({ width: budget, reflowText: true, emoji }).renderer?.heading;
-      if (heading) budgetedHeadings.set(budget, heading);
-      return heading;
-    };
-
-    const originalHeading = renderer.heading;
-    if (originalHeading) {
-      renderer.heading = function wrappedHeading(token: Tokens.Heading) {
-        // Like `paragraph`, a heading dispatches inline tokens — see the `text`
-        // override. A heading is reachable inside a list item and inside a blockquote.
-        inlineDepth += 1;
+    // **`paragraph`, `heading` and `blockquote` — the three that reflowed** (WP-3).
+    //
+    // What used to be here, and what it cost: `marked-terminal` takes its width only at
+    // construction (`this.o` is an `Object.assign` snapshot, `index.js:58`, and `width` is
+    // read at `:128`, `:136` and `:208` and written nowhere), so rendering a loose list
+    // item's paragraph or a blockquoted heading four columns narrower meant constructing an
+    // **entire second library instance** and caching it by budget — `budgetedParagraphs`
+    // and `budgetedHeadings`, three instances per render — and then running a
+    // `wrapOverBudgetLines` net over the result anyway, because the library's own reflow
+    // measured in UTF-16 code units. `blockquote` additionally had to measure the first-line
+    // indent the library's `quote.trim()` was about to eat and paste it back afterwards.
+    //
+    // All of that is gone. An owned renderer takes the budget as a parameter and measures
+    // through `ctx.measure`, so there is nothing to repair: the caches, the net,
+    // `firstLineIndentTrimmedAway` and `restoreFirstLineIndent` were five mechanisms for one
+    // problem that no longer exists.
+    //
+    // `inlineDepth` still bracket each of the two that dispatch inline tokens, exactly as
+    // before and for a reason that has nothing to do with width: it is condition 2 of the
+    // tight-list-item test in the `text` override above, and dropping it would silently
+    // change list-item rendering.
+    renderer.paragraph = function ownedParagraph(token: Tokens.Paragraph) {
+      // A paragraph dispatches inline tokens, so anything reaching the `text` override from
+      // inside this call is an *inline* text token, never a tight list item's own body.
+      inlineDepth += 1;
+      try {
         const budget = Math.max(1, targetWidth - pendingPrefixWidth());
-        let result: string | false;
-        try {
-          const render = (budget === targetWidth ? originalHeading : headingRendererAt(budget)) ?? originalHeading;
-          result = render.call(this, token);
-        } finally {
-          inlineDepth -= 1;
-        }
-        return result === false ? false : wrapOverBudgetLines(result, budget, measure);
-      };
-    }
+        const parseInline = (tokens: Token[]): string => this.parser.parseInline(tokens);
+        const result = renderBlockParagraph(layout, token, parseInline, budget);
+        // **The `marked-terminal` list landmine, and the one correction pass this package
+        // deliberately keeps** — see `MARKER_SHAPED_LINE`. A wrapped continuation line that
+        // merely *begins* `*` or `12.` is taken for a marker by `isPointedLine`, and in an
+        // ordered list `numberedLine` then consumes that item's number and rewrites the
+        // line. This defends against a defect in a renderer WP-4 owns; removing it here
+        // would land its consequences in someone else's parity diff.
+        //
+        // **Two shapes, not one** (WP-3). The second is `COLUMN_ZERO_SHAPED_LINE`, the
+        // detectors' own broader bullet set, and it was added because the harness's new
+        // detector ratchet caught this package raising `findColumnZeroMarkers` by exactly
+        // one: a top-level prose line that happened to re-wrap onto `+ sources`,
+        // immediately above an indented list. `isPointedLine` does not recognise `+`, so
+        // that line was never a renumbering hazard — it was simply a line that reads as a
+        // bullet nobody wrote, which is precisely what that detector is for.
+        //
+        // **And it runs at every budget now, where it used to run only inside a list or a
+        // blockquote.** That asymmetry was an artefact rather than a decision: the old
+        // override took an early return on `pendingPrefixWidth() === 0` and the guard sat
+        // below it, so a top-level paragraph never got one. The regression above was a
+        // top-level paragraph, so a guard that skips them cannot close it. At column 0 the
+        // renumbering half of the hazard genuinely does not apply — no list is on the stack
+        // — but the legibility half does, and the cost is one paragraph re-wrapped a column
+        // narrower.
+        const marker = (line: string): boolean =>
+          MARKER_SHAPED_LINE.test(line) || COLUMN_ZERO_SHAPED_LINE.test(line);
+        const collides = (text: string): boolean => text.split("\n").slice(1).some(marker);
+        if (!collides(result)) return result;
 
-    const originalBlockquote = renderer.blockquote;
-    if (originalBlockquote) {
-      // `Renderer.prototype.blockquote` accepts either the token or an already-rendered
-      // body string (`index.js:103-105` — it only calls the parser when handed an
-      // object). Parsing the children here and handing the string on is what makes the
-      // body observable to `firstLineIndentTrimmedAway` below; it is the same single
-      // parse the library would have done, not a second render.
-      const renderBlockquoteBody = originalBlockquote as unknown as (this: unknown, quote: string) => string | false;
-      renderer.blockquote = function wrappedBlockquote(token: Tokens.Blockquote) {
-        // A blockquote indents its rendered body by `tab` *after* its children have
-        // rendered (`indentify`, `index.js:106`), so anything rendered inside it owes
-        // those columns too. Only the list path reads this — a top-level blockquote's
-        // own rendering is unchanged, by design: widening its blast radius is a
-        // separate change from closing the loose-list defect.
-        pendingPrefix.push({ columns: BLOCKQUOTE_INDENT_PER_LEVEL, list: false });
-        let body: string;
-        try {
-          body = typeof token === "string" ? token : this.parser.parse(token.tokens);
-        } finally {
-          pendingPrefix.pop();
-        }
-        const lost = firstLineIndentTrimmedAway(body);
-        const result = renderBlockquoteBody.call(this, body);
-        if (result === false) return false;
-        // Restore *before* the width pass, so a first line that the restored columns
-        // push over budget is re-wrapped like any other rather than left overflowing.
-        return wrapOverBudgetLines(restoreFirstLineIndent(result, lost), targetWidth, measure);
-      };
-    }
+        // Re-wrap a column narrower to make room, then give each colliding continuation
+        // line the guard space, which `isPointedLine`'s exact-multiple-of-four indent
+        // group cannot match. Unchanged from the pre-WP-3 remedy, deliberately: re-wrapping
+        // progressively narrower until no line starts marker-shaped was tried here and
+        // rejected — it did not close the detector regression it was aimed at (see this
+        // package's report), it costs an extra full paragraph render per attempt, and it
+        // defeats `tests/render-lists.test.ts`'s own guard fixture by avoiding the
+        // situation the fixture exists to reproduce.
+        return renderBlockParagraph(layout, token, parseInline, Math.max(1, budget - 1))
+          .split("\n")
+          .map((line, index) => (index > 0 && marker(line) ? ` ${line}` : line))
+          .join("\n");
+      } finally {
+        inlineDepth -= 1;
+      }
+    };
+
+    renderer.heading = function ownedHeading(token: Tokens.Heading) {
+      // Like `paragraph`, a heading dispatches inline tokens — see the `text` override. A
+      // heading is reachable inside a list item and inside a blockquote, which is the whole
+      // reason it needs a budget rather than the target width.
+      inlineDepth += 1;
+      try {
+        const budget = Math.max(1, targetWidth - pendingPrefixWidth());
+        return renderBlockHeading(layout, token, (tokens: Token[]) => this.parser.parseInline(tokens), budget);
+      } finally {
+        inlineDepth -= 1;
+      }
+    };
+
+    renderer.blockquote = function ownedBlockquote(token: Tokens.Blockquote) {
+      // A blockquote indents its rendered body by four columns *after* its children have
+      // rendered, so anything rendered inside it owes those columns too — pushed here for
+      // the duration of the children's render, which is what makes a quoted paragraph,
+      // heading or list wrap at the width it will actually occupy rather than at the full
+      // target and then need repairing.
+      pendingPrefix.push({ columns: BLOCKQUOTE_INDENT_PER_LEVEL, list: false });
+      let body: string;
+      try {
+        body = this.parser.parse(token.tokens);
+      } finally {
+        pendingPrefix.pop();
+      }
+      return renderBlockquote(layout, body);
+    };
   }
   instance.use(extension);
 
@@ -1736,6 +1532,7 @@ export function renderDocument(
   glyphs: GlyphSet = UNICODE_GLYPHS,
   measure: Measure = NARROW_MEASURE,
   emojiOverride?: boolean,
+  resolveFenceLanguageFor?: FenceLanguageResolver,
 ): string {
-  return renderDocumentDetailed(source, targetWidth, glyphs, measure, emojiOverride).text;
+  return renderDocumentDetailed(source, targetWidth, glyphs, measure, emojiOverride, resolveFenceLanguageFor).text;
 }

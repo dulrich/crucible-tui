@@ -373,10 +373,17 @@ describe("renderDocument — fence language normalization silences highlight.js 
 // `src/render.ts`'s `emoji` computation at the top of `renderDocumentDetailed` and
 // `src/AGENTS.md`'s emoji section for why this is no longer a hardcoded constant.
 //
-// These tests fail if any of the three `markedTerminal()` construction sites — the
-// main one, or either per-budget cache (`paragraphRendererAt`, `headingRendererAt`) —
-// stop honoring the same `emoji` value, or if the config override stops reaching
+// These tests fail if the `markedTerminal()` construction and the `LayoutContext` stop
+// honouring the same `emoji` value, or if the config override stops reaching
 // `renderDocumentDetailed`.
+//
+// **They were written against three construction sites and now cover two seams** (WP-3 of
+// `plans/marked-terminal-replacement.md`). The two per-budget `markedTerminal()` caches —
+// built only because the library takes its width at construction — are gone; the owned
+// block renderers take the budget as a parameter and read `emoji` off the context. The
+// nested cases below are kept exactly as they were, because what they actually assert is
+// that substitution does not depend on whether a paragraph or heading sits inside a list
+// or a blockquote, and that property outlives the mechanism that used to threaten it.
 describe("renderDocument — emoji shortcode substitution follows the glyph tier (WP-11)", () => {
   test("unicode tier: a prose shortcode in a paragraph is substituted with its glyph", () => {
     const output = renderDocument("Ship it :rocket: today.\n", 80, UNICODE_GLYPHS);
@@ -408,10 +415,11 @@ describe("renderDocument — emoji shortcode substitution follows the glyph tier
     expect(plain).not.toContain("✅");
   });
 
-  test("unicode tier: a shortcode inside a loose list item's own budgeted paragraph renderer is substituted too", () => {
-    // Exercises `paragraphRendererAt` — the per-budget cache with its own
-    // `markedTerminal()` construction, which must carry the same `emoji` value.
-    // Substitution must not depend on whether a paragraph sits inside a list.
+  test("unicode tier: a shortcode inside a loose list item's own budgeted paragraph is substituted too", () => {
+    // A loose item's paragraph renders at the item's own budget rather than the full
+    // width. That used to mean a second `markedTerminal()` instance with its own `emoji`
+    // option; it now means one argument to `renderParagraph`, reading `ctx.emoji`.
+    // Substitution must not depend on whether a paragraph sits inside a list either way.
     const source = "- one\n\n  still one, with a shortcode :bulb: in its second paragraph\n\n- two\n";
     const output = renderDocument(source, 80, UNICODE_GLYPHS);
     const plain = stripAnsi(output);
@@ -419,13 +427,12 @@ describe("renderDocument — emoji shortcode substitution follows the glyph tier
     expect(plain).not.toContain(":bulb:");
   });
 
-  test("ascii tier: the same budgeted-paragraph seam keeps the literal, not a unicode-cached glyph", () => {
-    // The likeliest bug this WP guards against: `paragraphRendererAt`'s cache is keyed
-    // only by budget, so if it were built without `emoji` it would silently default to
-    // the library's own `true` regardless of tier. Proven by reverting the `emoji`
-    // argument at this call site alone (leaving the main construction correct) and
-    // confirming this exact source then renders 💡 at the ASCII tier — see the WP-11
-    // report for the reproduction. With `emoji` threaded through, it must not.
+  test("ascii tier: the same budgeted-paragraph seam keeps the literal, not a unicode glyph", () => {
+    // The bug WP-11 guarded against here was a per-budget cache built without `emoji`,
+    // silently defaulting to the library's own `true` regardless of tier — reproduced at
+    // the time by reverting the `emoji` argument at that one call site and watching this
+    // exact source render 💡 at the ASCII tier. WP-3 removed the cache, so the shape of
+    // the bug changed; the property under test did not.
     const source = "- one\n\n  still one, with a shortcode :bulb: in its second paragraph\n\n- two\n";
     const output = renderDocument(source, 80, ASCII_GLYPHS);
     const plain = stripAnsi(output);
@@ -433,10 +440,10 @@ describe("renderDocument — emoji shortcode substitution follows the glyph tier
     expect(plain).not.toContain("💡");
   });
 
-  test("ascii tier: a heading inside a blockquote — the budgeted-heading cache seam — also keeps the literal", () => {
-    // Same proof as above for `headingRendererAt`: a blockquote's non-zero
-    // `pendingPrefixWidth()` forces `budget !== targetWidth`, which is exactly what
-    // routes a nested heading through the per-budget cache instead of `originalHeading`.
+  test("ascii tier: a heading inside a blockquote — the budgeted-heading seam — also keeps the literal", () => {
+    // Same property one renderer over: a blockquote's non-zero `pendingPrefixWidth()`
+    // makes the heading's budget differ from the target width, which is what used to route
+    // it through the per-budget cache and now simply changes an argument.
     const output = renderDocument("> ## Heads :bulb:\n", 40, ASCII_GLYPHS);
     const plain = stripAnsi(output);
     expect(plain).toContain(":bulb:");

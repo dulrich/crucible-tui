@@ -188,6 +188,85 @@ describe("classifyDiffs", () => {
     expect(summary.ok).toBe(true);
   });
 
+  // -------------------------------------------------------------------------
+  // The detector ratchet (WP-3). Until this package a `detectors` diff under
+  // `--expect b` landed in `allowedB` and its *direction* was never checked, so a
+  // run that tripled the orphan count reported `ok: true`. The plan requires all
+  // three counts to be non-increasing at every package; this is the check that
+  // makes the harness able to see it.
+  // -------------------------------------------------------------------------
+
+  test("expect b: fails when a detector count rises for a (width, tier, ambiguous) group", () => {
+    const before = makeRecord({ detectors: { orphans: 2, overIndent: 1, columnZero: 0 } });
+    const after = makeRecord({
+      textSha: "moved",
+      detectors: { orphans: 5, overIndent: 1, columnZero: 0 },
+    });
+    const summary = classifyDiffs([{ before, after }], "b");
+    // The diff itself is still enumerated as allowed under b — it is the *direction*
+    // that fails the run, which is exactly the distinction that was missing.
+    expect(summary.allowedB).toHaveLength(1);
+    expect(summary.detectorRegressions).toEqual([
+      { width: 80, tier: "unicode", ambiguous: "narrow", detector: "orphans", before: 2, after: 5 },
+    ]);
+    expect(summary.ok).toBe(false);
+  });
+
+  test("expect b: each of the three detectors is ratcheted independently", () => {
+    const before = makeRecord({ detectors: { orphans: 4, overIndent: 4, columnZero: 4 } });
+    const after = makeRecord({
+      textSha: "moved",
+      detectors: { orphans: 1, overIndent: 9, columnZero: 7 },
+    });
+    const summary = classifyDiffs([{ before, after }], "b");
+    expect(summary.detectorRegressions.map((r) => r.detector).sort()).toEqual(["columnZero", "overIndent"]);
+    expect(summary.ok).toBe(false);
+  });
+
+  test("expect b: the ratchet is over the group's summed hits, not per file", () => {
+    // One file gets worse, another improves by more. The group is non-increasing, so the
+    // run passes — the same shape the overflow ratchet already has, one granularity finer
+    // (that one counts *combos that overflowed*, a per-file boolean, not overflowing lines).
+    const worse: PairedCombo = {
+      before: makeRecord({ file: "a.md", textSha: "a1", detectors: { orphans: 1, overIndent: 0, columnZero: 0 } }),
+      after: makeRecord({ file: "a.md", textSha: "a2", detectors: { orphans: 4, overIndent: 0, columnZero: 0 } }),
+    };
+    const better: PairedCombo = {
+      before: makeRecord({ file: "b.md", textSha: "b1", detectors: { orphans: 9, overIndent: 0, columnZero: 0 } }),
+      after: makeRecord({ file: "b.md", textSha: "b2", detectors: { orphans: 2, overIndent: 0, columnZero: 0 } }),
+    };
+    const summary = classifyDiffs([worse, better], "b");
+    expect(summary.detectorRegressions).toEqual([]);
+    expect(summary.ok).toBe(true);
+  });
+
+  test("the detector ratchet is grouped by (width, tier, ambiguous), not summed across them", () => {
+    const narrow: PairedCombo = {
+      before: makeRecord({ file: "a.md", ambiguous: "narrow", textSha: "n1", detectors: { orphans: 9, overIndent: 0, columnZero: 0 } }),
+      after: makeRecord({ file: "a.md", ambiguous: "narrow", textSha: "n2", detectors: { orphans: 0, overIndent: 0, columnZero: 0 } }),
+    };
+    const wide: PairedCombo = {
+      before: makeRecord({ file: "a.md", ambiguous: "wide", textSha: "w1", detectors: { orphans: 0, overIndent: 0, columnZero: 0 } }),
+      after: makeRecord({ file: "a.md", ambiguous: "wide", textSha: "w2", detectors: { orphans: 1, overIndent: 0, columnZero: 0 } }),
+    };
+    const summary = classifyDiffs([narrow, wide], "b");
+    expect(summary.detectorRegressions).toEqual([
+      { width: 80, tier: "unicode", ambiguous: "wide", detector: "orphans", before: 0, after: 1 },
+    ]);
+    expect(summary.ok).toBe(false);
+  });
+
+  test("expect a: the detector ratchet still fires, and agrees with the disallowed verdict", () => {
+    // Redundant under a — the diff is already disallowed — so this pins that the two
+    // cannot disagree rather than adding a second reason to fail.
+    const before = makeRecord({ detectors: { orphans: 0, overIndent: 0, columnZero: 0 } });
+    const after = makeRecord({ detectors: { orphans: 1, overIndent: 0, columnZero: 0 } });
+    const summary = classifyDiffs([{ before, after }], "a");
+    expect(summary.disallowed).toHaveLength(1);
+    expect(summary.detectorRegressions).toHaveLength(1);
+    expect(summary.ok).toBe(false);
+  });
+
   test("expect a: the overflow ratchet is not evaluated (it only governs class B)", () => {
     const before = makeRecord({ overflowed: false });
     const after = makeRecord({ overflowed: true, textSha: "irrelevant-here" });

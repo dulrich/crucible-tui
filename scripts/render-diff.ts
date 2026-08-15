@@ -400,6 +400,35 @@ export interface OverflowRegression {
   after: number;
 }
 
+/**
+ * A `(width, tier, ambiguous)` group where at least one of the three detector counts rose.
+ *
+ * **The hole this closes.** Until WP-3 a `detectors` diff under `--expect b` was swept into
+ * `allowedB` and its *direction* was never checked: `classifyDiffs` computed a
+ * `before > after` comparison for `overflowed` alone, so a package that tripled the orphan
+ * count reported `ok: true`. Under `--expect a` it was invisible, because *any*
+ * non-class-C diff failed there — which is why WP-2 never hit it. The plan requires all
+ * three counts (`findListOrphans`, `findContinuationOverIndent`, `findColumnZeroMarkers`)
+ * to be **non-increasing at every package**, so this mirrors `OverflowRegression` and is
+ * folded into `ok` the same way.
+ *
+ * **It sums hits, where the overflow ratchet counts combos.** `ComboRecord.overflowed` is a
+ * per-file boolean, so `overflowRegressions` measures how many *files* overflow, not how
+ * many lines: a file going from ten overflowing lines to one shows no improvement there.
+ * That is conservative in the right direction but coarser than the plan's wording implies —
+ * recorded rather than changed, because tightening it would move a number every archived
+ * run compares against. The detector counts are already integers per combo, so summing them
+ * costs nothing and gives the finer measure for free.
+ */
+export interface DetectorRegression {
+  width: number;
+  tier: GlyphTierName;
+  ambiguous: AmbiguousModeName;
+  detector: keyof DetectorCounts;
+  before: number;
+  after: number;
+}
+
 export interface ClassificationSummary {
   expect: ExpectClass;
   totalCombos: number;
@@ -412,6 +441,15 @@ export interface ClassificationSummary {
   allowedB: ComboDiff[];
   /** `expect === "b"` only: `(width, tier, ambiguous)` groups where overflow rose. */
   overflowRegressions: OverflowRegression[];
+  /**
+   * `(width, tier, ambiguous, detector)` combinations whose summed hit count rose.
+   *
+   * Computed and enforced regardless of `expect`, unlike `overflowRegressions`. Under
+   * `--expect a` that is strictly redundant — a `detectors` diff already lands in
+   * `disallowed` there — so it can only ever agree; under `--expect b` it is the only thing
+   * standing between a detector regression and a green run.
+   */
+  detectorRegressions: DetectorRegression[];
   /**
    * `pairs` was empty. **A differ that reports "no differences" because it is
    * comparing nothing is the classic failure of this exact tool** (this WP's own
@@ -448,6 +486,9 @@ export interface ClassifyOptions {
   allowEmpty?: boolean;
 }
 
+/** The three detector channels, in the order the plan names them. */
+const DETECTOR_NAMES: Array<keyof DetectorCounts> = ["orphans", "overIndent", "columnZero"];
+
 export function classifyDiffs(
   pairs: PairedCombo[],
   expect: ExpectClass,
@@ -463,6 +504,7 @@ export function classifyDiffs(
       disallowed: [],
       allowedB: [],
       overflowRegressions: [],
+      detectorRegressions: [],
       emptyComparison: true,
       ok: false,
     };
@@ -511,8 +553,43 @@ export function classifyDiffs(
     }
   }
 
+  // The three detector counts, summed per `(width, tier, ambiguous)` group and compared in
+  // the same direction the plan requires them to move: down, or not at all.
+  const detectorSums = new Map<string, { before: DetectorCounts; after: DetectorCounts }>();
+  for (const { before, after } of pairs) {
+    const key = groupKey(before);
+    let entry = detectorSums.get(key);
+    if (entry === undefined) {
+      entry = { before: { orphans: 0, overIndent: 0, columnZero: 0 }, after: { orphans: 0, overIndent: 0, columnZero: 0 } };
+      detectorSums.set(key, entry);
+    }
+    for (const detector of DETECTOR_NAMES) {
+      entry.before[detector] += before.detectors[detector];
+      entry.after[detector] += after.detectors[detector];
+    }
+  }
+  const detectorRegressions: DetectorRegression[] = [];
+  for (const [key, entry] of detectorSums) {
+    const [widthStr, tier, ambiguous] = key.split("\u0000") as [string, GlyphTierName, AmbiguousModeName];
+    for (const detector of DETECTOR_NAMES) {
+      if (entry.after[detector] > entry.before[detector]) {
+        detectorRegressions.push({
+          width: Number(widthStr),
+          tier,
+          ambiguous,
+          detector,
+          before: entry.before[detector],
+          after: entry.after[detector],
+        });
+      }
+    }
+  }
+
   const ok =
-    classC.length === 0 && disallowed.length === 0 && (expect === "a" || overflowRegressions.length === 0);
+    classC.length === 0 &&
+    disallowed.length === 0 &&
+    detectorRegressions.length === 0 &&
+    (expect === "a" || overflowRegressions.length === 0);
 
   return {
     expect,
@@ -522,6 +599,7 @@ export function classifyDiffs(
     disallowed,
     allowedB,
     overflowRegressions,
+    detectorRegressions,
     emptyComparison,
     ok,
   };
@@ -861,7 +939,8 @@ function printClassification(
   console.log(
     `render-diff: expect=${summary.expect} combos=${summary.totalCombos} diffed=${summary.diffedCombos} ` +
       `classC=${summary.classC.length} disallowed=${summary.disallowed.length} allowedB=${summary.allowedB.length} ` +
-      `overflowRegressions=${summary.overflowRegressions.length} errorsA=${errorsBefore} errorsB=${errorsAfter} ` +
+      `overflowRegressions=${summary.overflowRegressions.length} ` +
+      `detectorRegressions=${summary.detectorRegressions.length} errorsA=${errorsBefore} errorsB=${errorsAfter} ` +
       `unpairedA=${unpairedBefore} unpairedB=${unpairedAfter} ok=${summary.ok}`,
   );
   if (unpairedBefore > 0 || unpairedAfter > 0) {
@@ -885,6 +964,12 @@ function printClassification(
     console.log(
       `  OVERFLOW REGRESSION width=${reg.width} tier=${reg.tier} ambiguous=${reg.ambiguous} ` +
         `before=${reg.before} after=${reg.after}`,
+    );
+  }
+  for (const reg of summary.detectorRegressions) {
+    console.log(
+      `  DETECTOR REGRESSION ${reg.detector} width=${reg.width} tier=${reg.tier} ` +
+        `ambiguous=${reg.ambiguous} before=${reg.before} after=${reg.after}`,
     );
   }
 }

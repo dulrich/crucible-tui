@@ -1,9 +1,14 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { loadConfig, writeHighlightAlias, type MdviewConfig } from "../src/config";
-import { getBuiltinAliases, isSupportedLanguage, resolveFenceLanguage, setHighlightAliases } from "../src/lang";
+import {
+  getBuiltinAliases,
+  isSupportedLanguage,
+  makeFenceLanguageResolver,
+  resolveFenceLanguage,
+} from "../src/lang";
 
 async function withTempDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "mdview-config-test-"));
@@ -221,48 +226,30 @@ describe("writeHighlightAlias (WP-4)", () => {
   });
 });
 
-// --- lang.ts additions (WP-4: config-sourced aliases layered over the built-ins) ---
+// --- lang.ts: the fence-language resolver (F4, WP-3 of the renderer replacement) ---
 //
-// These live here rather than in tests/lang.test.ts because this WP's file scope is
-// `tests/config.test.ts`. `setHighlightAliases` is global, mutable module state (the
-// only way a `highlight-as` write can affect `render.ts`'s single-argument
-// `resolveFenceLanguage(token.lang)` call site without editing render.ts).
+// These live here rather than in `tests/lang.test.ts` because the WP that added
+// config-sourced aliases scoped itself to `tests/config.test.ts`, and moving them now would
+// churn two files to say the same thing.
 //
-// **Module state is shared across test files in the same `bun test` invocation —
-// re-verified on Bun 1.3.11 in WP-6 of `plans/tn-review-remediation.md`, with a
-// two-line probe (one file sets `query -> sql`, a second file that never mentions
-// the symbol observes `sql`, not the built-in default).** Deleting the `afterEach`
-// below reproduces the failure directly: `bun test tests/config.test.ts
-// tests/lang.test.ts` goes from 31 pass to 30 pass / 1 fail, because the last test
-// in this `describe` leaves `query -> sql` set and `tests/lang.test.ts` expects the
-// built-in default. **Today's full-suite gate (`bun test tests`) stays green even
-// without this reset — but only by accident**: `tests/cli.test.ts` happens to run
-// after this file and before `tests/lang.test.ts`, and one of its tests calls the
-// real `main()` against a real file, which loads the real config and calls
-// `setHighlightAliases` as a side effect, incidentally wiping the leak before
-// `tests/lang.test.ts` runs. **That ordering is not alphabetical and is not
-// guaranteed.** Measured on the full suite, the files run in this order: sweep,
-// overflow, glyphs, render, containment, render-lists, config, detectors, wrap,
-// width, witnesses, cli, frontmatter, table, licenses, lang. And the *same two
-// files*, passed to `bun test` in the *same* argument order, ran in opposite
-// orders in two different checkouts of this repo — which is exactly how WP-6's
-// brief reached the wrong conclusion about whether the leak exists at all. The
-// masking above is therefore luck that is re-rolled per machine: a reordering, a
-// rename, or a change to what `tests/cli.test.ts` exercises brings it back. Both
-// hooks: `afterEach` restores the built-in-only state so no later file observes a
-// leftover override, and `beforeEach` protects this describe's own early tests
-// (which assume no user alias is installed) from a leak arriving the other way —
-// from an earlier-running file or test, exactly what `tests/cli.test.ts` does
-// today.
-describe("lang.ts: config-sourced highlight aliases (WP-4)", () => {
-  beforeEach(() => {
-    setHighlightAliases({});
-  });
-
-  afterEach(() => {
-    setHighlightAliases({});
-  });
-
+// **What changed, and why the isolation hooks are gone.** This describe block used to open
+// with a `beforeEach`/`afterEach` pair calling `setHighlightAliases({})`, and a thirty-line
+// comment explaining that `src/lang.ts` carried mutable module state, that Bun shares module
+// state across test files in one invocation, that deleting the `afterEach` reproduced a real
+// cross-file failure (`bun test tests/config.test.ts tests/lang.test.ts`: 31 pass → 30 pass /
+// 1 fail), and that the full-suite gate stayed green only by an accident of file ordering
+// which had been measured to differ between two checkouts of this repo.
+//
+// F4 removed the state rather than the symptom. `setHighlightAliases` is gone;
+// `makeFenceLanguageResolver` returns a resolver over a frozen alias map, and `src/cli.ts`
+// threads it into `renderDocumentDetailed` instead of installing it process-wide. There is
+// no longer anything for one test — or one file — to leak into another, so the hooks are not
+// merely unnecessary, they have nothing left to reset. The reproduction above was re-run
+// with them removed and stays green; see this WP's report for the verbatim result.
+//
+// `resolveFenceLanguage` survives as the defaulted compatibility wrapper the plan requires:
+// the same single-argument call shape, resolving against the built-in aliases alone.
+describe("lang.ts: the fence-language resolver and its built-in defaults", () => {
   test("getBuiltinAliases exposes the locked defaults", () => {
     expect(getBuiltinAliases()).toEqual({ dataviewjs: "javascript", dataview: "sql" });
   });
@@ -274,35 +261,53 @@ describe("lang.ts: config-sourced highlight aliases (WP-4)", () => {
     expect(isSupportedLanguage("not-a-real-language")).toBe(false);
   });
 
-  test("with no user aliases installed, resolution is exactly the built-in map", () => {
+  test("the compatibility wrapper resolves against exactly the built-in map", () => {
     expect(resolveFenceLanguage("dataviewjs")).toBe("javascript");
     expect(resolveFenceLanguage("tasks")).toBe("plaintext");
   });
 
+  test("a resolver built with no user aliases matches the compatibility wrapper", () => {
+    const resolve = makeFenceLanguageResolver();
+    expect(resolve("dataviewjs")).toBe("javascript");
+    expect(resolve("tasks")).toBe("plaintext");
+    expect(resolve(undefined)).toBe(undefined);
+    expect(resolve("")).toBe("");
+  });
+
   test("a user alias for a fence with no built-in default is layered in", () => {
-    setHighlightAliases({ tasks: "yaml" });
-    expect(resolveFenceLanguage("tasks")).toBe("yaml");
+    expect(makeFenceLanguageResolver({ tasks: "yaml" })("tasks")).toBe("yaml");
   });
 
   test("a user alias for a fence that already has a built-in default wins", () => {
-    setHighlightAliases({ dataviewjs: "python" });
-    expect(resolveFenceLanguage("dataviewjs")).toBe("python");
+    expect(makeFenceLanguageResolver({ dataviewjs: "python" })("dataviewjs")).toBe("python");
   });
 
   test("a user alias to an unsupported language still falls back to plaintext", () => {
-    // setHighlightAliases itself does not validate — the CLI's write path does
-    // (`isSupportedLanguage`, checked in `mdview highlight-as`) — so this pins that
-    // resolveFenceLanguage's own supportsLanguage() guard is the last line of defense
-    // regardless of how an alias reached the map.
-    setHighlightAliases({ tasks: "not-a-real-language" });
-    expect(resolveFenceLanguage("tasks")).toBe("plaintext");
+    // The factory does not validate — the CLI's write path does (`isSupportedLanguage`,
+    // checked in `mdview highlight-as`) — so this pins that the resolver's own
+    // supportsLanguage() guard is the last line of defense regardless of how an alias
+    // reached the map.
+    expect(makeFenceLanguageResolver({ tasks: "not-a-real-language" })("tasks")).toBe("plaintext");
   });
 
-  test("calling setHighlightAliases again fully replaces the previous layering", () => {
-    setHighlightAliases({ tasks: "yaml" });
-    setHighlightAliases({ query: "sql" });
+  test("two resolvers are independent, and neither touches the built-in wrapper", () => {
+    // The behavioural difference from the setter this replaced, stated as a test: building a
+    // second resolver used to *replace* the first's layering process-wide.
+    const first = makeFenceLanguageResolver({ tasks: "yaml" });
+    const second = makeFenceLanguageResolver({ query: "sql" });
+    expect(first("tasks")).toBe("yaml");
+    expect(first("query")).toBe("plaintext");
+    expect(second("tasks")).toBe("plaintext");
+    expect(second("query")).toBe("sql");
     expect(resolveFenceLanguage("tasks")).toBe("plaintext");
-    expect(resolveFenceLanguage("query")).toBe("sql");
+    expect(resolveFenceLanguage("query")).toBe("plaintext");
+  });
+
+  test("the merged alias map is frozen, so a resolver cannot be re-pointed after the fact", () => {
+    const aliases: Record<string, string> = { tasks: "yaml" };
+    const resolve = makeFenceLanguageResolver(aliases);
+    aliases.tasks = "sql";
+    expect(resolve("tasks")).toBe("yaml");
   });
 });
 

@@ -25,26 +25,50 @@ const LANG_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /**
- * The map `resolveFenceLanguage` actually consults: the built-in aliases above,
- * with any user-configured `highlightAs` entries (WP-4, `src/config.ts`)
- * layered over them. Module-level state rather than a parameter, because
- * `src/render.ts` calls `resolveFenceLanguage(token.lang)` with a single
- * argument and is out of scope here — `src/cli.ts` calls `setHighlightAliases`
- * once at startup, before any rendering happens, which is what lets a
- * `highlight-as` write actually affect the next render without touching
- * `render.ts`'s call site.
+ * A resolved fence-language resolver: an immutable alias map, closed over.
+ *
+ * **F4, and the real fix rather than its shape** (`plans/marked-terminal-replacement.md`).
+ * Until WP-3 this module carried a mutable `effectiveAliases` module global and a
+ * `setHighlightAliases` setter, because `src/render.ts` called `resolveFenceLanguage(lang)`
+ * with a single argument and there was no seam to hand a configured map through. WP-2 built
+ * that seam — `LayoutContext.resolveFenceLanguage` — and this is what now lands in it: a
+ * value produced once, at startup, from the user's `highlightAs` config, and threaded.
+ *
+ * The consequence worth stating: **there is no process state in this module any more.** The
+ * `beforeEach`/`afterEach` pair in `tests/config.test.ts` existed only to stop one test file
+ * leaking an installed alias into another through that global — a leak the comment above it
+ * documents as real, and as masked in the full suite only by an accident of Bun's file
+ * ordering. With the global gone, there is nothing left to leak and nothing left to reset.
  */
-let effectiveAliases: Readonly<Record<string, string>> = LANG_ALIASES;
+export type FenceLanguageResolver = (rawLang: string | undefined) => string | undefined;
 
 /**
- * Install user-configured fence-language aliases, layered over the built-in
- * map — a user entry for a fence that also has a built-in default wins.
- * Called once by `src/cli.ts` before rendering; calling it again (e.g. between
- * tests) fully replaces the previous layering rather than accumulating.
+ * Build a resolver over the built-in aliases with `userAliases` layered on top — a user
+ * entry for a fence that also has a built-in default wins.
+ *
+ * The merged map is frozen and captured by the returned closure, so a resolver handed to a
+ * `LayoutContext` cannot be re-pointed partway through a document. Call it once per process
+ * (`src/cli.ts`, after `loadConfig`); calling it again produces an independent resolver
+ * rather than mutating the first, which is the entire behavioural difference from the
+ * setter it replaces.
  */
-export function setHighlightAliases(userAliases: Readonly<Record<string, string>> = {}): void {
-  effectiveAliases = { ...LANG_ALIASES, ...userAliases };
+export function makeFenceLanguageResolver(
+  userAliases: Readonly<Record<string, string>> = {},
+): FenceLanguageResolver {
+  const aliases: Readonly<Record<string, string>> = Object.freeze({ ...LANG_ALIASES, ...userAliases });
+  return (rawLang) => resolveWith(aliases, rawLang);
 }
+
+/**
+ * The built-in-only resolver, built once because its input is a frozen constant.
+ *
+ * This is what the defaulted compatibility wrapper below resolves through, and what every
+ * caller that never had user aliases in play — `scripts/sweep.ts`, `scripts/render-diff.ts`,
+ * every test that renders directly — gets by default. Sharing one instance rather than
+ * building a fresh closure per call is safe precisely because there is nothing mutable in
+ * it.
+ */
+const BUILTIN_RESOLVER: FenceLanguageResolver = makeFenceLanguageResolver();
 
 /** The built-in alias map alone, e.g. for `highlight-as --help`'s reference list. */
 export function getBuiltinAliases(): Readonly<Record<string, string>> {
@@ -62,7 +86,7 @@ export function isSupportedLanguage(language: string): boolean {
 }
 
 /**
- * Resolve a fence's declared language to one `cli-highlight` supports.
+ * Resolve a fence's declared language to one `cli-highlight` supports, against `aliases`.
  *
  * - Marked puts the *whole* fence info-string tail into `token.lang` — ` ```js
  *   {highlight=1} ` arrives as `"js {highlight=1}"` — so only the first
@@ -77,13 +101,28 @@ export function isSupportedLanguage(language: string): boolean {
  *   is not what "unsupported" should mean here. `"plaintext"` is itself always
  *   supported, so the fallback cannot recurse into the same problem.
  */
-export function resolveFenceLanguage(rawLang: string | undefined): string | undefined {
+function resolveWith(
+  aliases: Readonly<Record<string, string>>,
+  rawLang: string | undefined,
+): string | undefined {
   if (rawLang === undefined) return rawLang;
   const trimmed = rawLang.trim();
   if (trimmed === "") return rawLang;
 
   const firstWord = trimmed.split(/\s+/)[0] ?? trimmed;
   const lower = firstWord.toLowerCase();
-  const aliased = effectiveAliases[lower] ?? lower;
+  const aliased = aliases[lower] ?? lower;
   return supportsLanguage(aliased) ? aliased : "plaintext";
+}
+
+/**
+ * The defaulted compatibility wrapper the plan requires: resolution against the built-in
+ * aliases alone, with the single-argument call shape every existing caller already uses.
+ *
+ * A caller with user aliases to honour builds its own resolver with
+ * `makeFenceLanguageResolver` and threads it — `src/cli.ts` is the only one, and
+ * `renderDocumentDetailed` takes it as a parameter rather than reading a global.
+ */
+export function resolveFenceLanguage(rawLang: string | undefined): string | undefined {
+  return BUILTIN_RESOLVER(rawLang);
 }
