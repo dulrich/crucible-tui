@@ -37,7 +37,7 @@ import type { LayoutContext } from "./layout-context";
  * undo it are still the library's. It stops being needed only when the last of those is
  * owned, which is WP-6.
  */
-const COLON_REPLACER = "*#COLON|*";
+export const COLON_REPLACER = "*#COLON|*";
 
 /**
  * `marked-terminal`'s hard-break marker (`index.js:26`).
@@ -71,7 +71,7 @@ const HARD_RETURN = "\r";
  */
 const HARD_RETURN_REPLACEMENT = String(/\n/g);
 
-function fixHardReturn(text: string): string {
+export function fixHardReturn(text: string): string {
   return text.replace(HARD_RETURN, HARD_RETURN_REPLACEMENT);
 }
 
@@ -107,7 +107,7 @@ function fixHardReturn(text: string): string {
  */
 const STYLE_CODES = (colors as unknown as { styles: Record<string, { open: string; close: string }> }).styles;
 
-interface Styler {
+export interface Styler {
   readonly open: string;
   readonly close: string;
   readonly openAll: string;
@@ -122,7 +122,7 @@ interface Styler {
  * `\x1b[2m\x1b[90m\x1b[9m` … `\x1b[29m\x1b[39m\x1b[22m`, and the nesting order is not
  * cosmetic — it is the byte order class A is measured against.
  */
-function createStyler(name: string, parent?: Styler): Styler {
+export function createStyler(name: string, parent?: Styler): Styler {
   const code = STYLE_CODES[name];
   if (!code) throw new Error(`mdview: no style named ${name} in the colour table`);
   return {
@@ -190,7 +190,7 @@ function stringEncaseCRLFWithFirstIndex(string: string, prefix: string, postfix:
  *
  * Both are in the library's output today, so both are class-A obligations, not polish.
  */
-function applyStyle(ctx: LayoutContext, chain: Styler, input: string): string {
+export function applyStyle(ctx: LayoutContext, chain: Styler, input: string): string {
   // `chalk`'s own guard: level 0, or an empty string, and the input comes back untouched.
   if (!ctx.color || !input) return input;
 
@@ -294,7 +294,7 @@ function insertEmojis(text: string): string {
   });
 }
 
-function emojify(ctx: LayoutContext, text: string): string {
+export function emojify(ctx: LayoutContext, text: string): string {
   // `this.emoji` is `insertEmojis` when the option is on and `identity` when it is off
   // (`index.js:61`). The option is `emojiOverride ?? tier === unicode`, computed once per
   // render and carried on the context.
