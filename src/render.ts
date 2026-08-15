@@ -26,7 +26,14 @@ import {
 } from "./inline";
 import { resolveFenceLanguage, type FenceLanguageResolver } from "./lang";
 import { createLayoutContext } from "./layout-context";
-import { stripAnsi, trackListLine, type OpenListItem } from "./list-lines";
+import {
+  MARKER_SHAPED_LINE,
+  isGuardShapedLine,
+  stripAnsi,
+  trackListLine,
+  type OpenListItem,
+} from "./list-lines";
+import { TASK_GLYPHS, renderList, substituteBullets } from "./lists";
 import { NARROW_MEASURE, type Measure } from "./width";
 
 // Obsidian wiki-links aren't markdown; style them before parsing so they render as
@@ -43,6 +50,12 @@ const WIKI_LINK = /(!)?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
 // extension only recognizes " ", "x", "X". Line pattern and state table are kept
 // aligned with the same web renderer for the same reason, mapping to terminal glyphs
 // instead of icon markers (there is no DOM here to mount SVGs into).
+//
+// **The table moved to `src/lists.ts` in WP-4 and is imported back.** `renderTaskState`
+// there renders the two positions this line-anchored regex cannot reach — a task item in a
+// blockquote, and one in an ordered list — and the two must agree about what each state
+// looks like. One table, imported one way: `render.ts` already depends on `lists.ts`, and
+// `lists.ts` depends on nothing here.
 const TASK_STATE_LINE = /^(\s*[-*+]\s+)\[(.)\](\s)/;
 
 // Line-by-line pre-pass with a fence toggle, so neither rewrite runs inside a fenced
@@ -52,31 +65,6 @@ const TASK_STATE_LINE = /^(\s*[-*+]\s+)\[(.)\](\s)/;
 // `[[slug]]` inside fenced example commands.
 const FENCE_LINE = /^\s*(```|~~~)/;
 
-const TASK_GLYPHS: Record<string, string> = {
-  " ": "○",
-  x: "✓",
-  X: "✓",
-  "/": "◐",
-  "-": "✗",
-  ">": "➤",
-  "<": "◷",
-  "?": "?",
-  "!": "!",
-  "*": "★",
-  '"': "❝",
-  l: "📍",
-  b: "🔖",
-  i: "ℹ",
-  S: "🐖",
-  I: "💡",
-  p: "👍",
-  c: "👎",
-  f: "🔥",
-  k: "🔑",
-  w: "🏆",
-  u: "⬆",
-  d: "⬇",
-};
 
 function styleWikiLink(label: string): string {
   // cyan + underline, per the plan's suggestion (plans/mdview.md WP-2).
@@ -229,28 +217,28 @@ function preprocessBody(body: string, glyphs: GlyphSet): string {
     .join("\n");
 }
 
-// `marked-terminal` only ever calls `renderer.list()` — never `renderer.listitem()` —
-// because `Renderer.prototype.list` iterates a list token's items and calls
-// `this.listitem(...)` on its own *internal* Renderer instance, not on the extension
-// object marked actually dispatches through. Confirmed by instrumenting both hooks
+// **`listitem` and `checkbox` were dead seams until WP-4, and that is why `src/lists.ts`
+// exists.** `marked-terminal` only ever called `renderer.list()` — never
+// `renderer.listitem()` — because `Renderer.prototype.list` iterated a list token's items
+// and called `this.listitem(...)` on its own *internal* Renderer instance, not on the
+// extension object marked dispatches through. Confirmed by instrumenting both hooks
 // against a two-level nested list: `list` fired twice (once per nesting level),
-// `listitem` fired zero times. So the depth-tracking *and* the wrapping both have to
-// live in the `list` override; there is no working `listitem` seam to hang the wrap
-// on. (The originating brief for this WP said to override both — that half of it
-// doesn't hold up against the actual dispatch path, verified empirically as above.)
+// `listitem` fired zero times. So the depth-tracking *and* the wrapping both had to live
+// in the `list` override, and the only way to reach the other two was to own composition
+// outright — which `src/lists.ts` now does.
 //
 // Because nested list tokens are rendered synchronously, depth-first, while an
 // ancestor's own `list()` call is still on the stack (a nested list is reached via
-// `this.parser.parse(item.tokens, …)` inside the *internal* `listitem`), a simple
-// enter/exit counter on our `list` override is accurate at the point each level's
+// `this.parser.parse(item.tokens, …)` inside `composeItem`), a simple
+// enter/exit counter on our `list` renderer is accurate at the point each level's
 // body is produced.
 //
-// Geometry: `marked-terminal` prefixes every item's own bullet line with `"* "` (2
-// cols) inside `listitem`, then blanket-indents the *entire* composed body (bullets,
+// Geometry: composition prefixes every item's own bullet line with `"* "` (2
+// cols), then blanket-indents the *entire* composed body (bullets,
 // continuations, and any already-rendered nested sublists alike) by `tab` (4 cols)
 // once per enclosing `list()` call — including once more for every ancestor list
-// still on the stack above the current one, applied *after* this override returns.
-// So immediately after our own captured original `list()` call returns (i.e. before
+// still on the stack above the current one, applied *after* this renderer returns.
+// So immediately after our own `renderList` call returns (i.e. before
 // any of those still-pending ancestor blankets are applied), a line's width already
 // includes this level's own contribution (2 bullet + 4 indent = 6) but *not* the
 // `4 * (ancestors still to come)` that will land on top of it later. If `depth` is
@@ -279,24 +267,6 @@ function currentListBudget(depth: number, targetWidth: number, outerColumns: num
 // makes ordered-list markers — wider than `"* "` — work without special-casing them.
 const LIST_LINE_PREFIX = /^(\s*)((?:\*|\d+\.)\s)?/;
 
-// Matches an unordered item's leading marker exactly as `marked-terminal` emits it:
-// this level's own indent (already applied by the time `substituteBullets` runs), then a
-// literal `*` immediately followed by the one space `listitem` always inserts after it.
-// Ordered markers (`\d+\.`) never match `\*`, so numeric markers are never touched.
-//
-// **The indent is the four-column grid, not `\s*` — this was `/^(\s*)\*(\s)/` and that
-// was too loose (WP-2f).** The old comment reasoned that a literal `*` at the start of a
-// rendered line "is, in practice, always the marker", but this pass runs *after*
-// `rewrapListBody`, which chooses where lines break and can therefore put an author's
-// own bare `*` at the start of a continuation line. `\s*` then claimed it and rewrote the
-// author's text into a bullet glyph — and no width gate can see a substitution. The
-// one-space guard both wrapping overrides use is sized for `isPointedLine`'s
-// exact-multiple-of-four indent (`LIBRARY_POINTED_LINE`), so a looser regex here is a
-// consumer that guard cannot defeat. Every genuine marker line is on that grid because
-// `indentLines` only ever adds `LIST_INDENT_PER_LEVEL` at a time: measured over a
-// 1,000-file corpus sample at five widths, **79,410 substitutions, 0 of them off-grid**.
-const UNORDERED_MARKER_LINE = /^((?: {4})+)\*(\s)/;
-
 // `marked-terminal`'s own blanket indent is `this.tab` (4) columns per nesting level,
 // applied even at the outermost level — see the brief's worked example (`"    * alpha"`
 // at depth 1, `"        * beta"` at depth 2, …). Once a list's `fixNestedLists` pass has
@@ -324,15 +294,22 @@ const ORDERED_MARKER_SUFFIX_WIDTH = 2;
 /**
  * How many marker lines a list level can renumber, i.e. the largest number it can emit.
  *
- * **Not `token.items.length`.** `numberedLines` (`index.js:565-578`) walks the composed
- * body counting *pointed* lines, and `isPointedLine`'s regex is
- * `^(?:<tab>)*(?:\*|\d+\.)` — leading tabs allowed — so an already-rendered nested
- * list's marker lines still count against the *parent's* counter. A 3-item ordered list
- * whose items carry nested lists therefore numbers well past 3. Counting the whole
- * subtree is an upper bound that is exact whenever nothing nested is present.
+ * **Not `token.items.length`, and deliberately still not, after WP-4.** The library's
+ * `numberedLines` (`index.js:565-578`) walked the composed body counting *pointed* lines,
+ * and `isPointedLine`'s regex is `^(?:<tab>)*(?:\*|\d+\.)`, so an already-rendered nested
+ * list's marker lines counted against the *parent's* counter and a 3-item ordered list
+ * with nested lists numbered well past 3. `src/lists.ts`' `composeOrdered` fixed that
+ * (family B1), which makes the true maximum exactly `token.items.length` and makes this an
+ * over-estimate.
  *
- * `token.start` is deliberately ignored: `Renderer.prototype.list` reads it
- * (`index.js:141`) and never uses it, so a list authored `5.` still renders `1.`.
+ * **It is left over-estimating on purpose.** This feeds `pendingPrefix`, hence every wrap
+ * budget in the document, so narrowing it moves text that has nothing to do with markers —
+ * a diff belonging to no enumerated family. The item budget is WP-5's; the follow-up is
+ * recorded here rather than taken.
+ *
+ * `token.start` is deliberately ignored: `Renderer.prototype.list` read it
+ * (`index.js:142`) and never used it, so a list authored `5.` still renders `1.`, and
+ * `composeOrdered` keeps ignoring it.
  */
 function markerLineCount(token: Tokens.List): number {
   let count = token.items.length;
@@ -352,56 +329,13 @@ function nestedMarkerLineCount(tokens: Token[] | undefined): number {
   return count;
 }
 
-/**
- * A rendered line `marked-terminal` will mistake for a list marker of its own.
- *
- * When `list` composes its body, an item's continuation lines are still at column 0,
- * and `isPointedLine` (`index.js:531`) tests `^(?:<tab>)*(?:\*|\d+\.)` — no space
- * required after the `*`. So a wrapped line that merely *begins* with `**bold**` or
- * `1.5x` is taken for a marker line, and in an **ordered** list `numberedLine` then
- * rewrites it: it consumes that item's number and replaces the first `"* "` *anywhere*
- * in the line — inside the `**` pair — with `"N. "`. The item's text is corrupted and
- * every later item is renumbered. Measured live: 1 occurrence in a 1,000-file corpus
- * sample, 59 more lines one list-type away from it.
- *
- * This is a `marked-terminal` landmine, not ours, and it predates WP-2b — but WP-2b
- * decides where a loose item's lines break, so it decides whether the landmine is
- * stepped on, and re-wrapping a corpus sample lit it once in 1,000 files where the old
- * wrap lit it zero times. The `paragraph` renderer defuses it for the lines it owns: a
- * continuation line that starts like a marker is given a single leading space, which
- * `isPointedLine` cannot match (its indent group is *exactly* four spaces at a time),
- * so the library pads and numbers the line as the continuation it is. That paragraph is
- * re-wrapped one column narrower first, so the guard space costs no width.
- *
- * Only continuation lines are guarded. A paragraph's *first* line is marker-shaped or
- * not regardless of where it wraps, and for an item's first paragraph the real marker
- * lands in front of it anyway.
- */
-const MARKER_SHAPED_LINE = /^(?:\*|\d+\.)/;
-
-/**
- * A rendered line that *reads* as a stray list marker sitting at column 0.
- *
- * **A second marker shape, and the two are answering different questions.**
- * `MARKER_SHAPED_LINE` above is `isPointedLine`'s shape: what `marked-terminal` will
- * mistake for a marker of its own and renumber. This one is `src/detectors.ts`'s
- * `COLUMN_ZERO_MARKER` — a broader bullet set, and a required space after it — and it asks
- * the human question instead: does this line look, to a reader, like a bullet that escaped
- * its list? A wrapped prose line beginning `+ sources` immediately above an indented list
- * is not a renumbering hazard (`isPointedLine` does not recognise `+` at all) and is still
- * a line nobody meant to write.
- *
- * **It is a copy, and that is a constraint, not a convenience.** `src/render.ts`
- * deliberately does not import `src/detectors.ts` — `src/list-lines.ts` exists precisely so
- * the re-alignment pass can share the detectors' line vocabulary without pulling the
- * detector module into the shipped binary's import graph — and neither of those two files
- * is in this package's scope. The right home for this regex is `list-lines.ts`, beside
- * `LIST_BULLET`, with `detectors.ts` importing it; **that move belongs to whichever of WP-4
- * or WP-7 next has both files open**, and until it happens the two spellings must be kept
- * in step by hand. Recorded here rather than left for someone to discover.
- */
-const COLUMN_ZERO_SHAPED_LINE = /^(?:[\u2022*\-\u25e6\u2023+]|\d+\.)\s/;
-
+// `MARKER_SHAPED_LINE` and `COLUMN_ZERO_MARKER` moved to `src/list-lines.ts` in WP-4 of
+// `plans/marked-terminal-replacement.md`, and `isGuardShapedLine` is the union both
+// wrapping seams below guard with. The second of the two used to be declared here *and* in
+// `src/detectors.ts`, spelled with `\u` escapes in one file and literal glyphs in the other,
+// kept in step by hand with no gate able to see them drift; this file's own note said the
+// move belonged to whichever of WP-4 or WP-7 next had both files open. See those regexes'
+// doc comments for what each one is asking and why they are two shapes rather than one.
 
 /**
  * The width of the widest marker this list level can emit — 2 for `"* "`, but 4 for an
@@ -419,80 +353,6 @@ const COLUMN_ZERO_SHAPED_LINE = /^(?:[\u2022*\-\u25e6\u2023+]|\d+\.)\s/;
 function listMarkerWidth(token: Tokens.List): number {
   if (!token.ordered) return UNORDERED_MARKER_WIDTH;
   return String(Math.max(1, markerLineCount(token))).length + ORDERED_MARKER_SUFFIX_WIDTH;
-}
-
-/**
- * Replace the leading `"* "` marker `marked-terminal` emits for every unordered list
- * item with the glyph for that line's nesting depth (cycling past the configured
- * bullet set with `%`, so depth 4 wraps back to the first glyph). Depth is read back
- * out of the line's own indentation (`indent.length / 4`) rather than passed in as a
- * recursion-tracked argument — see below for why that is load-bearing, not a style
- * choice.
- *
- * **Why this cannot run per-recursion-level (deviation found empirically, not in the
- * brief).** `marked-terminal`'s `Renderer.prototype.list` ends with
- * `fixNestedLists(indentLines(this.tab, body), this.tab)` (`index.js:152`).
- * `fixNestedLists` repairs the *default* behaviour of a nested list's rendered text
- * landing on the same physical line as its parent item — it finds where a sub-list
- * begins using a regex hardcoded to the literal markers `POINT_REGEX` recognizes
- * (`\*` or `\d+\.`, `index.js:510-513`) and inserts the missing newline + indent there.
- * That repair runs **inside every level's own `originalList.call`**, including every
- * ancestor still on the stack above whichever level our override is currently
- * touching. Substituting a nested level's `"*"` for a glyph *before* an ancestor's own
- * `fixNestedLists` pass has run destroys the literal marker that pass depends on to
- * find the join point — verified by rendering a 2-level list with substitution done
- * per-recursion-level: the child's own bullet was correctly swapped, but the *parent*
- * level's subsequent `fixNestedLists` then failed to detect the (no-longer-`"*"`)
- * child marker and left the whole rendered nested list joined onto its parent's line
- * with no newline at all (`"    • level 0    ◦ level 1"` instead of two lines) — the
- * same corruption reproduces with any literal substitute, not just a Unicode one, so
- * it is `fixNestedLists`'s marker detection breaking, not a width/encoding issue.
- * The fix: only ever run this pass once, over the fully-resolved text of the
- * *outermost* list call for a given top-level list (`listDepth === 1`, checked at the
- * call site below) — by then every ancestor's `fixNestedLists` for this subtree has
- * already completed, so nothing downstream still needs the `"*"` literal.
- *
- * **Regression, found in review: a fenced code block nested inside a list item got its
- * `* `/bare-`*` content rewritten.** `src/AGENTS.md`'s rendering policy is
- * unqualified on this: "fenced code is never rewritten" — a wrapped or altered command
- * is a wrong command, no exceptions. No gate caught it: `--check` and both sweeps
- * exempt code ranges from width checking entirely, so corrupting a line *inside* one is
- * invisible to width-only gates, and none of the corpus fixtures happen to nest a fence
- * inside a list item.
- *
- * The fix reuses the mechanism already in this file rather than re-deriving code
- * ranges or parsing fences again: `code`'s override (`wrapCode`, below) resolves
- * depth-first — for a fence nested inside a list item, it always runs *before* the
- * enclosing `list()` call composes this level's `body` string — so by the time
- * `substituteBullets` sees `body`, every fenced block nested in it is already bracketed
- * in `SENTINEL` pairs (confirmed: exactly 2 sentinel characters in the body for a
- * single nested fence). This pass tracks open/close state across `SENTINEL`
- * occurrences as it scans, character by character within each line — a single
- * `SENTINEL` pair can open and close on the *same* physical line (a one-line code
- * block), so the toggle happens per occurrence, not per line — and uses the state a
- * line *starts* in (before that line's own occurrences are counted) to decide whether
- * that line's leading marker is eligible for substitution at all. A line whose starting
- * state is "inside a fence" is left completely untouched, regardless of what its first
- * characters look like.
- */
-function substituteBullets(body: string, glyphs: GlyphSet): string {
-  let insideCode = false;
-  return body
-    .split("\n")
-    .map((line) => {
-      const startedInsideCode = insideCode;
-      for (const ch of line) {
-        if (ch === SENTINEL) insideCode = !insideCode;
-      }
-      if (startedInsideCode) return line;
-
-      return line.replace(UNORDERED_MARKER_LINE, (_match, indent: string, gap: string) => {
-        const depth = Math.max(1, Math.round(indent.length / LIST_INDENT_PER_LEVEL));
-        const bullet = glyphs.bullets[(depth - 1) % glyphs.bullets.length] ?? glyphs.bullets[0] ?? "*";
-        return `${indent}${bullet}${gap}`;
-      });
-    })
-    .join("\n");
 }
 
 /**
@@ -582,8 +442,8 @@ function coalesceTightItemLines(text: string): { segments: string[]; coalesced: 
 }
 
 /**
- * `isPointedLine` (`marked-terminal` `index.js:531`) as it is actually called on a
- * composed list body — `this.tab`, i.e. exactly four spaces, repeated zero or more
+ * `isPointedLine` (`index.js:532-534`, transcribed into `src/lists.ts`) as it is actually
+ * called on a composed list body — `this.tab`, i.e. exactly four spaces, repeated zero or more
  * times, then a literal marker. The **exact-multiple-of-four** indent is the whole
  * point: a line one column off that grid can never be claimed as a marker, which is
  * what makes the one-space guard in `realignNestedContinuations` (and in the two
@@ -597,13 +457,14 @@ const LIBRARY_POINTED_LINE = new RegExp(`^(?: {${LIST_INDENT_PER_LEVEL}})*(?:\\*
  * **The defect.** `marked-terminal`'s `list()` calls `bulletPointLines` (unordered) or
  * `numberedLines` (ordered) over the whole composed body, and both prepend a marker's
  * width in spaces — `toSpaces(BULLET_POINT)`, 2, or `toSpaces(numberedPoint(n))`, 3+ —
- * to every line `isPointedLine` does *not* recognize (`index.js:539-578`). For this
+ * to every line `isPointedLine` does *not* recognize (`index.js:539-578`; `src/lists.ts`
+ * since WP-4). For this
  * level's **own** items that is exactly right: it aligns a continuation under its own
  * marker's text. But the body it walks also contains an inner list that already
  * rendered, and there the same pass moves the inner items' *continuation* lines while
- * leaving their *marker* lines alone (`isPointedLine` recognizes those — mdview
- * substitutes bullet glyphs only at `listDepth === 1`, so the literal `*` is still
- * there). So every continuation inside a nested item drifts one marker-width per
+ * leaving their *marker* lines alone (`isPointedLine` recognizes those — bullet glyphs
+ * are substituted only at `listDepth === 1`, so the literal `*` is still there). So every
+ * continuation inside a nested item drifts one marker-width per
  * ancestor level past the column its own first line starts at. `indentLines`
  * (`index.js:501`) then adds `this.tab` to every line equally and contributes nothing
  * to the *relative* drift.
@@ -953,9 +814,10 @@ function stripEmojiTrailingSpace(body: string, codeRanges: ReadonlyArray<readonl
 /**
  * Render a markdown document to ANSI for the terminal: the frontmatter block (when
  * present) as a readable metadata block, followed by the rendered prose body. Wires
- * `marked` as the lexer. **`marked-terminal` is now delegated to for `list`, `listitem`,
- * `checkbox` and nothing else** — the strangler fig is two thirds of the way through
- * `plans/marked-terminal-replacement.md`:
+ * `marked` as the lexer. **No renderer method here is `marked-terminal`'s any more**
+ * (WP-4 of `plans/marked-terminal-replacement.md`) — the extension is still constructed,
+ * because that is what supplies the renderer object marked dispatches against, but every
+ * method on it has been replaced:
  *
  * - `table` is `renderTable` (`src/table.ts`) — `marked-terminal`'s own table renderer
  *   never receives the terminal width and must not be left in place;
@@ -963,12 +825,18 @@ function stripEmojiTrailingSpace(body: string, codeRanges: ReadonlyArray<readonl
  * - `hr`, `code`, `html`, `paragraph`, `heading` and `blockquote` are `src/blocks.ts`'s
  *   (WP-3), with `src/wrap.ts`'s `wrapAnsi` as the reflow engine, measuring through the
  *   `LayoutContext`'s `Measure` rather than the library's `String.prototype.length`;
- * - `list` is still the library's, wrapped here to track nesting depth, re-wrap
- *   over-budget lines (`marked-terminal` never reflows list items at all — see
- *   `currentListBudget` above) and substitute the glyph tier's bullet for the leading
- *   `"* "` marker (WP-2 of the launch plan; WP-4 of the replacement plan owns it next);
+ * - `list` is `src/lists.ts`'s (WP-4), which owns `listitem` and `checkbox` with it —
+ *   both were unreachable as overrides, which is why the defects it fixes could not be
+ *   fixed from outside. It is wrapped here to track nesting depth, re-wrap over-budget
+ *   lines (composition never reflows list items at all — see `currentListBudget` above)
+ *   and substitute the glyph tier's bullet for the leading `"* "` marker;
  * - `text` is `src/inline.ts`'s, wrapped here because a *tight* list item's own body is
  *   the one place the library never parsed inline markup at all.
+ *
+ * The only `marked-terminal` code still on any execution path is what `markedTerminal()`
+ * itself runs at construction. Measured over the full validation corpus at all twenty
+ * default axes with every remaining library method counted: **0 calls** — the fact WP-6
+ * (dropping the dependency) is built on.
  *
  * `code` is still bracketed in sentinels here so `--check` can exempt it; that mechanism
  * survives until WP-6 carries code/prose metadata on rendered lines instead.
@@ -1157,47 +1025,49 @@ export function renderDocumentDetailed(
     // `text` override below.
     let inlineDepth = 0;
 
-    const originalList = renderer.list;
-    if (originalList) {
-      renderer.list = function wrappedList(token: Tokens.List) {
-        pendingPrefix.push({ columns: LIST_INDENT_PER_LEVEL + listMarkerWidth(token), list: true });
-        const depth = listDepth();
-        const outer = outerColumns();
-        try {
-          // `this` is contextually `_Renderer` here (the target this function is
-          // assigned to declares `this: _Renderer`); forwarding it is what keeps
-          // `originalList`'s own internal `this.o`/`this.tab`/`this.parser` reads
-          // working exactly as they would un-overridden.
-          const result = originalList.call(this, token);
-          if (result === false) return false;
-          // **Per level, and before `rewrapListBody` — both are load-bearing** (WP-2e).
-          //
-          // *Per level*, because the drift this pass subtracts is the marker width
-          // *this* call's `bulletPointLines`/`numberedLines` just added, and that is
-          // only knowable here: at the outermost list the drifts of every ancestor have
-          // already summed, and with ordered levels of differing marker widths (`"* "`
-          // is 2, `"1. "` is 3, `"10. "` is 4) the sum cannot be decomposed back into
-          // the per-level amounts a legitimate nested blockquote or fence has to be
-          // measured against. Correcting at every level also means the drift never
-          // reaches an inner `rewrapListBody` at all, so `currentListBudget`'s
-          // 4-columns-per-ancestor arithmetic becomes exactly true rather than an
-          // under-estimate.
-          //
-          // *Before* `rewrapListBody`, because a line that is no longer over-indented is
-          // no longer over budget, so there is nothing left to shear — the orphan goes
-          // away as a consequence of the indent being right, not as a second fix.
-          const realigned = realignNestedContinuations(result, measure);
-          const rewrapped = rewrapListBody(realigned, depth, targetWidth, outer, measure);
-          // Bullet substitution only runs once this is the outermost call for this
-          // top-level list (`depth === 1`) — see `substituteBullets`'s doc comment
-          // for why running it at every recursion level corrupts `marked-terminal`'s
-          // own `fixNestedLists` marker detection for ancestors still on the stack.
-          return depth === 1 ? substituteBullets(rewrapped, glyphs) : rewrapped;
-        } finally {
-          pendingPrefix.pop();
-        }
-      };
-    }
+    // **The owned list composer** (WP-4 of `plans/marked-terminal-replacement.md`).
+    // `src/lists.ts` owns `list`, `listitem` and `checkbox`; nothing here delegates to
+    // `marked-terminal` any more. `parse` is handed in as a closure over `this` for the
+    // same reason the inline visitors' `parseInline` is: it is the *parser's* recursion,
+    // per call, and belongs to `marked` rather than to the layout context.
+    //
+    // The three passes below it are unchanged and are WP-5's: they operate on a composed
+    // body that is byte-identical to the library's, which is what let this package be
+    // gated class A before either deliberate diff was introduced.
+    renderer.list = function ownedList(token: Tokens.List) {
+      pendingPrefix.push({ columns: LIST_INDENT_PER_LEVEL + listMarkerWidth(token), list: true });
+      const depth = listDepth();
+      const outer = outerColumns();
+      try {
+        const result = renderList(layout, token, (tokens: Token[], top: boolean) =>
+          this.parser.parse(tokens, top),
+        );
+        // **Per level, and before `rewrapListBody` — both are load-bearing** (WP-2e).
+        //
+        // *Per level*, because the drift this pass subtracts is the marker width
+        // *this* call's `composeUnordered`/`composeOrdered` just added, and that is
+        // only knowable here: at the outermost list the drifts of every ancestor have
+        // already summed, and with ordered levels of differing marker widths (`"* "`
+        // is 2, `"1. "` is 3, `"10. "` is 4) the sum cannot be decomposed back into
+        // the per-level amounts a legitimate nested blockquote or fence has to be
+        // measured against. Correcting at every level also means the drift never
+        // reaches an inner `rewrapListBody` at all, so `currentListBudget`'s
+        // 4-columns-per-ancestor arithmetic becomes exactly true rather than an
+        // under-estimate.
+        //
+        // *Before* `rewrapListBody`, because a line that is no longer over-indented is
+        // no longer over budget, so there is nothing left to shear — the orphan goes
+        // away as a consequence of the indent being right, not as a second fix.
+        const realigned = realignNestedContinuations(result, measure);
+        const rewrapped = rewrapListBody(realigned, depth, targetWidth, outer, measure);
+        // Bullet substitution runs once this is the outermost call for this top-level
+        // list (`depth === 1`) — see `src/lists.ts`'s header for the two measurements
+        // that keep it a separate pass rather than folding it into composition.
+        return depth === 1 ? substituteBullets(rewrapped, glyphs, SENTINEL) : rewrapped;
+      } finally {
+        pendingPrefix.pop();
+      }
+    };
 
     // **Inside a tight list item, `text` is where that item's text gets wrapped**
     // (WP-2c). `marked`'s lexer only wraps an item in a paragraph token when the list is
@@ -1424,7 +1294,7 @@ export function renderDocumentDetailed(
         // line. This defends against a defect in a renderer WP-4 owns; removing it here
         // would land its consequences in someone else's parity diff.
         //
-        // **Two shapes, not one** (WP-3). The second is `COLUMN_ZERO_SHAPED_LINE`, the
+        // **Two shapes, not one** (WP-3). The second is `COLUMN_ZERO_MARKER`, the
         // detectors' own broader bullet set, and it was added because the harness's new
         // detector ratchet caught this package raising `findColumnZeroMarkers` by exactly
         // one: a top-level prose line that happened to re-wrap onto `+ sources`,
@@ -1440,8 +1310,7 @@ export function renderDocumentDetailed(
         // renumbering half of the hazard genuinely does not apply — no list is on the stack
         // — but the legibility half does, and the cost is one paragraph re-wrapped a column
         // narrower.
-        const marker = (line: string): boolean =>
-          MARKER_SHAPED_LINE.test(line) || COLUMN_ZERO_SHAPED_LINE.test(line);
+        const marker = isGuardShapedLine;
         const collides = (text: string): boolean => text.split("\n").slice(1).some(marker);
         if (!collides(result)) return result;
 

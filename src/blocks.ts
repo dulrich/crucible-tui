@@ -382,13 +382,13 @@ function undoColon(text: string): string {
  * restoration happens *last*, which is why the colon sentinel survives emoji substitution at
  * all — that is the whole reason `codespan` emits it.
  *
- * **Only `heading` and `paragraph` run it.** `code`, `blockquote`, `html` and `hr` do not,
- * and adding it to any of them would decode entities and substitute emoji in places the
- * library never did. (`listitem` runs it too — `index.js:186` — and that renderer is still
- * the library's, which is why a tight list item's shortcodes keep working while this package
- * is only half of the migration.)
+ * **Only `heading`, `paragraph` and `listitem` run it.** `code`, `blockquote`, `html` and
+ * `hr` do not, and adding it to any of them would decode entities and substitute emoji in
+ * places the library never did. It is exported for `src/lists.ts`, which owns `listitem`
+ * since WP-4 and runs the same composition at `index.js:186`; one implementation, because
+ * the two have to agree byte-for-byte about entity decoding and about emoji order.
  */
-function transform(ctx: LayoutContext, text: string): string {
+export function transform(ctx: LayoutContext, text: string): string {
   return undoColon(unescapeEntities(emojify(ctx, text)));
 }
 

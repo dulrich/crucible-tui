@@ -411,3 +411,51 @@ describe("parseWidths", () => {
     expect(() => parseWidths("abc")).toThrow(/positive/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// WP-4 of `plans/marked-terminal-replacement.md` — the guard space is not a defect.
+//
+// Both wrapping seams in `src/render.ts` deliberately give a continuation line one
+// leading space when it would otherwise begin `*` or `12.`: a line on the
+// exact-multiple-of-four grid that starts like a marker is claimed by list composition's
+// `isPointedLine`, handed the item's number, and has the first `"* "` anywhere in it
+// rewritten. The seam re-wraps a column narrower first, so the space costs no width.
+//
+// Until WP-4 this detector scored that space as a one-column over-indent — i.e. it graded
+// the fix as the bug, and WP-3 landed with an accepted ratchet exception (a 0.02-0.54%
+// rise) for exactly this. The predicate is `src/list-lines.ts`' `isGuardShapedLine`, the
+// same one the seams guard with, so the detector and the fix it grades cannot disagree
+// about what a marker shape is.
+// ---------------------------------------------------------------------------
+
+describe("findContinuationOverIndent — the wrapping seams' guard space (WP-4)", () => {
+  // Marker column 4, text column 6, so a continuation belongs at column 6.
+  const ITEM = "    • alpha beta gamma";
+
+  test("a one-column drift on a marker-shaped continuation is not a hit", () => {
+    const rendered = [ITEM, "       **bold** continues here"].join("\n");
+    expect(findContinuationOverIndent(rendered)).toEqual([]);
+  });
+
+  test("the same line without the guard space is not a hit either — it is simply aligned", () => {
+    const rendered = [ITEM, "      **bold** continues here"].join("\n");
+    expect(findContinuationOverIndent(rendered)).toEqual([]);
+  });
+
+  test("a two-column drift on the same shape is still a hit — only the guard is forgiven", () => {
+    const rendered = [ITEM, "        **bold** continues here"].join("\n");
+    const hits = findContinuationOverIndent(rendered);
+    expect(hits.map((hit) => hit.drift)).toEqual([2]);
+  });
+
+  test("a one-column drift on a line that is not marker-shaped is still a hit", () => {
+    const rendered = [ITEM, "       ordinary continuation"].join("\n");
+    const hits = findContinuationOverIndent(rendered);
+    expect(hits.map((hit) => hit.drift)).toEqual([1]);
+  });
+
+  test("`1.5x` counts as marker-shaped, because `isPointedLine` requires no space after the marker", () => {
+    const rendered = [ITEM, "       1.5x of the previous budget"].join("\n");
+    expect(findContinuationOverIndent(rendered)).toEqual([]);
+  });
+});

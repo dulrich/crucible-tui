@@ -64,6 +64,61 @@ export const LIST_BULLET = /^\s{2,}(?:[•*\-◦‣+]|\d+\.)\s/;
 /** Same, but capturing the full marker prefix so the item's text column is derivable. */
 const LIST_MARKER_PREFIX = /^(\s{2,}(?:[•*\-◦‣+]|\d+\.)\s+)/;
 
+/**
+ * A rendered line `marked-terminal`'s composition model will mistake for a list marker of
+ * its own — `isPointedLine`'s shape (`index.js:532-534`) with the indent group stripped
+ * off, i.e. what a line *at column 0* looks like to it.
+ *
+ * When a list body is composed, an item's continuation lines are still at column 0 and no
+ * space is required after the marker, so a wrapped line that merely *begins* `**bold**` or
+ * `1.5x` is taken for a marker line — and in an ordered list the number is consumed and
+ * the first `"* "` anywhere in the line is rewritten. `src/render.ts`'s two wrapping seams
+ * defuse it by giving such a continuation line one leading guard space, which the
+ * exact-multiple-of-four indent group cannot match.
+ *
+ * **Moved here in WP-4 of `plans/marked-terminal-replacement.md`** from `src/render.ts`,
+ * beside `COLUMN_ZERO_MARKER` and the rest of the rendered-line vocabulary, because
+ * `findContinuationOverIndent` now has to recognise the very guard space the render seams
+ * add — a detector and the fix it grades must not be able to disagree about what a marker
+ * shape is, which is this module's whole reason to exist.
+ */
+export const MARKER_SHAPED_LINE = /^(?:\*|\d+\.)/;
+
+/**
+ * A rendered list marker sitting at **column 0** — the same marker shapes `LIST_BULLET`
+ * recognizes, both glyph tiers, but with no indent in front of them at all.
+ *
+ * **A second marker shape, and the two are answering different questions.**
+ * `MARKER_SHAPED_LINE` above is `isPointedLine`'s shape: what the composer will mistake
+ * for a marker of its own and renumber. This one is broader in its bullet set and requires
+ * a space after the marker, and it asks the human question instead: does this line look, to
+ * a reader, like a bullet that escaped its list? A wrapped prose line beginning `+ sources`
+ * immediately above an indented list is not a renumbering hazard (`isPointedLine` does not
+ * recognise `+` at all) and is still a line nobody meant to write.
+ *
+ * **It used to be two hand-synchronised copies** — `src/detectors.ts`' `COLUMN_ZERO_MARKER`
+ * and `src/render.ts`' `COLUMN_ZERO_SHAPED_LINE`, spelled with literal glyphs in one file
+ * and `\u` escapes in the other, with no gate in this repo able to see them drift. The
+ * duplication existed only because `src/render.ts` must not import `src/detectors.ts`
+ * (that would put a second `Marked` instantiation and the whole detector module into the
+ * shipped binary's import graph); this module is the seam that makes one copy possible, and
+ * `src/render.ts`'s own note said the move belonged to whichever of WP-4 or WP-7 next had
+ * both files open. WP-4 did.
+ */
+export const COLUMN_ZERO_MARKER = /^(?:[\u2022*\-\u25e6\u2023+]|\d+\.)\s/;
+
+/**
+ * True when a rendered line reads as a marker to *either* audience — the composer that
+ * would renumber it, or the reader who would see a stray bullet.
+ *
+ * This is the predicate `src/render.ts`'s `paragraph` seam guards with and the one
+ * `findContinuationOverIndent` must forgive a one-column drift on, and having it in one
+ * place is the point: the guard adds exactly one column, and a detector that graded that
+ * column as a defect was marking the fix down as the bug.
+ */
+export const isGuardShapedLine = (text: string): boolean =>
+  MARKER_SHAPED_LINE.test(text) || COLUMN_ZERO_MARKER.test(text);
+
 /** A rendered line that is inside some list item — indented, and carrying text. */
 export const isIndentedLine = (line: string): boolean => /^\s{2,}\S/.test(line);
 

@@ -53,7 +53,9 @@ import { splitFrontmatter } from "./frontmatter";
 import { NARROW_MEASURE, type Measure } from "./width";
 import { isLineExempt, type CodeRanges } from "./overflow";
 import {
+  COLUMN_ZERO_MARKER,
   LIST_BULLET,
+  isGuardShapedLine,
   isIndentedLine,
   stripAnsi,
   trackListLine,
@@ -526,6 +528,20 @@ export function findContinuationOverIndent(rendered: string, options: DetectorOp
     const actualColumn = measure(line.slice(0, line.length - line.trimStart().length));
     if (actualColumn <= item.textColumn) continue;
 
+    // **A drift of exactly one column on a marker-shaped line is the guard space, not a
+    // defect** (WP-4). Both wrapping seams in `src/render.ts` deliberately give a
+    // continuation line one leading space when it would otherwise begin `*`, `12.` or one
+    // of the bullet glyphs — because a line on the exact-multiple-of-four grid that starts
+    // like a marker is claimed by the composer's `isPointedLine`, renumbered, and its text
+    // rewritten. The seam re-wraps a column narrower first, so the space costs no width.
+    //
+    // Until this package that space was scored here as a one-column over-indent, i.e. this
+    // detector was grading the fix as the bug: WP-3 landed with an accepted ratchet
+    // exception (a 0.02-0.54% rise) for exactly this. The predicate is
+    // `src/list-lines.ts`' — the same one the seams guard with — because a detector and the
+    // fix it grades must not be able to disagree about what a marker shape is.
+    if (actualColumn - item.textColumn === 1 && isGuardShapedLine(line.trimStart())) continue;
+
     found.push({
       line: i + 1,
       actualColumn,
@@ -538,11 +554,12 @@ export function findContinuationOverIndent(rendered: string, options: DetectorOp
   return found;
 }
 
-/**
- * A rendered list marker sitting at **column 0** — the same marker shapes `LIST_BULLET`
- * recognizes, both glyph tiers, but with no indent in front of them at all.
- */
-export const COLUMN_ZERO_MARKER = /^(?:[•*\-◦‣+]|\d+\.)\s/;
+// `COLUMN_ZERO_MARKER` moved to `src/list-lines.ts` in WP-4 of
+// `plans/marked-terminal-replacement.md` and is re-exported here so this module's public
+// surface is unchanged. It had a second, hand-synchronised copy in `src/render.ts`
+// (`COLUMN_ZERO_SHAPED_LINE`), which is what the move removes — see the regex's own doc
+// comment for why one implementation is a property and one *file* is not.
+export { COLUMN_ZERO_MARKER };
 
 export interface ColumnZeroMarker {
   /** 1-based line number in the rendered output. */
