@@ -768,16 +768,48 @@ Both were measured, both are **user-approved deferrals recorded in
 scope.** A future package that wants either must start from these numbers and bring its own
 granted parity class.
 
-- **The `extractCodeRanges` narrowing (finding F6 of the code review) is implemented, measured,
-  and deliberately not applied.** The narrowing — start on the next line when the opening marker
+- **The `extractCodeRanges` narrowing (field note F6 of
+  `runs/dispatch/mt-wp-5-list-item-layout-brief.md:164` — dispatch-brief numbering, **not** the
+  F6 of `reviews/2026-07-30-tn-code-review.md`, which is the unrelated, still-Open file-size
+  finding) is implemented, measured, and deliberately not applied.** The narrowing — start on
+  the next line when the opening marker
   has non-whitespace before it, end on the previous one when the closing marker has
   non-whitespace after it, drop a range that collapses — moves **not one rendered byte**. What
-  it moves is *coverage*: the recorded ranges change on **88 of 4,837 files**, code-range
-  coverage changes on **110 files**, un-exempting **4,980 lines of which 2,422 are over budget —
-  97 files would newly fail `--check`.** Fenced ranges are exempt from every width gate, so
-  narrowing the exemption converts silent-but-correct output into a red gate on real content. A
-  deliberate change to gate coverage is not something a dependency removal gets to make on its
-  own authority. The patch and its numbers live in `extractCodeRanges`' doc comment.
+  it moves is *coverage*. The figures recorded here through WP-7 were **ranges change on 88 of
+  4,837 files, coverage changes on 110 files, un-exempting 4,980 lines of which 2,422 are over
+  budget — 97 files would newly fail `--check`**; they are retained because a number here is a
+  claim someone can re-run, and **WP-2 of `plans/renderer-deferred-work.md` re-ran them.** They
+  do not survive, and the correction is dimensional rather than arithmetic:
+
+  - **"Ranges changed" and "coverage changed" are the same set**, so 88 and 110 cannot both
+    describe one run. The narrowing only shrinks a boundary or drops a range, and each changes
+    coverage; measured over 178,280 combos, **not one file** changed ranges without changing
+    coverage. The two figures came from two different runs, patches or corpus snapshots, and no
+    axis set or aggregation rule reconciles them.
+  - **Re-measured at `c27766e`, 4,457 corpus files, 20 default axes, per-file union:** ranges and
+    coverage both change on **97 files colourless** and **282 under `FORCE_COLOR=3`**;
+    **235 lines are un-exempted per axis** (195 over budget at width 80), and **85 files newly
+    fail `--check`** colourless / 164 forced. The old "4,980 lines / 2,422 over budget" were
+    **20-axis sums**, counting each physical line once per axis — the per-axis figure is ~235.
+  - **The corpus is not that corpus.** It enumerates 4,457 files today, not 4,837: it is live
+    user data. A denominator here is a snapshot, never a constant.
+  - **The narrowing as specified is ANSI-blind**, which is why colour triples the population: a
+    rendered code block inside a list item is bracketed by SGR sequences, and the predicate
+    counts those as the "non-whitespace" that triggers narrowing. Under colour it drops all five
+    of `tests/fixtures/fenced-list.md`'s ranges at every tested width and both tiers. **Every
+    gate in `verify` runs colourless and none of them can see this.**
+  - **It raises two counts the parity contract requires to be non-increasing** — `overIndent`
+    and `orphans` — by 24 combos colourless and 4,700 forced, because `src/detectors.ts` takes
+    `codeRanges` as its exemption input. **No parity class, including class D, covers that.**
+  - **The un-exempted lines are not all "prose that was never code."** On the coalesced
+    tight-item seam a fence's content is composed onto the item's own physical line, so the
+    narrowing drops a line that contains verbatim code this tool refuses to rewrap at any width.
+
+  Fenced ranges are exempt from every width gate, so narrowing the exemption converts
+  silent-but-correct output into a red gate on real content. A deliberate change to gate coverage
+  is not something a dependency removal gets to make on its own authority. The patch and the
+  original numbers live in `extractCodeRanges`' doc comment; WP-2's report holds the re-measured
+  ones and recommends **not** landing the narrowing as specified.
 - **`rewriteTaskState` and its sentinel are retained**, and the population is **84 lines across
   2 files**, not the 211-in-11 an earlier brief asserted. The pre-pass rewrites **5,619
   task-shaped source lines in 297 of 4,837 files**, but removing it changes the rendered output
