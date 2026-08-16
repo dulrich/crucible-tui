@@ -1390,3 +1390,116 @@ describe("owned list-item layout — the surviving guards (WP-5)", () => {
     expect(lines.find((line) => line.includes("quoted"))).toBe("            ‣ quoted");
   });
 });
+
+// ---------------------------------------------------------------------------
+// WP-1 of `plans/renderer-deferred-work.md` — the coalesced-path guard collision.
+//
+// Read this before touching the guard in `src/render.ts`'s `text` override. The
+// defect it grades was **silent content corruption that no gate in this repo could
+// see**: the rendered output contained a nested list item nobody wrote, the line was
+// under the target width so `--check` and both sweeps were blind to it, and
+// `findContinuationOverIndent`'s drift-1 exemption forgave it because the artifact
+// the corruption produced is itself guard-shaped. Only a per-width assertion on a
+// committed witness can catch it, which is what this group is.
+//
+// **The widths are named here on purpose.** `WP2F_WIDTHS` is
+// `[80,100,116,120,172,346,54,55,101]` and never executes at 64, 65 or 66, so the
+// fixture alone would leave the regression untested. The case is inert at every width
+// but two per shape.
+// ---------------------------------------------------------------------------
+
+describe("renderDocument — the coalesced-path guard collision (WP-1, renderer-deferred-work)", () => {
+  const witness = (): Promise<string> => readFile(`${import.meta.dir}/fixtures/coalesced-guard-collision.md`, "utf8");
+
+  // The two widths the parent commit corrupted, and the clean widths on either side of
+  // each. 65: the one-digit ordered item at text column 7, whose single guard space
+  // landed it at 8, on the four-column grid. 69: the same item inside a blockquote,
+  // four columns further right, at 11 → 12.
+  const CORRUPTED_WIDTHS = [65, 69];
+  const NEIGHBOUR_WIDTHS = [64, 66, 68, 70];
+
+  test("the author's literal `*` survives at the corrupted widths and their neighbours, both tiers", async () => {
+    const source = await witness();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of [...NEIGHBOUR_WIDTHS, ...CORRUPTED_WIDTHS]) {
+        // measured across the soft wrap: at some widths the break falls between the
+        // `*` and the word after it, so the check has to be on flowed text
+        const flowed = stripAnsi(renderDocument(source, width, glyphs)).replace(/\s+/g, " ");
+        const survivors = (flowed.match(/\* star token/g) ?? []).length;
+        // one per list in the fixture: ordered, quoted ordered, unordered, ten-item
+        expect(`${tier} w${width}: ${survivors}`).toBe(`${tier} w${width}: 4`);
+      }
+    }
+  });
+
+  test("the corruption witness is gone: no bullet glyph ever replaces that `*`", async () => {
+    const source = await witness();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      // the whole 40-200 band, not just the named widths — the defect was found by
+      // sweeping widths, and a repair that only moves it to width 73 is not a repair
+      for (let width = 40; width <= 200; width += 1) {
+        const rendered = stripAnsi(renderDocument(source, width, glyphs));
+        for (const bullet of [...UNICODE_GLYPHS.bullets, ...ASCII_GLYPHS.bullets]) {
+          expect(`${tier} w${width}: ${rendered.includes(`${bullet} star token`)}`).toBe(`${tier} w${width}: false`);
+        }
+      }
+    }
+  });
+
+  test("no continuation of this fixture is claimable by `isPointedLine` on the grid", async () => {
+    const source = await witness();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (const width of [...NEIGHBOUR_WIDTHS, ...CORRUPTED_WIDTHS, 54, 55, 80, 100, 101]) {
+        const { text, codeRanges } = renderDocumentDetailed(source, width, glyphs);
+        for (const [index, line] of text.split("\n").map((l) => stripAnsi(l)).entries()) {
+          if (codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end)) continue;
+          if (!/^(?: {4})+(?:\*|\d+\.)/.test(line)) continue;
+          // a genuine marker line is fine; a *continuation* claimed by the shape is not,
+          // and the two are told apart by whether the fixture authored a marker there
+          if (/^(?: {4})+(?:\*|\d+\.) (?:one|two|three|four|five|six|seven|eight|nine|short lead)\b/.test(line)) continue;
+          expect(`${tier} w${width} line ${index + 1}: ${line.trim().slice(0, 32)}`).toBe(
+            `${tier} w${width} line ${index + 1}: <no marker-shaped continuation>`,
+          );
+        }
+      }
+    }
+  });
+
+  // The three detector counts are class D's ratchet, and the guard is exactly the kind
+  // of change that can move them: a wider guard would show up here as over-indent drift
+  // the drift-1 exemption does not forgive. Measured over 40-200 at both tiers against
+  // the parent commit: identical at every axis.
+  test("the three detector counts stay at zero across the whole width band, both tiers", async () => {
+    const source = await witness();
+    for (const [tier, glyphs] of WP2_TIERS) {
+      for (let width = 40; width <= 200; width += 1) {
+        const rendered = renderDocument(source, width, glyphs);
+        const counts = [
+          findListOrphans(rendered, width).length,
+          findContinuationOverIndent(rendered).length,
+          findColumnZeroMarkers(rendered).length,
+        ];
+        expect(`${tier} w${width}: ${counts.join(",")}`).toBe(`${tier} w${width}: 0,0,0`);
+      }
+    }
+  });
+
+  // The other half of the rule, pinned so nobody "simplifies" the guard back to a flat
+  // one space or widens it to a flat two. `"* "` puts an item's text at column 6 and
+  // `"12. "` at column 8; one guard space lands at 7 and 9, both off the grid, and both
+  // of those are byte-identical to the parent commit. Only the one-digit ordered marker
+  // (`"1. "`, column 7 → 8) needs two.
+  test("the single-space guard is unchanged where it already missed the grid", async () => {
+    // an unordered tight item whose source spans two authored lines, so it coalesces
+    const unordered = "* lead line here\n  and a second authored line * star token and more words to push it over the edge";
+    for (let width = 40; width <= 200; width += 1) {
+      const lines = stripAnsi(renderDocument(unordered, width)).split("\n");
+      for (const line of lines) {
+        // the guarded continuation, when it appears, sits at column 7 — never 4 or 8
+        if (!line.includes("star token")) continue;
+        const indent = line.length - line.trimStart().length;
+        expect(`w${width}: ${indent % 4 === 0 && /^\s*\*/.test(line)}`).toBe(`w${width}: false`);
+      }
+    }
+  });
+});

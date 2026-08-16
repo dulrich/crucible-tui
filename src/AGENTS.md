@@ -315,8 +315,9 @@ mode, and only `tokens` separates them.
 - **Coalesced items** — where a multi-line item's soft-wrapped source lines were joined back
   into one logical line per hard-break-delimited segment — **are wrapped here**, at
   `targetWidth - prefix.width()`, with the same marker-shaped-line guard the loose path uses
-  (unconditional on this path: it is the coalesced path's own pre-WP-5 rule, kept
-  byte-for-byte).
+  — **always fired on this path, and sized so the guarded line misses the four-column grid**
+  (see below; it was one space unconditionally, the coalesced path's own pre-WP-5 rule kept
+  byte-for-byte, until WP-1 of `plans/renderer-deferred-work.md`).
 - **Uncoalesced items** — a single authored line, or segments separated by genuine hard
   breaks, which is *most* tight items — are **left to `rewrapListBody` after composition**,
   on purpose. `marked`'s inline lexer hands this seam `&#39;`-spelled entities, and
@@ -326,6 +327,49 @@ mode, and only `tokens` separates them.
   bytes; this seam does not. (The coalesced path accepts that skew deliberately: it always
   has, its bytes are pinned by the parity gate, and re-ordering it would move every
   soft-wrapped item in the corpus.)
+
+**The two paths guard differently, and that asymmetry is load-bearing — do not "unify" it.**
+Both seams give a continuation line a leading space when it would otherwise begin `*` or
+`12.`, and both re-wrap a column narrower first so the space costs no width. What differs is
+*when* the guard may be skipped and *how wide* it is, because the two seams hand their lines
+to different downstream passes:
+
+- **`rewrapListBody` (uncoalesced) skips the guard off-grid**, gated on `onGrid`
+  (`src/render.ts`). Its lines are already composed and carry their prefix as literal spaces,
+  so the only pass left that can claim a marker-shaped continuation is `substituteBullets`,
+  whose `UNORDERED_MARKER_LINE` is anchored on the four-column grid. An off-grid line —
+  `"    1. "` is seven columns — is claimed by nothing and needs no guard. Its comment records
+  that the *unconditional* form was measured causing a collision at width 55 on
+  `fenced-list.md`, where the guard space moved a line from column 7 onto the grid at 8.
+- **The coalesced seam always fires the guard, and varies its width instead.** Its lines are
+  *pre*-composition, still at column 0, and `claimLine`/`isPointedLine` (`src/lists.ts`) is
+  grid-blind: it claims a column-0 `*` line whatever column the item ends up at, strips it of
+  its pad, and leaves it at the level's own indent — where `substituteBullets` rewrites it
+  anyway. So off-grid is *not* safe here and the `onGrid` gate cannot be borrowed. Measured at
+  WP-1 of `plans/renderer-deferred-work.md`: gating this guard on `onGrid` turned one
+  corrupted width into two on the same witness (`tests/fixtures/coalesced-guard-collision.md`,
+  widths 64 *and* 65 instead of 65 alone). The free variable is the guard's **width**. A
+  guarded line lands at exactly `prefix.width() + guard.length` — every column of that prefix
+  renders as literal spaces — and one space misses the grid for every marker this composer
+  emits (`"* "` at 6+1, `"12. "` at 8+1) *except* the one-digit ordered marker (`"1. "`, 7+1).
+  There the seam narrows one column further and guards with two, but **only when all three of
+  these hold**: the one space would land on the grid; a marker-shaped continuation survives the
+  narrower wrap; and one of the survivors is `*`-shaped. The third is not fussiness —
+  `UNORDERED_MARKER_LINE` matches `*` only, and a `12.`-shaped continuation on the grid is
+  rewritten by nothing after composition, so for those the one space is still right and keeping
+  it keeps their bytes. Each condition was priced on the private corpus at 2 axes: without the
+  second, **116 combos moved and three detector counts rose**; without the third, 101 and two;
+  with both, **52 combos and no ratchet movement at all**.
+
+**The defect that rule replaced, so nobody reinstates the single space.** A one-digit ordered
+item on the coalesced path composes at column 7. At width 65 the one unconditional guard space
+moved a continuation carrying the author's own literal `*` to column 8 — exactly on the grid —
+and `substituteBullets` rewrote the `*` into the depth's bullet glyph `◦`. **The rendered
+output contained a nested list item nobody wrote**, at that width only; 64 and 66 were clean.
+The guard caused exactly the collision it exists to prevent. **No gate in this repo could see
+it**, and that is the durable half: `findContinuationOverIndent`'s drift-1 exemption forgives
+*guard-shaped* lines, and `"◦ "` is guard-shaped — the detector swallowed the artifact the
+corruption produced (see `scripts/AGENTS.md`).
 
 Four more things that must not be simplified away:
 

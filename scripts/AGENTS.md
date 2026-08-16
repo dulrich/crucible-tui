@@ -247,6 +247,26 @@ Seven things about this module are load-bearing:
   them alone. **Read a non-zero count here before assuming a regression.** The *second*
   class it used to carry — a list nested inside a blockquote — was closed in WP-2g; see
   "A blockquote owes columns exactly like a list" in `src/AGENTS.md`.
+- **`findContinuationOverIndent` is structurally blind to guard-shaped corruption, and no
+  other gate in this repo covers it.** This is a durable trap, not a note about one bug.
+  The detector forgives a drift of exactly one column on a line the shared
+  `isGuardShapedLine` predicate claims (`src/detectors.ts`, `src/list-lines.ts`), because
+  that column *is* the wrapping seams' deliberate guard space and grading it as a defect
+  was grading the fix as the bug. The exemption is correct and must stay. What it costs is
+  this: **the artifact a mis-landed guard produces is itself guard-shaped**, so the detector
+  swallows it. WP-1 of `plans/renderer-deferred-work.md` found a coalesced one-digit ordered
+  item whose guard space moved a continuation onto the four-column grid, where
+  `substituteBullets` rewrote the author's literal `*` into the bullet glyph `◦` — a nested
+  list item nobody wrote — and the resulting `"◦ "` line, sitting exactly one column past
+  its item's text column, was exempted by this clause. `findListOrphans` and
+  `findColumnZeroMarkers` both reported 0, and the line was under the target width, so
+  `--check` and both sweeps were blind by construction. **Do not read a guard-shaped line as
+  verified by this detector.** The only instrument that catches this class is a committed
+  witness asserted per width — `tests/fixtures/coalesced-guard-collision.md` and the WP-1
+  group in `tests/render-lists.test.ts` — and any future change to either wrapping seam's
+  guard owes one. **Do not "fix" the detector to cover it**: its counts are historical, every
+  dated figure in the private archive's `measurements/` was taken with this body, and a
+  drift there looks exactly like a fix.
 - **`findListOrphans` is history.** It is the metric every number WP-2, WP-2b and WP-2c
   recorded was measured with, moved here from `tests/render.test.ts` unchanged. Editing
   its body silently invalidates every dated figure in the private archive's
