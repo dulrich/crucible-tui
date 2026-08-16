@@ -25,7 +25,7 @@ import {
 } from "./inline";
 import { resolveFenceLanguage, type FenceLanguageResolver } from "./lang";
 import { createLayoutContext } from "./layout-context";
-import { MARKER_SHAPED_LINE, isGuardShapedLine } from "./list-lines";
+import { MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, isGuardShapedLine } from "./list-lines";
 import { TASK_GLYPHS, renderList, substituteBullets } from "./lists";
 import { NARROW_MEASURE, type Measure } from "./width";
 
@@ -1097,8 +1097,6 @@ export function renderDocumentDetailed(
 
     const wrapped = wrapAt(budget);
     // Same landmine, same guard as the `paragraph` renderer — see `MARKER_SHAPED_LINE`.
-    // Unconditional here, unlike the uncoalesced path above — this is the coalesced
-    // path's own pre-WP-5 rule, kept byte-for-byte.
     // Every line after the first is still at column 0 when `bulletPointLines` /
     // `numberedLines` run, so one that *starts* `*` or `12.` is taken for a marker
     // line and, in an ordered list, is handed that item's number and rewritten.
@@ -1106,12 +1104,93 @@ export function renderDocumentDetailed(
       text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
     if (!collides(wrapped)) return settle(wrapped);
 
-    return settle(
-      wrapAt(budget - 1)
+    // **The guard is as many spaces as it takes to land *off* the four-column grid, and
+    // it is only widened where the one-space form is provably wrong** — WP-1 of
+    // `plans/renderer-deferred-work.md`. It was one space, unconditionally, until then (the
+    // coalesced path's own pre-WP-5 rule, kept byte-for-byte because changing it was
+    // outside that package's scope), and the unconditional single space *caused* the
+    // collision it exists to prevent:
+    //
+    // A one-digit ordered item composes at 4 columns of level indent plus a 3-column
+    // `"1. "` marker, so its continuations sit at column **7** — off the grid, already
+    // safe from `substituteBullets`. At width 65 the one guard space moved a continuation
+    // that began with the author's literal `*` to column **8**, exactly on the grid, where
+    // `substituteBullets` (`src/lists.ts`, `UNORDERED_MARKER_LINE` `/^((?: {4})+)\*(\s)/`)
+    // claimed it and rewrote the `*` into the depth's bullet glyph — **a nested list item
+    // nobody wrote**. Widths 64 and 66 were clean; the witness is
+    // `tests/fixtures/coalesced-guard-collision.md`. No gate in this repo could see it:
+    // `findContinuationOverIndent`'s drift-1 exemption forgives *guard-shaped* lines and
+    // `"◦ "` is guard-shaped (recorded as a blind spot in `scripts/AGENTS.md`).
+    //
+    // **This path cannot borrow `rewrapListBody`'s `onGrid` gate, and that asymmetry is
+    // the finding.** There, the gate is right: its lines are already composed, carrying
+    // their prefix as literal spaces, so an off-grid marker-shaped continuation is claimed
+    // by nothing and needs no guard. Here the lines are *pre*-composition, still at column
+    // 0, and `claimLine`/`isPointedLine` (`src/lists.ts`) is grid-blind — it claims a
+    // column-0 `*` line whatever column the item will end up at, strips it of its pad and
+    // leaves it at the level's own indent, where `substituteBullets` rewrites it anyway.
+    // Gating this guard on `onGrid` was measured turning one corrupted width (65) into two
+    // (64 *and* 65) on the same witness. So the guard must always fire; only its *width*
+    // is a free variable, and it is chosen so the composed column misses the grid.
+    //
+    // `pendingPrefixWidth()` is the item's true text column here — the level's blanket
+    // indent, this item's own marker width (pushed per item by `composeItem`) and any
+    // enclosing blockquote columns, every one of which renders as literal spaces — so a
+    // guarded line lands at exactly `pendingPrefixWidth() + guard.length`. One space misses
+    // the grid for every marker this composer emits (`"* "` → 6+1, `"12. "` → 8+1) except
+    // the one-digit ordered marker (`"1. "` → 7+1); one space is also the *only* landing
+    // that costs a single column, so the wider guard is reached for last, not first.
+    //
+    // **The three conditions below are the whole of the repair, and none is decorative.**
+    // The seam already re-wraps one column narrower before guarding, and that re-wrap
+    // usually moves the break so that no continuation begins with the marker token at all —
+    // nothing is prepended and this path is byte-identical to the parent commit whatever
+    // the item's column. The wider guard is reached only when **all three** hold: the one
+    // space would land on the grid; a marker-shaped continuation survives the narrower
+    // wrap; and one of the survivors is `*`-shaped. Then the seam narrows one column
+    // further — which again usually dissolves the collision outright, drift 0, and is why
+    // width 65 now renders the same shape as width 64 — and prepends two spaces to whatever
+    // still starts with a marker token.
+    //
+    // **The third condition is `REWRITABLE_MARKER_LINE`, not `MARKER_SHAPED_LINE`, and the
+    // difference is the whole of the blast radius.** The collision being repaired is
+    // `substituteBullets`' `UNORDERED_MARKER_LINE` — `/^((?: {4})+)\*(\s)/` — which needs a
+    // literal `*` **followed by whitespace**. Two populations `MARKER_SHAPED_LINE` claims are
+    // therefore not rewritten by anything after composition and must keep their bytes:
+    //
+    // - a `12.`-shaped continuation, because `composeOrdered` renumbers position 0 alone and
+    //   `fixNestedLists`' `POINT_REGEX` needs a non-space *before* the indent, which a guarded
+    //   line never has; and
+    // - a line whose `*` is glued to its next character — `*#COLON|*root`, the escaped-colon
+    //   spelling `undoColon` decodes during composition, is the common one in this corpus.
+    //   `UNORDERED_MARKER_LINE` cannot match it, so the one space was always right for it.
+    //
+    // **Every step of the narrowing was priced, not assumed** — private corpus, `--widths
+    // 65,100 --tiers unicode --ambiguous narrow`, 8,846 combos. Firing the wider form on
+    // column alone, without asking whether anything survived: **116 combos moved, three
+    // detector counts rose** (`overIndent` +20 at 65, +8 at 100; `orphans` +1). On survival
+    // but not on shape: 101 combos, two counts rose. On `startsWith("*")` rather than the
+    // rewritable shape: 52 combos and a clean 2-axis probe, but a 41-file hot set replayed at
+    // 15 widths × both tiers still moved `overIndent` by +1 at 12 of 30 axes — the glued-`*`
+    // population above, widened for nothing. The form below is the smallest that repairs the
+    // defect. Widening the *narrowing* instead of the guard is not an escape: extending the
+    // re-wrap search to `budget - 8` still left 29 items unresolved and cost up to eight
+    // columns of an item's width to get there.
+    const guardLandsOnGrid = (pendingPrefixWidth() + 1) % LIST_INDENT_PER_LEVEL === 0;
+    const rewritable = (text: string): boolean =>
+      text
         .split("\n")
-        .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? ` ${line}` : line))
-        .join("\n"),
-    );
+        .slice(1)
+        .some((line) => REWRITABLE_MARKER_LINE.test(line));
+    const guarded = (text: string, guard: string): string =>
+      text
+        .split("\n")
+        .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? `${guard}${line}` : line))
+        .join("\n");
+
+    const narrowed = wrapAt(budget - 1);
+    if (!guardLandsOnGrid || !rewritable(narrowed)) return settle(guarded(narrowed, " "));
+    return settle(guarded(wrapAt(budget - 2), "  "));
   };
 
   // **The owned block leaves** (WP-3 of `plans/marked-terminal-replacement.md`): `hr`,
