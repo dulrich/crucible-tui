@@ -431,7 +431,14 @@ describe("renderDocument — tight-list authored soft breaks (WP-2c)", () => {
       const ascii = at(source, width, ASCII_GLYPHS).join("\n");
       expect(ascii).toContain("[x] A completed task");
       expect(ascii).toContain("[/] An in-progress task");
-      // and neither sentinel ever reaches the output
+      // and neither sentinel ever reaches the output.
+      //
+      // **Colourless only** — this run has no `FORCE_COLOR`. The *character* is gone under
+      // colour too, but the SGR pair a syntax highlighter wrapped around it before the strip
+      // is not: measured at WP-4 of `plans/renderer-deferred-work.md` as an orphaned empty
+      // colour pair inside a recorded `codeRange`. See `src/AGENTS.md`, "Colourless gates
+      // cannot see colour-only defects" — the round-trip claim is true here and not in
+      // general.
       expect(ascii).not.toContain(String.fromCharCode(1));
       expect(ascii).not.toContain(String.fromCharCode(0));
     }
@@ -1149,8 +1156,58 @@ describe("owned list composition — task states (WP-4, family B2)", () => {
     // package measured and could not do — see the WP-4 report, §4: the pre-pass and
     // `marked` disagree about fence pairing, so removing it changes bytes inside recorded
     // `codeRange`s (parity class C) on 11 of 4,786 corpus files.
+    //
+    // **WP-4 of `plans/renderer-deferred-work.md` re-measured this and the residue grades a
+    // population the corpus does not contain.** Across **35,614 files** there is **no
+    // blockquoted task item of any kind** — GFM or Obsidian custom — and **no non-GFM state
+    // in an ordered list**: 0 hits in 0 files, by a token walk over every list item at every
+    // nesting depth, by a fence-gated source scan, and by a fence-*un*gated upper bound that
+    // counts matches even inside code. The behaviour pinned below is unchanged and correct;
+    // what changed is what closing it would be worth. The class-C exception to close it was
+    // requested and **withheld** — see `src/AGENTS.md`, "The task-state pre-pass". (The
+    // "11 of 4,786" above is superseded there too: it is 84 lines in 2 files, all fenced.)
     expect(stripAnsi(renderDocument("> - [>] moved\n", 70, UNICODE_GLYPHS))).toContain("[>] moved");
     expect(stripAnsi(renderDocument("- [>] moved\n", 70, UNICODE_GLYPHS))).toContain("➤ moved");
+  });
+
+  // -------------------------------------------------------------------------------
+  // **P3 — the regression guard, and the reason the pre-pass cannot simply be deleted.**
+  //
+  // WP-4 of `plans/renderer-deferred-work.md` measured what happens if `rewriteTaskState`
+  // is removed and non-GFM states move to composition. On a task item whose *text* begins
+  // with an ordered marker, `marked` recognises a real GFM task item, strips `[ ] ` per
+  // spec, and CommonMark then lexes the remainder as a **nested ordered list**:
+  // `item.tokens[0].type === "list"` (verified against the pinned `marked@14.1.4`, tight
+  // and loose alike). `renderTaskState` cannot undo that — the damage is at *lex* time, so
+  // its `inline === undefined` fallback returns the prefix as a string and the nested list
+  // renders under it, renumbering every item to `1.`.
+  //
+  // Measured population: 2 corpus files, 50 source lines, 202 changed rendered lines over
+  // 4 combos, both glyph tiers — with `overflow` and all three detector counts unchanged,
+  // so **no gate in `verify` can see it**. That is why it is pinned here instead.
+  //
+  // **A package that deletes the pre-pass owns this test.** It will fail the moment the
+  // pre-pass goes, and the correct response is not to relax it: it is to suppress the
+  // nested lex for task items, which is new design work with its own plan.
+  // -------------------------------------------------------------------------------
+  test("a task item whose text begins with an ordered marker keeps the author's numbering (P3)", async () => {
+    const source = await readFile(`${import.meta.dir}/fixtures/task-ordered-text.md`, "utf8");
+    for (const [tier, glyphs] of WP2_TIERS) {
+      const text = stripAnsi(renderDocument(source, 80, glyphs));
+      const state = tier === "unicode" ? "○" : "[ ]";
+      const done = tier === "unicode" ? "✓" : "[x]";
+      // The author's own numbers survive, on the item's own line — not renumbered to `1.`
+      // on a line of their own underneath it.
+      expect(`${tier}: ${text.includes(`${state} 1. Alpha initialized`)}`).toBe(`${tier}: true`);
+      expect(`${tier}: ${text.includes(`${state} 2. Beta configured`)}`).toBe(`${tier}: true`);
+      expect(`${tier}: ${text.includes(`${done} 3. Gamma verified`)}`).toBe(`${tier}: true`);
+      // …and no item renumbered to `1.` twice, which is the shape the defect produces.
+      expect(`${tier}: ${text.split("1. Alpha initialized").length - 1}`).toBe(`${tier}: 1`);
+      expect(`${tier}: ${text.includes("1. Beta configured")}`).toBe(`${tier}: false`);
+      // The control half: same shape, text not starting with an ordered marker.
+      expect(`${tier}: ${text.includes(`${state} Delta initialized`)}`).toBe(`${tier}: true`);
+      expect(`${tier}: ${text.includes(`${done} Epsilon verified`)}`).toBe(`${tier}: true`);
+    }
   });
 
   test("a task-shaped line inside a fence is untouched, in both tiers", () => {

@@ -15,6 +15,8 @@ Run/verify contract, Conventions and the dependency record live there.
 | Parity: four classes | A/B/C/D, and why class C is a content hash rather than a gate |
 | The list pipeline | composition, the two wrap paths, the de-drift, the claim domains, the retained passes |
 | The sentinels | two control characters, one literal, and why the walks differ |
+| The task-state pre-pass | the 84 lines it still corrupts, why the "indented code" follow-up is retired, and the re-tokenisation that blocks its removal |
+| Colourless gates cannot see colour-only defects | three measurements, one mechanism, and the rule it earns |
 | Glyph tier · Ambiguous width | the tier, the probe, and why `wide` forces ASCII |
 | Command-line surface · Colour | the CLI shape, config asymmetry, and `supports-color` |
 | Rendering policy · The `emoji` re-decision | the unqualified rules, and the tier-follows decision |
@@ -822,6 +824,11 @@ granted parity class.
   invisible to the lexer and this pass is the only thing rendering one as a glyph.** Deleting it
   would remove a feature, not dead weight.
 
+  > **Two of the three claims in that bullet are wrong, and WP-4 of
+  > `plans/renderer-deferred-work.md` measured them wrong before writing any code.** The bullet
+  > is retained unedited, as the `extractCodeRanges` bullet above it is, so the error stays
+  > legible. The corrections are the next section, "The task-state pre-pass".
+
 `renderTaskState` (`src/lists.ts`) covers the two positions the pre-pass's line-anchored regex
 cannot reach — a task item inside a **blockquote** (`>` is not in `[-*+]`) and one in an
 **ordered** list — which are exactly the items the library rendered as `[X]  `, uppercase and
@@ -829,6 +836,127 @@ double-spaced, in *both* glyph tiers. That is family **B2**. It mutates the item
 text token rather than prefixing the composed string, because the composed-string form (the
 library's) left those items wrapped against a budget two columns too generous — a difference in
 kind from how every other task item in the document is laid out.
+
+#### The task-state pre-pass: what it corrupts, what it protects, and why the repair was declined
+
+**WP-4 of `plans/renderer-deferred-work.md` asked for a class-C exception to delete the pre-pass
+and render non-GFM task states at composition instead. It measured three populations first, and
+the user withheld the exception on the measurement.** No behaviour changed; this is the record of
+why, and it is the starting point for any future attempt.
+
+Method: `2e90d71`, `--widths 100 --tiers unicode,ascii --ambiguous narrow` (8,930 combos), both
+colour modes, plus full-lex source scans. **The corpus resolves 35,614 files; the differ's own
+selection is 4,465.** Every "of 4,837 files" figure in this file is a *selection* count from an
+earlier date — a denominator here is a snapshot, never a constant.
+
+**P1 — the pre-pass corrupts 84 lines of verbatim code, and still does today.**
+84 lines across 2 files, `classC=2` colourless. The **same 84 lines in the same 2 files over
+4,465 files and over 35,614**, so the enumeration is complete rather than sampled. Their
+state-char histogram is `{" ": 84}` — every one a GFM `[ ]` rewritten to `○` inside a code block:
+
+```text
+base:  "    - ○ Final commit pushed"
+clean: "    - [ ] Final commit pushed"
+```
+
+Two consequences the earlier record got backwards:
+
+- **They are *fenced*, not indented.** `codeBlockStyle` is `undefined` on all 84 and the source
+  lines sit at **column 0**. The cause is the fence-*phase* disagreement alone: an unbalanced
+  ` ``` ` makes `marked` swallow a long region as one code block (lines 939–1168 in one file,
+  2527–2546 in the other) while `preprocessBody`'s toggle flips on **every** fence-shaped line,
+  including ones `marked` treats as that block's *content*. **So the follow-up this file and
+  `src/lists.ts` both proposed — "teach the pre-pass about indented code blocks" — would repair
+  none of the 84 lines. That follow-up is retired, not deferred.**
+- **The damage comes entirely from the branch composition already duplicates.** All 84 are GFM
+  `[ ]`; `renderTaskState` reproduces that branch byte-for-byte. The non-GFM branch, the
+  pre-pass's only irreplaceable function, causes **zero** class-C lines.
+
+Because fenced ranges are exempt from every width gate, **no gate in `verify` can see this**. It
+is a live, known, deliberately unrepaired defect.
+
+**P2 — the position the pre-pass cannot reach is empty in the corpus.**
+Across **35,614 files** there is **no blockquoted task item of any kind**, GFM or Obsidian
+custom, and **no non-GFM state in an ordered list**: **0 hits in 0 files**, by three independent
+measurements — a token walk over every list item at every nesting depth, a fence-gated source
+scan, and a deliberately conservative fence-*un*gated upper bound that counts matches even inside
+code. `tests/render-lists.test.ts`'s *"an Obsidian custom state inside a blockquote is still
+literal — the deferred residue"* stays exactly as it is, and now carries the extra fact that the
+residue it grades is a population **the corpus does not contain**. The gap is real; the win from
+closing it is not measurable on this data.
+
+**P3 — removing the pre-pass breaks two files, and `renderTaskState` cannot repair them.**
+This is the entry a future plan starts from. Reproduction, invented and repo-local:
+
+```text
+### Phase 1
+- [ ] 1. Alpha initialized
+- [ ] 2. Beta configured
+```
+
+`marked@14.1.4`, raw lexer, no pre-pass in the path:
+
+```text
+list.loose = false          item0.task = true          item0.tokens = [list]
+```
+
+The item's text begins with an ordered marker, so once `marked` recognises a real GFM task item
+and strips `[ ] ` per spec, CommonMark lexes the remainder as a **nested ordered list**:
+
+```text
+pre-pass present (today):   • ○ 1. Alpha initialized
+                            • ○ 2. Beta configured
+pre-pass removed:           • ○
+                                1. Alpha initialized
+                            • ○
+                                1. Beta configured
+```
+
+Every item renumbers to `1.` and the author's own numbering is destroyed. Three facts fix the
+disposition:
+
+- **`renderTaskState` cannot undo it, because the damage is at *lex* time.** By the time
+  composition runs, `item.tokens[0]` is a `list` token, so `renderTaskState`'s documented
+  `inline === undefined` fallback returns the prefix as a string and the nested list renders
+  under it. **The premise "composition already produces byte-identical output for every task item
+  `marked` tokenizes" is false for any item whose text begins with a block-starting construct.**
+- **Reproduces tight *and* loose**; `loose` is irrelevant. The control — `- [ ] Alpha initialized`,
+  same shape with text not starting `N.` — is **byte-identical** before and after, which isolates
+  the cause exactly.
+- **Population: 2 files, 50 source lines, 202 changed rendered lines over 4 combos, both glyph
+  tiers**, all tight, none carrying an indented continuation. `overflow` and all three detector
+  counts stay 0, so **no gate sees this either.**
+
+`tests/fixtures/task-ordered-text.md` and its test in `tests/render-lists.test.ts` pin today's
+correct output. **A package that deletes the pre-pass owns that test**, and owes a repair for the
+nested lex — suppressing it for task items is real design work, not a side effect.
+
+#### Colourless gates cannot see colour-only defects — and that is now a class, not an anecdote
+
+Three separate measurements have found a defect that is invisible without `FORCE_COLOR`, and the
+mechanism is the same each time: **a pass reasons about rendered text as if SGR sequences were not
+in it.** Every gate `bun run verify` runs is colourless, so none of them can fail on any of these.
+
+| Where | What only colour reveals |
+|---|---|
+| `extractCodeRanges`' proposed narrowing (WP-2, above) | the predicate counts a code block's own SGR brackets as the "non-whitespace" that triggers narrowing, tripling the affected population and dropping genuine ranges |
+| `TASK_STATE_SENTINEL` (WP-4) | the sentinel reaches the syntax highlighter *inside* a code block; the highlighter wraps it in an SGR pair; the strip removes the character and leaves the pair |
+| the ASCII tier's "byte-identical round-trip" | asserted here, pinned by `tests/glyphs.test.ts` and `tests/render-lists.test.ts` — **true colourless, false under colour** |
+
+The task-state case, measured: the same axis set gives `classC=2` colourless and `classC=3` under
+`FORCE_COLOR=3`, the extra combo being the **ASCII** tier of a file whose unicode tier already
+failed. Inside a recorded `codeRange` it emits an orphaned, empty colour pair the author never
+wrote:
+
+```text
+base:  "    - [\x1b[31m\x1b[39m ] \x1b[31mFinal\x1b[39m …"
+clean: "    - [ ] \x1b[31mFinal\x1b[39m …"
+```
+
+**Rule this earns: a claim that a pass round-trips byte-identically is not established by a
+colourless test.** Re-measure it under `FORCE_COLOR=3` before writing it down, and say which
+colour mode a recorded figure was taken in — a parity figure without its colour mode is a
+provenance gap, exactly as WP-2 found for the code-range populations.
 
 ### Glyph tier
 

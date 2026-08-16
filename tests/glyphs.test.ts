@@ -237,6 +237,16 @@ describe("width invariance across glyph tiers", () => {
 
 // --- ASCII tier is a provable no-op where it should be -----------------------
 
+// **"Provable no-op" is proven colourless only, and WP-4 of
+// `plans/renderer-deferred-work.md` measured the qualification.** Every assertion in this
+// block runs without `FORCE_COLOR`, and so does every gate in `bun run verify`. Under
+// `FORCE_COLOR=3` the ASCII tier's task-state pre-pass is **not** a byte-level no-op: the
+// stripped `TASK_STATE_SENTINEL` has already been handed to the syntax highlighter inside a
+// code block, and the SGR pair the highlighter wrapped around it survives the strip, leaving
+// an orphaned empty colour pair inside a recorded `codeRange` (parity class C — `classC=2`
+// colourless, `classC=3` forced, on the same axis set). The assertions below are correct and
+// stay; what is not proven by them is the *unqualified* claim. See `src/AGENTS.md`,
+// "Colourless gates cannot see colour-only defects".
 describe("ASCII tier — provable no-op", () => {
   test("the rule is byte-identical to today's output: '-'.repeat(79) at width 80", () => {
     const output = stripAnsi(renderDocument("above\n\n---\n\nbelow\n", 80, ASCII_GLYPHS));
