@@ -404,6 +404,61 @@ population this seam's wrap closed: **1,823 orphans across 250 files at width 10
 `paragraph` token never arrives here, and the inline `text` tokens `parseInline` dispatches
 carry no `tokens`, which is what stops a double parse.
 
+**The punctuation-leading continuation wrap — pinned in WP-5 of
+`plans/renderer-deferred-work.md`, not fixed, and its causal record corrected twice
+before landing.** `plans/marked-terminal-replacement.md`'s WP-6 deferred-finding note
+first recorded this as a real cosmetic defect it could not attribute precisely: a
+coalesced continuation whose first visible character is a piece of punctuation that
+cannot start a word, one column right of the item's own text column. WP-5's own brief
+then proposed a specific mechanism — `LIST_LINE_PREFIX` (`src/render.ts`) greedily
+absorbing a pre-existing extra column and stamping it onto every continuation
+`rewrapListBody` creates — and that theory does not hold either: instrumenting
+`rewrapListBody` directly shows it never re-wraps a line for the reproduction below at
+all, and a margin argument over the nesting arithmetic (`currentListBudget`'s per-level
+`4`-column step against a guard that can only ever add 1) shows an ancestor's wider
+budget can never be exceeded by a descendant's guard-widened line, so this mechanism
+has no live reproduction to attribute to it.
+
+**The verified mechanism is the same guard "The two paths guard differently" already
+documents, misfiring on a shape neither half of that section considered.** A colon
+inside a code span becomes the 9-byte `COLON_REPLACER` sentinel (`*#COLON|*`) during
+inline parsing, and `undoColon` does not decode it back until `composeItem`
+(`src/lists.ts`) — *after* the coalesced tight-item wrap has already measured and
+wrapped the segment. The sentinel's literal leading `*` matches `MARKER_SHAPED_LINE`,
+so the coalesced guard fires on it exactly as it fires on an author's own glued `*` —
+correctly, by the same "the one space was always right for it" reasoning `src/render.ts`
+already gives for `*#COLON|*root`. What that reasoning did not anticipate is what
+happens *after* the guard: `undoColon` shrinks the 9-byte sentinel back to one `:`, but
+the one guard space in front of it is untouched by that shrink, so the rendered line
+is one column wider than an unguarded continuation of the same item — the exact
+punctuation-leading artifact the older plan recorded. Witnessed at
+`tests/fixtures/coalesced-colon-guard-continuation.md` (`tests/render-lists.test.ts`,
+"the coalesced colon-guard continuation drift"), reproducing at widths 50, 60, 90 and
+101 in both glyph tiers, from repo-local content — no private corpus needed, unlike the
+evidence the older plan pointed a future package at and that turned out to live in an
+archive no session can open. **Not fixed here either**: the guard is correct for the
+reason it exists, decoding earlier would reopen the emoji-substitution-inside-verbatim-
+content hazard `COLON_REPLACER` exists to prevent (see "The sentinels" section below,
+"`COLON_REPLACER` is a first-class owned mechanism"), and a repair needs the guard to know an item's
+*true* text column rather than merely which grid column it must avoid — the same
+missing primitive `LIST_LINE_PREFIX` lacks, so the repair this witness is waiting for
+and the one the older, wrongly-attributed theory described may turn out to be the same
+future work after all, just for a different reason than either record gave first.
+
+**A sentence in `src/list-lines.ts` is narrower than the code, and by design (WP-5 of
+`plans/renderer-deferred-work.md`) neither it nor `src/detectors.ts` is being edited to
+fix it.** `MARKER_SHAPED_LINE`'s doc comment there says the render seams defuse a marker-
+shaped continuation by giving it "one leading guard space"; `src/detectors.ts:531-543`
+(off-limits to this package) says the same in its own words. After WP-1 of
+`plans/renderer-deferred-work.md` that is only the common case: the coalesced seam now
+widens to **two** spaces when the one-space form would itself land on the grid, a
+marker-shaped continuation survives the narrower re-wrap, and one of the survivors is
+`*`-shaped (see "The two paths guard differently" above). Neither file is wrong about
+today's corpus — the two-space path was measured firing on no corpus file at any tested
+axis — so both sentences are accurate about what actually renders; they are just no longer
+the whole truth about what the guard *can* emit. Noted here rather than in either module,
+per this package's file scope.
+
 #### A nested item's continuations are pulled back to their own item, per level
 
 The third defect in this family and the one worth the most: a continuation line inside a
@@ -740,6 +795,37 @@ unobservable either way — every renderer that can receive a code span runs `un
 authored copy of the literal cannot reach it, because `marked` tokenizes the surrounding
 asterisks as emphasis long before the pass. Changing it would be churn against a measured
 no-op.
+
+**A live, unrepaired defect: the wrap can split `COLON_REPLACER` itself, and `undoColon`'s
+match then fails.** Recorded, not fixed — WP-5 of `plans/renderer-deferred-work.md`, from an
+audit of what earlier packages in that plan had captured. `undoColon` is a `split`/`join` on
+the literal 9-character token `*#COLON|*`; that match needs the whole token intact on one
+line. The **coalesced** tight-item wrap (`src/render.ts`'s `text` override) measures and
+wraps `segments` that still carry the sentinel — `transform`/`undoColon` does not run until
+`composeItem` (`src/lists.ts`), *after* this wrap — so when a code span's colon sits inside an
+otherwise-unbroken run of non-whitespace characters (a `key:value`-shaped token with nothing
+either side for the wrap to break on instead), the sentinel is just more of that one
+over-budget "word" to `wrapAnsi`'s hard-split, which is grapheme-safe but has no notion that
+these particular 9 bytes must stay contiguous. Split it, and `undoColon`'s match finds neither
+half: the raw escape ships to the user's terminal instead of `:`.
+
+Independently reproduced repo-locally (no private corpus needed) — a tight item reading
+"but omitting" a code span spelled `pricing.input_cache_read:3.5` (colon inside, nothing
+either side of it to break on) renders, at width 38:
+
+```text
+"      pricing.input_cache_read*#COLON"
+"      |*3.5 but omitting that one"
+```
+
+matching the shape found in real corpus data during WP-1 of the same plan (`"…*#COLON|"` /
+`"|* 3.5…"`), present identically at both ends of that package — caused and fixed by nothing
+in it. **No width gate can see this**: every affected line is *under* budget (that is what
+let the wrap choose that break point at all), so `--check` and both sweeps are blind to it,
+the same class of artifact as the coalesced-guard collision WP-1 did repair. Its population is
+unmeasured — the question is how often a code span's colon sits inside a run with no
+whitespace on either side, and answering it needs a corpus pass this package is not
+authorized to run.
 
 #### Why a sentinel *walk* exists at all, and why there are several
 

@@ -271,10 +271,20 @@ agree with it on a 36-cell environment matrix (`src/AGENTS.md`, "Colour").
 majors behind upstream, **and cannot be subset to shrink it**: `cli-highlight`
 hardcodes a full `require` of highlight.js's entire bundled language set rather than
 importing individual languages one at a time, so there is no seam to trim unused
-languages through. Upgrading past the pin is out of scope for this WP — recorded here
-so the staleness is a known, deliberate deferral, not something a future pass
-rediscovers and "fixes" by bumping a major version with no compatibility check against
-this tool's fence-language handling (`src/lang.ts`).
+languages through.
+
+**This is blocked, not deferred, and WP-5 of `plans/renderer-deferred-work.md`
+corrected the record to say so.** "Deferred" describes a choice — do it later, on
+purpose, when it is someone's priority. There is no such choice available here: the
+pin is transitive, owned by `cli-highlight@2.1.11`'s own dependency declaration, and
+this repo has no `highlight.js` import of its own to bump — `src/lang.ts` reaches
+`cli-highlight`'s `supportsLanguage`, never `highlight.js` directly. Moving past
+`10.7.3` requires either `cli-highlight` publishing a release pinned to a newer
+`highlight.js` (upstream's choice, not this repo's) or replacing `cli-highlight`
+itself, which is a dependency-swap with its own compatibility check against this
+tool's fence-language handling (`src/lang.ts`) and its own parity pass — not a version
+bump a future session can make unilaterally. Recorded here so a future pass does not
+"fix" the staleness by bumping a major version with nothing else in place.
 
 **Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
 installed and exercised by this test suite — `marked@14.1.4`, `cli-highlight@2.1.11`,

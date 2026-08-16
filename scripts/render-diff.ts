@@ -489,6 +489,16 @@ export interface ClassifyOptions {
 /** The three detector channels, in the order the plan names them. */
 const DETECTOR_NAMES: Array<keyof DetectorCounts> = ["orphans", "overIndent", "columnZero"];
 
+// A composite group key's field separator, joining width/tier/ambiguous-mode below.
+// `String.fromCharCode(0)` rather than a raw NUL byte typed into the source, for the
+// same reason `src/render.ts`'s `SENTINEL` is spelled this way: a literal NUL embedded
+// in this file makes it binary to `grep`/`rg` — both skip it silently without `-a`/
+// `--text`, so a search for a symbol that is right here returns nothing. A space would
+// not do instead: `tier` and `ambiguous` are themselves plain words with no embedded
+// whitespace, so a single NUL keeps the three-field split unambiguous without needing
+// to be a character no field could ever contain.
+const GROUP_KEY_SEPARATOR = String.fromCharCode(0);
+
 export function classifyDiffs(
   pairs: PairedCombo[],
   expect: ExpectClass,
@@ -534,7 +544,7 @@ export function classifyDiffs(
 
   const overflowBefore = new Map<string, number>();
   const overflowAfter = new Map<string, number>();
-  const groupKey = (r: ComboRecord): string => `${r.width} ${r.tier} ${r.ambiguous}`;
+  const groupKey = (r: ComboRecord): string => `${r.width}${GROUP_KEY_SEPARATOR}${r.tier}${GROUP_KEY_SEPARATOR}${r.ambiguous}`;
   for (const { before, after } of pairs) {
     const key = groupKey(before);
     if (before.overflowed) overflowBefore.set(key, (overflowBefore.get(key) ?? 0) + 1);
@@ -544,7 +554,7 @@ export function classifyDiffs(
   if (expect === "b") {
     const allKeys = new Set([...overflowBefore.keys(), ...overflowAfter.keys()]);
     for (const key of allKeys) {
-      const [widthStr, tier, ambiguous] = key.split(" ") as [string, GlyphTierName, AmbiguousModeName];
+      const [widthStr, tier, ambiguous] = key.split(GROUP_KEY_SEPARATOR) as [string, GlyphTierName, AmbiguousModeName];
       const beforeCount = overflowBefore.get(key) ?? 0;
       const afterCount = overflowAfter.get(key) ?? 0;
       if (afterCount > beforeCount) {
