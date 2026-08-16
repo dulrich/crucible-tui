@@ -195,7 +195,7 @@ form of the byte-comparison above — the same library-plus-CLI shape as
 per combo — `textSha`, `codeContentSha`, `codeRanges`, `detectors` — never bodies, so a
 baseline over the private corpus stays a reviewable artifact. **`codeContentSha` is the
 channel this section exists to demand**; the parity classes it feeds are documented once,
-in `src/AGENTS.md`'s "Parity: three classes".
+in `src/AGENTS.md`'s "Parity: four classes".
 
 Two traps, each recorded because it already cost a package real time:
 

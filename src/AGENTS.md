@@ -12,7 +12,7 @@ Run/verify contract, Conventions and the dependency record live there.
 | How to read this file | the two conventions, including what a `index.js:NNN` citation means |
 | Why the renderer is owned at all | the three structural facts and what the removal measured |
 | What each renderer method must do | the requirement table, and the four unassigned methods |
-| Parity: three classes | A/B/C, and why class C is a content hash rather than a gate |
+| Parity: four classes | A/B/C/D, and why class C is a content hash rather than a gate |
 | The list pipeline | composition, the two wrap paths, the de-drift, the claim domains, the retained passes |
 | The sentinels | two control characters, one literal, and why the walks differ |
 | Glyph tier · Ambiguous width | the tier, the probe, and why `wide` forces ASCII |
@@ -133,7 +133,7 @@ migration flag.) `marked.use()` requires every key to exist on its own `Renderer
 (`marked.cjs:2251`, which throws otherwise) and calls each with `this` bound to that
 `Renderer`, which is where the `this.parser` the visitors close over comes from.
 
-### Parity: three classes, and why class C is a content hash
+### Parity: four classes, and why class C is a content hash
 
 Every package of the renderer replacement declared which class of difference it was allowed
 to produce, and `scripts/render-diff.ts` classifies each `(file × width × tier ×
@@ -150,6 +150,26 @@ ambiguous-mode)` combo on four independent channels: `textSha`, `codeContentSha`
   class-B diff on pure-ASCII content is not class B; it is a regression.
 - **Class C — forbidden, always.** Any change to the content **inside** a `codeRange`, at
   any package, on any corpus.
+- **Class D — enumerated defect repair.** Output may change **only** on inputs that
+  reproduce a written, **committed** defect witness. Every diff is enumerated and attributed
+  to that witness; `overflow` counts and the three detector counts are **non-increasing** at
+  every axis; and `codeContentSha` is **unchanged** — class D never authorizes class C, which
+  needs its own separately granted exception. Granted at approval of
+  `plans/renderer-deferred-work.md` (2026-08-15), for that plan's defect repairs.
+
+**Class B could not absorb class D, and merging them later would break both.** Class B is
+about *measurement*: the library counted columns with `.length` and the owned renderer counts
+them with `Measure`, so a diff is class B exactly when the two disagree — which is why "a
+class-B diff on pure-ASCII content is not class B; it is a regression" is correct and stays
+correct. ASCII has no width discrepancy, so an ASCII diff can never be attributed to a
+measurement change, and that rule is the only thing that stops class B from becoming "any
+diff I can argue for". A defect repair changes ASCII output *by construction* — the bug and
+the fix are both pure ASCII — so under class B every repair in this plan reads as a
+regression. The two classes are also policed differently: class B is bounded by *attribution
+to a mechanism* (measurement), class D by *attribution to an artifact* (a committed witness
+file that reproduces the defect and a test that names the widths). **Do not widen class B to
+cover repairs, and do not let class D absorb measurement diffs** — a class with no
+falsifiable admission test is not a parity class.
 
 **Class C is checked by content hash and never by a gate's exit code, and that sentence is
 the most important one in this file: fenced ranges are exempt from every width gate, and
