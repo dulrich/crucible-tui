@@ -549,8 +549,13 @@ export interface RenderResult {
  * emits markers in balanced pairs) is dropped rather than left dangling: it can never
  * manufacture a range on its own.
  *
- * **F6 (`reviews/2026-07-30-tn-code-review.md`) is measured here and deliberately not
- * applied.** WP-4's landing note records that this walk "converts a character-granular
+ * **F6 (`runs/dispatch/mt-wp-5-list-item-layout-brief.md:164`, dispatch-brief field-note
+ * numbering) is measured here and deliberately not applied.** That label is **not** the F6 of
+ * `reviews/2026-07-30-tn-code-review.md`, which is the still-Open *file-size* finding
+ * ("implementation and test vertical slices were not decomposed at 1,000 lines") and has
+ * nothing to do with code ranges; this comment cited that review until WP-2 of
+ * `plans/renderer-deferred-work.md`, and `src/AGENTS.md` repeated the mis-attribution.
+ * WP-4's landing note records that this walk "converts a character-granular
  * `SENTINEL` pair into whole 1-based *line* numbers, so when a fence inside a list item
  * shares its opening physical line with the item's own text, that marker line is inside the
  * recorded range", and assigns the narrowing to WP-6.
@@ -570,6 +575,20 @@ export interface RenderResult {
  * on its own authority — the precedent is WP-4's user-approved class-C exception. The
  * narrowing is therefore left undone, with its measurement recorded so the next package
  * starts from the number rather than from the argument.
+ *
+ * **The two paragraphs above are retained as the record of what WP-6 believed, and WP-2 of
+ * `plans/renderer-deferred-work.md` re-ran them: the figures do not survive and the
+ * narrowing above must not be applied as written.** Re-measured at `c27766e` over 4,457
+ * corpus files (the corpus is live data and no longer enumerates 4,837), ranges and coverage
+ * change on the **same** set — 97 files colourless, **282 under `FORCE_COLOR=3`** — so "88"
+ * and "110" cannot both describe one run, and 4,980/2,422 were 20-axis sums of a ~235-line
+ * per-axis population. Three findings, any one of which blocks it: the predicate is
+ * **ANSI-blind**, so an SGR sequence beside a marker reads as the "non-whitespace" that
+ * triggers narrowing and under colour it drops **all five** of `tests/fixtures/fenced-list.md`'s
+ * ranges — which every gate in `verify` misses because they all run colourless; it **raises**
+ * `overIndent` and `orphans`, which no parity class, including class D, permits; and on the
+ * coalesced tight-item seam it un-exempts lines carrying real fence content, not only prose.
+ * See `src/AGENTS.md`'s deferral entry.
  */
 function extractCodeRanges(renderedWithSentinels: string): RenderResult {
   const codeRanges: Array<[number, number]> = [];
