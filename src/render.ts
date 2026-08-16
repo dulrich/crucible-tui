@@ -87,6 +87,20 @@ const GFM_RECOGNIZED_CHARS = new Set([" ", "x", "X"]);
 // checks display *width*, not code points. A sentinel that gets stripped before the
 // text ever reaches the terminal — the same idiom `SENTINEL` already uses for code
 // ranges — has no such failure mode: nothing invisible-but-present ever ships.
+//
+// **"Nothing invisible-but-present ever ships" is true colourless and false under colour,
+// measured at WP-4 of `plans/renderer-deferred-work.md`.** The character is stripped, but
+// under `FORCE_COLOR=3` it has already been handed to the syntax highlighter *inside a code
+// block* by the time the strip runs, and the highlighter wraps it in an SGR pair that the
+// strip does not remove. The ASCII tier then emits, inside verbatim content:
+//
+//   base:  "    - [\x1b[31m\x1b[39m ] \x1b[31mFinal\x1b[39m …"
+//   clean: "    - [ ] \x1b[31mFinal\x1b[39m …"
+//
+// — an orphaned, empty colour pair the author never wrote, inside a recorded `codeRange`,
+// i.e. parity class C. This is a **third** class-C combo that appears only under colour
+// (`classC=2` colourless, `classC=3` forced, same axis set). See `src/AGENTS.md`,
+// "Colourless gates cannot see colour-only defects", for why this keeps recurring.
 const TASK_STATE_SENTINEL = String.fromCharCode(1);
 
 // Same rationale as `stripSentinelChar` below: this control character has no
@@ -161,6 +175,35 @@ function stripTaskStateSentinel(text: string): string {
 // So this stays, and the honest narrowing — teaching it about indented code blocks so the
 // 84 lines stop being rewritten — is the class-C-flagged repair a later package should
 // carry, not a side effect of a dependency removal. See this WP's report.
+//
+// **WP-4 of `plans/renderer-deferred-work.md` is that later package. It measured the two
+// bullets above and found both wrong, and the narrowing the paragraph directly above
+// prescribes is retired rather than deferred.** The paragraph is left standing rather than
+// edited so the error stays legible; what replaces it, measured at `2e90d71` over 35,614
+// files (the corpus resolves 35,614; the differ's own selection is 4,465 — the "4,837"
+// above was a *selection* count, never a corpus count):
+//
+//   - **the 84 lines are in *fenced* blocks, every one of them.** `codeBlockStyle` is
+//     `undefined` on all 84 and the source lines sit at **column 0** — not one is indented.
+//     The cause is the fence-*phase* disagreement: an unbalanced ` ``` ` makes `marked`
+//     swallow a long region as a single code block (measured: lines 939–1168 in one file,
+//     2527–2546 in the other), while the toggle in `preprocessBody` below flips on **every**
+//     fence-shaped line, including ones `marked` is treating as that block's *content*, so
+//     the two run in opposite phase and this function rewrites inside `marked`'s code.
+//     **Teaching this pass about indented code blocks would therefore repair none of them.**
+//   - **the 84 are the same 84 over 4,465 files and over 35,614** — the enumeration is
+//     complete, not a sample — and their state-char histogram is `{" ": 84}`: **every one
+//     is a GFM `[ ]`**. The branch that does the class-C damage is the one
+//     `src/lists.ts`'s `renderTaskState` already reproduces byte-for-byte; the non-GFM
+//     branch below, this pass's only irreplaceable function, causes **zero** of it.
+//   - **"the other 3 change prose, all tracing to a single authored `[/]`" is wrong.** One
+//     of the three is that. The other two are a 202-line re-tokenisation that removing this
+//     pass *causes* — see `src/AGENTS.md`, "The task-state pre-pass", and the fixture
+//     `tests/fixtures/task-ordered-text.md` that guards it.
+//
+// **The class-C exception to stop rewriting the 84 was requested at WP-4 and the user
+// withheld it**, because the same removal breaks more than it repairs. The 84 lines are
+// still corrupted today, deliberately, and this pass stays exactly as it is.
 function rewriteTaskState(line: string, glyphs: GlyphSet): string {
   const match = TASK_STATE_LINE.exec(line);
   if (!match) return line;

@@ -219,6 +219,21 @@ export const TASK_GLYPHS: Record<string, string> = {
  * bracket, so `- [x]  two` would otherwise come back a column narrower than it went in.
  * Both are recovered here. `( *)` and not `(\s*)` deliberately — `marked`'s own strip is
  * ` +`, so a tab after the bracket survives into the item text and must not be eaten twice.
+ *
+ * **The zero-gap trap, for whoever writes the follow-up plan (WP-4 of
+ * `plans/renderer-deferred-work.md`, measured).** `( *)` matches a gap of length **zero**,
+ * and that is safe *only* because this regex is read behind `renderTaskState`'s
+ * `if (!item.task) return ""` guard: `marked` sets `item.task` from `/^\[[ xX]\] /`, which
+ * requires a trailing space, so a zero-length gap can never actually arrive here. The
+ * source pre-pass this cooperates with is stricter — `TASK_STATE_LINE`
+ * (`src/render.ts`) requires `(\s)` — so `- [/]text` and a bare `- [/]` at end of line are
+ * rewritten by **neither** mechanism today. A future package that moves non-GFM states to
+ * composition by keying a new branch on this regex, *outside* the `item.task` guard, would
+ * therefore acquire a population nothing rewrites today. Corpus incidence of the non-GFM
+ * zero-gap shapes is **0**, but the GFM bare-end-of-line shape (`- [ ]` with nothing after
+ * it, a task item to neither `marked` nor the pre-pass) is **14 unordered lines in 1 file
+ * plus 9 ordered lines in 1 file** across 35,614 files. **Gate any new branch on a
+ * non-empty gap.**
  */
 const RAW_TASK_STATE = /^\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[(.)\]( *)/;
 
@@ -241,15 +256,36 @@ const RAW_TASK_STATE = /^\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[(.)\]( *)/;
  * `item.task === true`, and they are precisely the ones the library was rendering wrong.
  * Rendering them under the same tier rule as everywhere else is family B2.
  *
- * **Deleting the pre-pass outright is out of reach and the measurement says so** — see
- * this WP's report, §4. `preprocessBody`'s fence toggle counts every ` ``` ` line, while
- * `marked` pairs fences by info-string and nesting, and the two go out of phase on real
- * corpus files; the pre-pass therefore rewrites task-shaped lines that `marked` treats as
- * **code**, and indented code blocks it never sees as fences at all. Measured: **211 such
- * lines in 11 of 4,786 corpus files.** Removing the pre-pass stops corrupting them —
- * which is a *fix*, and is still a change to bytes inside a recorded `codeRange`, i.e.
- * parity class C, forbidden at every package. Full removal needs its own package with its
- * own approved class.
+ * **Those two positions are also empty in the corpus, and that is a measured fact rather
+ * than a guess (WP-4 of `plans/renderer-deferred-work.md`).** Across **35,614 files** there
+ * is **no blockquoted task item of any kind** — GFM or Obsidian custom — and **no non-GFM
+ * state in an ordered list**: 0 hits in 0 files, by a token walk over every list item at
+ * every nesting depth, by a fence-gated source scan, and by a deliberately conservative
+ * fence-*un*gated upper bound. This branch is real and correct; it is exercised by the test
+ * suite and by nothing else.
+ *
+ * **Deleting the pre-pass outright is out of reach, and the reason recorded here through
+ * WP-7 was the wrong one.** The sentence this paragraph used to carry — that the pre-pass
+ * rewrites task-shaped lines `marked` treats as code, "and indented code blocks it never
+ * sees as fences at all", measured at "211 such lines in 11 of 4,786 corpus files" — is
+ * half right and its arithmetic is stale. Re-measured at `2e90d71` over 35,614 files, by
+ * substituting the pre-pass with the identity and diffing:
+ *
+ *   - the corrupted population is **84 lines in 2 files**, and **every one of them is
+ *     inside a *fenced* block** (`codeBlockStyle === undefined`, source lines at column 0).
+ *     **Not one is an indented code block.** The cause is purely the fence-*phase*
+ *     disagreement named above: an unbalanced ` ``` ` makes `marked` swallow a long region
+ *     as one code block while `preprocessBody`'s toggle — which flips on every fence-shaped
+ *     line, including ones `marked` is treating as that block's *content* — is in the
+ *     opposite phase. **So "teach the pre-pass about indented code blocks" would repair
+ *     none of the 84 lines**, and that follow-up is retired rather than deferred;
+ *   - removing the pre-pass would also **break** two files, in a way this function cannot
+ *     repair — see `src/AGENTS.md`, "The task-state pre-pass", for the reproduction.
+ *
+ * Removing the pre-pass stops corrupting the 84 and is still a change to bytes inside a
+ * recorded `codeRange`, i.e. parity class C. **The exception was requested at WP-4 of
+ * `plans/renderer-deferred-work.md` and the user withheld it**, on the measurement above.
+ * The 84 lines are still corrupted today, deliberately.
  *
  * ### Why it mutates the token rather than prefixing the composed string
  *
