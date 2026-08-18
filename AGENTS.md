@@ -32,8 +32,17 @@ deleting it.
   and `src/render.ts`. **This line said "lexer only" until 2026-08-17 and that was false**,
   in a way that matters structurally rather than pedantically: `src/render.ts:1397` calls
   `instance.parse(...)`, so **marked's `Parser` is the tree walker**, and the owned methods
-  are callbacks it invokes — they re-enter it 11 times via `this.parser.parse(tokens, top)`
-  and `this.parser.parseInline(tokens)`. The consequence is a hard interface constraint:
+  are callbacks it invokes — they re-enter it **9 times** via `this.parser.parse(tokens, top)`
+  and `this.parser.parseInline(tokens)` (`src/render.ts:923,926,931,934,996,1108,1319,1372,1388`;
+  a tenth match at `:290` is prose). **`Parser` is not a bare dispatcher**, and a plan that
+  assumes it is will be wrong: `marked.cjs:1975-1990` coalesces consecutive block `text` tokens
+  with `\n` and, when `top`, wraps the result in a **synthesized `paragraph` token** whose
+  `tokens` array is fabricated; `parseInline` routes `escape` to `renderer.text` and takes an
+  optional renderer override (`:2013`); `space` has no owned method and falls through to
+  marked's default (`''`, `:1695`); an unknown type **throws** unless `silent`. `marked.use()`
+  (`:2248-2268`) additionally binds the receiver — this is where `this.parser` comes from —
+  falls back to the previous renderer when a method returns `false`, and coerces every falsy
+  return to `''`. The consequence is a hard interface constraint:
   marked's renderer callbacks are typed `=> string` (`marked.d.ts:349-365`, `parseInline`
   at `:226`/`:234`), so **a renderer method cannot return anything but a string** — no
   styled spans, no source ranges. Any work that needs a richer return type (the
