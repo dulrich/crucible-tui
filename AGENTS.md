@@ -27,9 +27,19 @@ deleting it.
 ## Stack
 
 - Bun + TypeScript, single flat package (no workspaces).
-- `marked` (lexer only) + **this repo's own terminal renderer** — every renderer
-  method lives in `src/inline.ts`, `src/blocks.ts`, `src/lists.ts`, `src/table.ts`
-  and `src/render.ts`. `marked-terminal` did prose/list/code rendering until
+- `marked` (**lexer and parser**) + **this repo's own renderer method bodies** — every
+  renderer method lives in `src/inline.ts`, `src/blocks.ts`, `src/lists.ts`, `src/table.ts`
+  and `src/render.ts`. **This line said "lexer only" until 2026-08-17 and that was false**,
+  in a way that matters structurally rather than pedantically: `src/render.ts:1397` calls
+  `instance.parse(...)`, so **marked's `Parser` is the tree walker**, and the owned methods
+  are callbacks it invokes — they re-enter it 11 times via `this.parser.parse(tokens, top)`
+  and `this.parser.parseInline(tokens)`. The consequence is a hard interface constraint:
+  marked's renderer callbacks are typed `=> string` (`marked.d.ts:349-365`, `parseInline`
+  at `:226`/`:234`), so **a renderer method cannot return anything but a string** — no
+  styled spans, no source ranges. Any work that needs a richer return type (the
+  style-last direction, or `docs/adr/0001-editor-path.md`'s
+  `{text, style, sourceStart, sourceEnd}`) must **own the token walk** first; the lexer is
+  the part worth keeping. `marked-terminal` did prose/list/code rendering until
   `plans/marked-terminal-replacement.md` replaced it method by method (WP-2 to WP-5)
   and removed it (WP-6, landing byte-identical); `src/AGENTS.md` carries the measured
   reasons each behaviour is required, and reads its `index.js:NNN` citations as
