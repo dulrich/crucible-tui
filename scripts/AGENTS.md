@@ -221,7 +221,7 @@ it makes visible.
 
 ```bash
 bun run sweep -- --colour-mode both                       # the three buckets, no ratchet
-bun run sweep -- --colour-mode both --max-char-diff 62 --max-sgr 20   # what verify runs
+bun run sweep -- --colour-mode both --max-char-diff 66 --max-sgr 25   # what verify runs
 bun run sweep -- --colour-mode on                         # the ordinary sweep, in colour
 MDVIEW_CORPUS_MANIFEST=<private manifest> bun run sweep -- --colour-mode both   # opt-in
 ```
@@ -263,15 +263,15 @@ a larger set (64 disjoint against 125). A reader who takes `sgrOnly` for "the un
 count" is reading the wrong number, which is why both are on the same line.
 
 **The seeds, and what defines them.** Measured by this instrument over the bundled manifest
-`corpus/default-manifest.json`, corpus `repo` — **22 files × the 5 default widths = 110
+`corpus/default-manifest.json`, corpus `repo` — **23 files × the 5 default widths = 115
 combos** — at both glyph tiers, which agree exactly:
 
 | | combos | identical | charDiffOnly | sgrOnly | both | **charDiff** | **sgrAny** | errors |
 |---|---|---|---|---|---|---|---|---|
-| unicode | 110 | 35 | 55 | 10 | 10 | **65** | **20** | 0 |
-| ascii | 110 | 35 | 55 | 10 | 10 | **65** | **20** | 0 |
+| unicode | 115 | 35 | 55 | 14 | 11 | **66** | **25** | 0 |
+| ascii | 115 | 35 | 55 | 14 | 11 | **66** | **25** | 0 |
 
-`scripts/verify.ts` runs the unicode pass with `--max-char-diff 65 --max-sgr 20`. **Both
+`scripts/verify.ts` runs the unicode pass with `--max-char-diff 66 --max-sgr 25`. **Both
 are ratchets, not targets** — the corpus is what it is today, and what must not happen is
 either number going up.
 
@@ -292,6 +292,61 @@ the re-seed is recorded with its evidence rather than asserted:
   text.
 - `sgrAny` did not move, which is the corroborating detail: the 20 are `styleWikiLink`'s
   hard-coded escapes, and the new prose added no wiki-link.
+
+**Re-seeded again to 66/25 when `plans/styled-runs-and-colour-policy.md` was written**, a
+commit that changed no source at all. Population growth, 22 → 23 files, 110 → 115 combos;
+`charDiff` and `identical` both held, and all five new combos landed in `sgrOnly`. The
+cause is the same one the original 20 have, and it is worth naming precisely because the
+shorthand for this bucket is misleading: **`sgrOnly` does not mean "the two modes' escape
+streams differ."** It means the *colourless* render still contains SGR — `differs` is
+false and `offDigest.hasSgr` is true (`classifyColourAxis`, `scripts/corpus.ts:1069-1075`).
+It is a **leak counter**, and a file full of `**bold**` contributes nothing to it, because
+the colourless child emits no bold at all. Isolated with the one-file manifest procedure
+below: the plan file as written reports `charDiff=0 sgrAny=5`; the same file with its
+eight `[[…]]` occurrences textually removed reports `charDiff=0 sgrAny=0 identical=5`.
+Same renderer, same widths, −5. `styleWikiLink` again.
+
+**`charDiff` moved too, 65 → 66, and the extra one is a real defect firing on the new plan
+file's own text.** Population again, not renderer — but this time the new population member
+*demonstrates* a defect the plan exists to remove, which is worth more than a clean number,
+so it is recorded here as a witness rather than worded around. Isolated to
+`(plans/styled-runs-and-colour-policy.md, width 100)`; the file's other four widths are
+character-identical, and the one-file manifest reports `charDiff=1 (charDiffOnly=0 both=1)
+sgrAny=5`. Rendered under `FORCE_COLOR=3` and under `FORCE_COLOR=0`, then SGR-stripped, one
+bullet in that file's Summary differs two ways:
+
+```text
+off:  …misleading and the shorthand for it       on:  …misleading and the shorthand for it is
+      is wrong in at least one committed…             wrong in at least one committed…
+
+off:  "       **bold** contributes nothing…"     on:  "    **bold** contributes nothing…"
+```
+
+The wrap point moves — the coloured render packs one more word onto the line — and the
+continuation indent differs by three columns. Neither run overflows: `--check --width 100`
+passes in both modes, and the longest stripped line is 104 in both (inside an exempt code
+range). Candidate sites are the three `plans/styled-runs-and-colour-policy.md` enumerates:
+`src/wrap.ts:44-62`, where an escape-only part is accumulated into the current word instead
+of flushing it, so the entry list the greedy fill runs over is not the same list; and
+`src/lists.ts:147-150` (`fixNestedLists`' `\S`, which an SGR reset's trailing `m` satisfies)
+or `:425` for the indent. **Deliberately not attributed to one of them here** — that is the
+plan's WP-4 job, and this is its witness.
+
+**This is the last legitimate rise in either number.** No package in
+`plans/styled-runs-and-colour-policy.md` adds a file to the globbed population, so "the
+population grew" stops being available as an explanation from this commit onward.
+
+**What this axis structurally cannot see, recorded so `sgrAny=0` is not over-read.** The
+colourless child sets `FORCE_COLOR=0` (`colourChildEnv`, `:980-991`), which `supports-color`
+*and* `@colors/colors` both honour — so producers gated on either of them never leak into
+this measurement, whatever their rule is in the real world. In particular
+`src/table.ts`'s border and head styling reads `@colors/colors`' answer, which does **not**
+consult `isTTY`: piping `mdview` into a file with no `FORCE_COLOR` set emits `\x1b[90m`
+around every border and `\x1b[1m` around every head cell, and this axis reports that
+population as `identical`. The same is true of `src/frontmatter.ts`'s unconditional
+`\x1b[2m` on metadata keys, whenever a globbed file has frontmatter. `sgrAny` counts
+escapes that survive `FORCE_COLOR=0`; it is not a complete leak audit, and
+`plans/styled-runs-and-colour-policy.md` requires separate witnesses for those two.
 
 **The lesson to carry, not just the number.** The step comment in `scripts/verify.ts` said
 "adding a plan file changes the population"; the population is wider than that, and **any
