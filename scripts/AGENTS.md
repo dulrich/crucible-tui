@@ -332,9 +332,56 @@ of flushing it, so the entry list the greedy fill runs over is not the same list
 or `:425` for the indent. **Deliberately not attributed to one of them here** — that is the
 plan's WP-4 job, and this is its witness.
 
-**This is the last legitimate rise in either number.** No package in
-`plans/styled-runs-and-colour-policy.md` adds a file to the globbed population, so "the
-population grew" stops being available as an explanation from this commit onward.
+**Re-seeded again to 70/25 when rev 2 of that plan replaced rev 1's prose — and that rise
+falsified the sentence this section carried one commit earlier.** The claim was: *"this is
+the last legitimate rise in either number, because no package in
+`plans/styled-runs-and-colour-policy.md` adds a file to the globbed population."* The premise
+is true and the conclusion does not follow. **Adding a file is not the only way the
+population changes; editing a globbed file's content does it too.** Rev 2 did exactly that:
+zero source changes in the commit, `charDiff` 66 → 70.
+
+**The globs are non-recursive, and knowing precisely which documents are exposed matters
+more than the general warning.** `README.md`, `AGENTS.md`, `plans/*.md`,
+`tests/fixtures/*.md` (`corpus/default-manifest.json:9`) resolve to **11 + 10 + 2 = 23**,
+which is exactly the `files=23` the sweep prints — so `src/AGENTS.md`, `scripts/AGENTS.md`
+and `tests/AGENTS.md` are **not** corpus members and editing them is free. The exposed set is
+therefore small and enumerable:
+
+- **`plans/*.md`** — every revision of a plan, **including a one-line Status-line edit**, and
+  every new plan file. This is the live one: it has fired twice in three commits.
+- **root `AGENTS.md`** — it fired once already (62 → 65) and the colour-policy package edits
+  it again.
+- **`tests/fixtures/*.md`** — a fixture edit moves the corpus even when the rendered output
+  is meant to stay byte-identical.
+- **`README.md`** — exposed, rarely touched.
+
+Isolated with the one-file manifest procedure below: the plan file alone reports
+`charDiff=5 (charDiffOnly=0 both=5) sgrAny=5` at rev 2, where at rev 1 it reported
+`charDiff=1 (charDiffOnly=0 both=1) sgrAny=5`. **The same defect now fires at all five widths
+instead of one**; the other 65 combos are unchanged, and `sgrAny` held at 25 because rev 2's
+prose carries wiki-links too. Rev 2's text shows two symptoms rather than rev 1's one:
+
+```text
+width 80,  ~line 490:  off ends "strips [ ]"   /  on ends "strips [ ] "
+width 80,  ~line 841:  a whitespace-only line present under colour, absent without it
+width 100, ~line 208:  the coloured render packs one more word ("rev") onto the line, and
+                       the continuation indent differs by three columns
+```
+
+The whitespace-only line has the shape `src/lists.ts:425`'s `.filter((line) => line !== "")`
+would produce — a line carrying only escapes is not `""` — and the moving wrap point the
+shape `src/wrap.ts:44-62`'s escape-only word entry would produce. **Neither is attributed
+here**, for the same reason the rev-1 witness was not: inferring a site from a symptom is how
+a defect gets "fixed" by coincidence.
+
+**The rule that replaces the falsified one**, and it is procedural rather than prohibitive
+because the prohibitive form is what failed. WP-1 of that plan first makes the colour axis
+print a **per-file, per-width breakdown**, so a move is attributable by one command instead of
+by a hand-built manifest. Then: attribute every move — **up or down** — per file before
+re-seeding anything. A move attributable entirely to documents the commit edited is a
+population change: re-seed in the same commit, with the evidence, here. A move that survives
+that subtraction is a renderer change and is a finding, not a re-seed. **A downward move gets
+the same treatment**, because a silently deleted style is what one looks like.
 
 **What this axis structurally cannot see, recorded so `sgrAny=0` is not over-read.** The
 colourless child sets `FORCE_COLOR=0` (`colourChildEnv`, `:980-991`), which `supports-color`

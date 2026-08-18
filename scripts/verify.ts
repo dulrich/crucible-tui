@@ -188,17 +188,44 @@ const steps: Step[] = [
     // `src/lists.ts:147-150` / `:425` for the indent. **Not attributed to one of them
     // here** — that is the plan's WP-4 job, with this as its witness.
     //
-    // **This is the last legitimate rise in either number.** No package in
-    // `plans/styled-runs-and-colour-policy.md` adds a file to the globbed population, so
-    // "the population grew" stops being available as an explanation from this commit on.
-    // That plan makes `charDiff=0` a gate at its WP-4 and `sgrAny=0` a gate at its WP-5,
-    // and treats any residual as a named defect rather than a re-seed.
+    // **`--max-char-diff` moved 66 → 70 when rev 2 of that plan replaced rev 1's prose,
+    // and that falsified the sentence this comment carried one commit earlier.** The
+    // claim was "this is the last legitimate rise, because no package in that plan adds a
+    // file to the globbed population." Adding a file is not the only way the population
+    // changes: **editing a globbed file's content does it too.** The globs are
+    // non-recursive and resolve to exactly the 23 files the sweep counts — `README.md`,
+    // root `AGENTS.md`, `plans/*.md` (11) and `tests/fixtures/*.md` (10) — so
+    // `src/AGENTS.md` and this file's own `scripts/AGENTS.md` are **not** members and are
+    // free to edit, while **every plan revision, including a one-line Status-line edit**,
+    // is a population change. Rev 2's rise is exactly that, with zero source changes in
+    // the commit. Isolated with a one-file manifest: the plan file
+    // alone reports `charDiff=5 sgrAny=5` at rev 2 where it reported `charDiff=1
+    // sgrAny=5` at rev 1, i.e. the same defect now fires at all five widths instead of
+    // one. The other 65 are unchanged.
+    //
+    // Two symptoms are visible in rev 2's text, both reproducible by rendering it under
+    // `FORCE_COLOR=3` and `FORCE_COLOR=0` and stripping SGR from both:
+    //
+    //   width 80,  ~line 490: colourless ends "strips [ ]", coloured ends "strips [ ] "
+    //   width 80,  ~line 841: a whitespace-only line present under colour, absent without
+    //   width 100, ~line 208: the coloured render packs one more word onto the line and
+    //                         the continuation indent differs by three columns
+    //
+    // The whitespace-only line has the shape `src/lists.ts:425`'s
+    // `.filter((line) => line !== "")` would produce, and the moving wrap point the shape
+    // `src/wrap.ts:44-62`'s escape-only word entry would produce — **but neither is
+    // attributed here.** Inferring a site from a symptom is how a defect gets "fixed" by
+    // coincidence; WP-1 of that plan bisects them and, first, makes the colour axis print
+    // a per-file breakdown so the next rise is attributable by one command instead of by
+    // a hand-built manifest. That plan makes `charDiff=0` a gate at its WP-5c and
+    // `sgrAny=0` a gate at its WP-6, and requires every future move — up **or down** —
+    // to be attributed per file before anything is re-seeded.
     //
     // The full-corpus pass stays opt-in: it is the private manifest's job, run by hand
     // with `MDVIEW_CORPUS_MANIFEST` set, and is deliberately not wired in here.
     name: "sweep (colour axis)",
     run: () =>
-      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "66", "--max-sgr", "25"]),
+      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "70", "--max-sgr", "25"]),
   },
   { name: "security scan", run: runSecurityStep },
 ];
