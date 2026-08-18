@@ -262,19 +262,43 @@ honest total is 20 — it misses exactly half — which is the same shape the pl
 a larger set (64 disjoint against 125). A reader who takes `sgrOnly` for "the unwanted SGR
 count" is reading the wrong number, which is why both are on the same line.
 
-**The seeds, and what defines them.** Measured by this instrument at base `4db427e` (the
-commit this section lands on), over the bundled manifest `corpus/default-manifest.json`,
-corpus `repo` — **22 files × the 5 default widths = 110 combos** — at both glyph tiers,
-which agree exactly:
+**The seeds, and what defines them.** Measured by this instrument over the bundled manifest
+`corpus/default-manifest.json`, corpus `repo` — **22 files × the 5 default widths = 110
+combos** — at both glyph tiers, which agree exactly:
 
 | | combos | identical | charDiffOnly | sgrOnly | both | **charDiff** | **sgrAny** | errors |
 |---|---|---|---|---|---|---|---|---|
-| unicode | 110 | 38 | 52 | 10 | 10 | **62** | **20** | 0 |
-| ascii | 110 | 38 | 52 | 10 | 10 | **62** | **20** | 0 |
+| unicode | 110 | 35 | 55 | 10 | 10 | **65** | **20** | 0 |
+| ascii | 110 | 35 | 55 | 10 | 10 | **65** | **20** | 0 |
 
-`scripts/verify.ts` runs the unicode pass with `--max-char-diff 62 --max-sgr 20`. **Both
+`scripts/verify.ts` runs the unicode pass with `--max-char-diff 65 --max-sgr 20`. **Both
 are ratchets, not targets** — the corpus is what it is today, and what must not happen is
 either number going up.
+
+**Seeded at `4db427e` as 62/20; re-seeded to 65/20 by WP-2 of
+`plans/own-the-token-walk.md`, for a population change and not a renderer change.** That
+package owns the token walk, so it is exactly the change this ratchet exists to catch, and
+the re-seed is recorded with its evidence rather than asserted:
+
+- The package **rewrote root `AGENTS.md`**, which the bundled manifest globs alongside
+  `README.md`, `plans/*.md` and `tests/fixtures/*.md`. That file went from differing at
+  **2** of its 5 widths to differing at **all 5**; nothing else in the population moved.
+- Isolated directly: a one-file manifest holding the **base** `AGENTS.md`, rendered by the
+  **new** renderer, reports `charDiff=2 sgrAny=0`; the same manifest holding the new
+  `AGENTS.md` reports `charDiff=5 sgrAny=0`. Same renderer, same widths, +3.
+- `scripts/render-diff.ts --rev-a <base> --rev-b <worktree> --all --expect a` over **440
+  combos** reports `diffed=0 classC=0 overflowRegressions=0 detectorRegressions=0 errors=0`,
+  in the colourless mode **and** under `FORCE_COLOR=3`, on the population containing the new
+  text.
+- `sgrAny` did not move, which is the corroborating detail: the 20 are `styleWikiLink`'s
+  hard-coded escapes, and the new prose added no wiki-link.
+
+**The lesson to carry, not just the number.** The step comment in `scripts/verify.ts` said
+"adding a plan file changes the population"; the population is wider than that, and **any
+edit to a globbed document can move `charDiff`**. When it moves, the question is never "is
+the new number acceptable" but "is it the population or the renderer", and the one-file
+isolation above is the cheap way to answer it. Re-seeding without that answer is how a real
+regression gets ratified.
 
 **The population is the manifest corpus, and nothing else.** There is no second
 file-selection mechanism for the axis: the parent hands each child its own command line
@@ -290,9 +314,10 @@ as this repo already re-quotes the sweep's own file count rather than adjusting 
 options object renders every width identically and produces counts about nothing. That
 mistake has invalidated this exact quantity **four times across three authors**, so
 `tests/colour-axis.test.ts` pins it directly — the same file must digest differently at 40
-and at 100 — and the per-width split is the corroborating evidence: **14 / 13 / 13 / 11 /
-11** character differences at 80 / 100 / 116 / 160 / 346, which sums to the 62 above and is
-not a multiple of anything.
+and at 100 — and the per-width split is the corroborating evidence: **14 / 13 / 14 / 12 /
+12** character differences at 80 / 100 / 116 / 160 / 346, which sums to the 65 above and is
+not a multiple of anything. (It was **14 / 13 / 13 / 11 / 11**, summing to 62, before the
+re-seed recorded above; the three that moved are all `AGENTS.md`.)
 
 **What the numbers are made of, none of it repaired here.** The `sgrAny=20` are
 `styleWikiLink` (`src/render.ts:62-65`), which hardcodes `\x1b[36m\x1b[4m` and consults

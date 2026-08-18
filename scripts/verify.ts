@@ -143,16 +143,26 @@ const steps: Step[] = [
     // **The two numbers are ratchets seeded from this instrument's own output**, not
     // targets: they are what the bundled corpus measured when the axis landed, and what
     // must not happen is either going up. They are also a function of the *population* —
-    // the bundled manifest globs `plans/*.md`, so adding a plan file changes both. A WP
-    // that adds one and trips this re-measures with the same command and re-seeds here,
-    // in the same commit, exactly as the sweep's own file count is re-quoted with its
-    // commit. See `scripts/AGENTS.md`'s colour-axis section for the seeding record.
+    // the bundled manifest globs `plans/*.md` **and `AGENTS.md` and `README.md`**, so
+    // adding a plan file, or editing any of those documents, changes both. A WP that does
+    // and trips this re-measures with the same command and re-seeds here, in the same
+    // commit, exactly as the sweep's own file count is re-quoted with its commit. See
+    // `scripts/AGENTS.md`'s colour-axis section for the seeding record.
+    //
+    // **`--max-char-diff` was 62 until WP-2 of `plans/own-the-token-walk.md` and is 65
+    // because that package rewrote `AGENTS.md`, not because it moved the renderer.**
+    // `AGENTS.md` went from differing at 2 of the 5 widths to differing at all 5. The
+    // evidence that it is population and not renderer, recorded because this is the one
+    // number a walk rewrite must never be allowed to quietly move: rendering the *base*
+    // `AGENTS.md` through the *new* renderer gives `charDiff=2` and the new one gives
+    // `charDiff=5`, and `scripts/render-diff.ts --expect a` over 440 combos in each colour
+    // mode reports `diffed=0` over the new text. `--max-sgr` did not move.
     //
     // The full-corpus pass stays opt-in: it is the private manifest's job, run by hand
     // with `MDVIEW_CORPUS_MANIFEST` set, and is deliberately not wired in here.
     name: "sweep (colour axis)",
     run: () =>
-      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "62", "--max-sgr", "20"]),
+      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "65", "--max-sgr", "20"]),
   },
   { name: "security scan", run: runSecurityStep },
 ];

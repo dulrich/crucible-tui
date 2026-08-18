@@ -27,28 +27,43 @@ deleting it.
 ## Stack
 
 - Bun + TypeScript, single flat package (no workspaces).
-- `marked` (**lexer and parser**) + **this repo's own renderer method bodies** — every
-  renderer method lives in `src/inline.ts`, `src/blocks.ts`, `src/lists.ts`, `src/table.ts`
-  and `src/render.ts`. **This line said "lexer only" until 2026-08-17 and that was false**,
-  in a way that matters structurally rather than pedantically: `src/render.ts:1397` calls
-  `instance.parse(...)`, so **marked's `Parser` is the tree walker**, and the owned methods
-  are callbacks it invokes — they re-enter it **9 times** via `this.parser.parse(tokens, top)`
-  and `this.parser.parseInline(tokens)` (`src/render.ts:923,926,931,934,996,1108,1319,1372,1388`;
-  a tenth match at `:290` is prose). **`Parser` is not a bare dispatcher**, and a plan that
-  assumes it is will be wrong: `marked.cjs:1975-1990` coalesces consecutive block `text` tokens
-  with `\n` and, when `top`, wraps the result in a **synthesized `paragraph` token** whose
-  `tokens` array is fabricated; `parseInline` routes `escape` to `renderer.text` and takes an
-  optional renderer override (`:2013`); `space` has no owned method and falls through to
-  marked's default (`''`, `:1695`); an unknown type **throws** unless `silent`. `marked.use()`
-  (`:2248-2268`) additionally binds the receiver — this is where `this.parser` comes from —
-  falls back to the previous renderer when a method returns `false`, and coerces every falsy
-  return to `''`. The consequence is a hard interface constraint:
-  marked's renderer callbacks are typed `=> string` (`marked.d.ts:349-365`, `parseInline`
-  at `:226`/`:234`), so **a renderer method cannot return anything but a string** — no
-  styled spans, no source ranges. Any work that needs a richer return type (the
-  style-last direction, or `docs/adr/0001-editor-path.md`'s
-  `{text, style, sourceStart, sourceEnd}`) must **own the token walk** first; the lexer is
-  the part worth keeping. `marked-terminal` did prose/list/code rendering until
+- `marked` (**lexer only — and since 2026-08-17 that is finally true**) + **this repo's own
+  renderer method bodies and its own tree walk** — every renderer method lives in
+  `src/inline.ts`, `src/blocks.ts`, `src/lists.ts`, `src/table.ts` and `src/render.ts`, and
+  the walk that calls them is `src/walk.ts`.
+
+  **This line said "lexer only" before 2026-08-17 and it was false then**; it was corrected to
+  "lexer and parser", and WP-2 of `plans/own-the-token-walk.md` made the original claim true
+  instead of merely accurate. Read the following as history, in the same register as the
+  `marked-terminal` and `cli-table3` entries below.
+
+  *What was true.* `src/render.ts` called `instance.use({ renderer })` and then
+  `instance.parse(processedBody, { async: false })`, so **marked's `Parser` was the tree
+  walker** and the sixteen owned methods were callbacks it invoked, re-entering it **9 times**
+  via `this.parser.parse(tokens, top)` and `this.parser.parseInline(tokens)`. **`Parser` was
+  not a bare dispatcher**, and a plan that assumed it was got that wrong twice: it coalesces
+  consecutive block `text` tokens with `\n`, consuming the loop index, and at `top` wraps the
+  result in a **synthesized `paragraph` token** whose `tokens` array is fabricated; it routes
+  `escape` to `renderer.text`; `space` had no owned method and fell through to marked's
+  default (`''`); an unknown type **throws**; `parseInline` takes an optional renderer
+  override; and `marked.use()` bound the receiver — the source of `this.parser` — fell back to
+  the previous renderer on a `false` return, and coerced every falsy return to `''`.
+
+  *What replaced it, and why.* `src/walk.ts`'s `TokenWalker` reproduces that whole contract —
+  see its header table, which cites every `marked.cjs` site, and `tests/walk.test.ts`, which
+  tests each row directly plus a 32-case differential against `Parser` itself. `render.ts` now
+  calls `instance.lexer(...)` for tokens and `walker.parse(...)` for the walk. **The reason is
+  a hard interface constraint that only walk ownership could remove**: marked's renderer
+  callbacks are typed `=> string` (`marked.d.ts:349-365`, `parseInline` at `:226`/`:234`), so
+  **a callback cannot return anything but a string** — no styled spans, no source ranges — and
+  any work that needs a richer return type (the style-last direction, or
+  `docs/adr/0001-editor-path.md`'s `{text, style, sourceStart, sourceEnd}`) was blocked behind
+  it. The lexer is the part worth keeping and was kept untouched. **The method signatures are
+  still `=> string`**: that package changed who calls them, nothing else, and landed
+  byte-identical across 440 combos in both colour modes. Widening the return type is the
+  successor's.
+
+  `marked-terminal` did prose/list/code rendering until
   `plans/marked-terminal-replacement.md` replaced it method by method (WP-2 to WP-5)
   and removed it (WP-6, landing byte-identical); `src/AGENTS.md` carries the measured
   reasons each behaviour is required, and reads its `index.js:NNN` citations as
@@ -72,9 +87,12 @@ deleting it.
 
 ```text
 src/cli.ts          arg parsing, width resolution, pager, --check, glyph flags
-src/render.ts       marked lexer wiring, the owned extension object, the two
+src/render.ts       marked lexer wiring, the owned renderer object, the two
                     sentinels and the code-range walk, the tight-item text seam,
                     and the post-compose list wrap
+src/walk.ts         the owned token walk — TokenWalker, which replaced marked's
+                    Parser as the tree walker (WP-2 of plans/own-the-token-walk.md);
+                    the whole Parser contract, cited site by site, in its header
 src/layout-context.ts  the one immutable per-render value the visitors read —
                     width, glyph tier, Measure, prefix stack, fence-language
                     resolver, emoji and colour (WP-2)
@@ -126,7 +144,7 @@ child.
 
 | File | Carries |
 |---|---|
-| `src/AGENTS.md` | what the owned renderer must do and the measured defect behind each requirement, the parity classes, the list pipeline, the sentinels, the glyph tier, the command-line surface, ambiguous width and the probe, the rendering policy, the `emoji` re-decision |
+| `src/AGENTS.md` | what the owned renderer must do and the measured defect behind each requirement, what owning the walk moved off `marked.use()`, the parity classes, the list pipeline, the sentinels, the glyph tier, the command-line surface, ambiguous width and the probe, the rendering policy, the `emoji` re-decision |
 | `scripts/AGENTS.md` | the corpus sweep and its manifests, the corpus growth findings, the defect detectors, the fast and durable measurement tiers |
 | `tests/AGENTS.md` | the publication containment guard's rules and internals, and the width-sensitive fixture trap |
 

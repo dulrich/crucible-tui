@@ -121,19 +121,43 @@ without re-running the corpus sweep and the parity harness**.
 **Four methods are deliberately unassigned: `listitem`, `checkbox`, `tablerow`,
 `tablecell`.** They are **unreachable, not missing** — `list` is `src/lists.ts`'s and
 composes its items itself; `table` is `src/table.ts`'s and never dispatches a cell token.
-They fall through to `marked`'s own defaults, which is a difference only a call could
-observe, and a mutation probe that makes all four throw renders the whole validation
-corpus at every default axis without firing. Do not "complete the set" by assigning them.
+A mutation probe that makes all four throw renders the whole validation corpus at every
+default axis without firing. Do not "complete the set" by assigning them. Until WP-2 of
+`plans/own-the-token-walk.md` the accurate phrasing was that they "fall through to
+`marked`'s own defaults"; there is nothing left to fall through *to*. `src/walk.ts`
+dispatches exactly the eighteen token types `Parser` dispatched, and none of the four is
+one of them — `list_item` is consumed inside `list` and a cell token is never dispatched at
+all.
 
-**The extension object is an object literal, and that is the whole of what the library
-supplied by the end.** `markedTerminal()` (`index.js:364-401`) assigned twenty thin
+### The walk is this repo's, and the renderer object is no longer an extension
+
+**`src/walk.ts` replaced `marked`'s `Parser` as the tree walker** (WP-2 of
+`plans/own-the-token-walk.md`), byte-identically. Its own header carries the contract table
+— every `marked.cjs` site, every behaviour, and the two behaviours it deliberately does not
+carry over — and `tests/walk.test.ts` tests each row directly *and* differentially against
+`Parser` itself on 32 sources. What follows is the part that belongs beside the renderer
+methods rather than beside the walk.
+
+**The renderer object is a plain object literal, and by the end that was the whole of what
+the library ever supplied.** `markedTerminal()` (`index.js:364-401`) assigned twenty thin
 wrappers onto `{ renderer: {}, useNewRenderer: true }`; sixteen were overwritten here, and
 WP-4 measured **zero calls to any library renderer method across 95,720 combos**. What the
 construction actually provided was the *shape* `marked.use()` expects — an object with a
 `renderer` field. (`useNewRenderer` is not read anywhere in `marked@14.1.4`; it is a v15
-migration flag.) `marked.use()` requires every key to exist on its own `Renderer`
-(`marked.cjs:2251`, which throws otherwise) and calls each with `this` bound to that
-`Renderer`, which is where the `this.parser` the visitors close over comes from.
+migration flag.) That shape is gone too: the object is handed to `new TokenWalker(...)`, not
+to `use()`.
+
+**Two things `marked.use()` was doing for this renderer, and where each went.** It required
+every key to exist on marked's own `Renderer` (`marked.cjs:2251`, which throws otherwise),
+and it called each method with `this` bound to that `Renderer` — **which is where the
+`this.parser` the visitors close over came from**. Both are now `src/walk.ts`'s: it checks
+that every dispatched method is *supplied* (a stronger and more useful check than that its
+name exists upstream — a key that was merely absent used to leave marked's HTML-emitting
+default in place), and it dispatches against an object carrying `parser`, so `this.parser`
+is the walker. `use()`'s third behaviour, falling back to the previous renderer on a `false`
+return, is deliberately **not** reproduced: its target was marked's HTML defaults, every
+method here is typed `=> string`, and its companion falsy-to-`''` coercion is the identity
+on every string. **Nothing about a visitor's body or its `this` changed.**
 
 ### Parity: four classes, and why class C is a content hash
 
@@ -234,9 +258,9 @@ with the old estimate produces **3,954 diffs and 6 class-C violations**.
 #### Loose items are wrapped by `paragraph`, at the item's own budget
 
 `marked`'s lexer stamps `loose = true` on a whole list if any item ends with a blank line
-(`marked/lib/marked.cjs:557-561`), and each loose item is then parsed into a **paragraph**
-token. So a loose item's text is wrapped by the `paragraph` renderer, **before** the
-composer glues on the marker and the blanket indent. Wrapping it at the full target width
+(`marked/lib/marked.cjs:557-561`). A loose item's text is wrapped by the `paragraph`
+renderer, **before** the composer glues on the marker and the blanket indent. Wrapping it at
+the full target width
 is what produced the orphaned-line defect: the text came back 6+ columns over budget and
 the post-compose wrap reflowed it a second time, shearing the tail word onto a line of its
 own.
@@ -245,6 +269,26 @@ The rule: **`paragraph` wraps at the width its text will actually occupy.** It r
 `targetWidth - prefix.width()` off the stack, and the wrap happens inside
 `renderBlockParagraph` (`src/blocks.ts`) with `wrapAnsi` and `Measure` — not by
 constructing a second renderer, which is what this cost until WP-3.
+
+**How a loose item reaches `paragraph` at all was misdescribed here until WP-2 of
+`plans/own-the-token-walk.md`, and the correction matters to anyone reading the walk.** This
+section, `src/render.ts`'s `text` seam and that plan's own contract table all said the
+lexer gives a loose item **`paragraph` children**. It does not. `Tokenizer.prototype.list`
+(`marked.cjs:550-561`) lexes every item's body with `state.top = false` and then only
+*stamps* `loose`; it never re-lexes, so a loose item's children are `text` tokens exactly
+like a tight item's. Measured at `marked@14.1.4`, `- one\n\n- two\n` gives
+`loose = true` with `items[n].tokens` of `["text"]`.
+
+What routes a loose item to `paragraph` is the **`top` argument**: `src/lists.ts` dispatches
+each item through `parse(item.tokens, !!item.loose)`, and at `top === true` the block `text`
+case *synthesizes* a paragraph token around the rendered body. So the fabricated token from
+the walk's contract is not a top-level curiosity — **it is on the path of every loose list
+item in the corpus**, which is why `src/walk.ts` reproduces its shape exactly, down to the
+inner text token carrying no `tokens` key. A traced loose item dispatches
+`text(hasTokens=true)` → `paragraph(tokens=["text"])` → `text(hasTokens=false)`; a tight one
+dispatches `text(hasTokens=true)` and stops. A `space` token between two paragraphs inside
+one loose item terminates the coalescing run, so that item yields two synthesized paragraphs
+rather than one. All of this is pinned in `tests/walk.test.ts`.
 
 **The gate is the stack's total, not "are we inside a list."** It read `listDepth()` until
 WP-2g, which left quoted prose four columns over budget at every width — see "A blockquote
@@ -396,13 +440,21 @@ Four more things that must not be simplified away:
   tokens contained a `SENTINEL`**. The sentinel check in the seam is belt and braces on that
   measurement. Do not replace it with a line-shape heuristic over the composed body.
 
-**The defect was a property of the token type, not of the marker.** A loose item's children
-are `paragraph` tokens, so `parseInline` had always parsed them; verified at the library
-baseline, a tight item rendered `**b**` verbatim and a loose one rendered it bold. The orphan
-population this seam's wrap closed: **1,823 orphans across 250 files at width 100 in a
-1,744-file corpus sample.** Do not "extend" the seam to the loose path — a loose item's
-`paragraph` token never arrives here, and the inline `text` tokens `parseInline` dispatches
-carry no `tokens`, which is what stops a double parse.
+**The defect was a property of the dispatch path, not of the marker.** Verified at the
+library baseline, a tight item rendered `**b**` verbatim and a loose one rendered it bold,
+because a loose item reached `paragraph` — which called `parseInline` — and a tight one did
+not. The orphan population this seam's wrap closed: **1,823 orphans across 250 files at
+width 100 in a 1,744-file corpus sample.**
+
+**This paragraph said "a loose item's children are `paragraph` tokens" until WP-2 of
+`plans/own-the-token-walk.md`; they are `text` tokens** (see the loose-item section above
+for the measurement). What differs is `top`, not the child type, and the correction changes
+what stops the double parse. Do not "extend" the seam to the loose path — a loose item's
+block `text` token *does* arrive here and is parsed here, and it is the **synthesized**
+paragraph's inner text token, which carries no `tokens`, that makes the second visit a
+verbatim pass-through rather than a re-parse. Traced: `text(hasTokens=true)` →
+`paragraph(tokens=["text"])` → `text(hasTokens=false)`. Condition 3 is what holds the whole
+arrangement together, on both paths.
 
 **The punctuation-leading continuation wrap — pinned in WP-5 of
 `plans/renderer-deferred-work.md`, not fixed, and its causal record corrected twice

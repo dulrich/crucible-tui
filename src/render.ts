@@ -1,5 +1,5 @@
 import { Marked } from "marked";
-import type { MarkedExtension, Token, Tokens } from "marked";
+import type { Token, Tokens } from "marked";
 import { renderTable } from "./table";
 import {
   renderBlockquote,
@@ -27,6 +27,7 @@ import { resolveFenceLanguage, type FenceLanguageResolver } from "./lang";
 import { createLayoutContext } from "./layout-context";
 import { MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, isGuardShapedLine } from "./list-lines";
 import { TASK_GLYPHS, renderList, substituteBullets } from "./lists";
+import { TokenWalker, type WalkRendererMethods } from "./walk";
 import { NARROW_MEASURE, type Measure } from "./width";
 
 // Obsidian wiki-links aren't markdown; style them before parsing so they render as
@@ -874,16 +875,22 @@ export function renderDocumentDetailed(
   // The four the library assigned and this file does not — `listitem`, `checkbox`,
   // `tablerow`, `tablecell` — are unreachable rather than unassigned, and they were
   // unreachable *before* this change too: `list` is `src/lists.ts`'s and composes items
-  // itself, `table` is `src/table.ts`'s and never dispatches a cell token. They now fall
-  // through to `marked`'s own defaults instead of to the library's, which is a difference
-  // only a call could observe. Pinned by a mutation probe that makes all four throw and
-  // renders the whole validation corpus at every default axis — see this WP's report.
+  // itself, `table` is `src/table.ts`'s and never dispatches a cell token. Pinned by a
+  // mutation probe that makes all four throw and renders the whole validation corpus at
+  // every default axis — see that WP's report. **Since WP-2 of
+  // `plans/own-the-token-walk.md` they are not renderer keys at all**: `TokenWalker`
+  // dispatches only the eighteen types `Parser` dispatched, and a cell or an item token
+  // never was one of them, so there is nothing left for them to fall through *to*.
   //
-  // `marked.use()` requires every key to exist on its own `Renderer` (`marked.cjs:2251`,
-  // which throws otherwise) and calls each one with `this` bound to that `Renderer`, which
-  // is where the `this.parser` the visitors below close over comes from. Both were already
-  // true through the library's wrappers; neither is new.
-  const renderer: NonNullable<MarkedExtension["renderer"]> = {};
+  // **This object is no longer a `marked` extension** (WP-2 of
+  // `plans/own-the-token-walk.md`). It used to be handed to `instance.use({ renderer })`,
+  // which required every key to exist on `marked`'s own `Renderer` (`marked.cjs:2251`,
+  // which throws otherwise) and wrapped each one so it was called with `this` bound to that
+  // `Renderer` — which is where the `this.parser` the visitors below close over came from.
+  // Both jobs moved to `src/walk.ts`, which checks that every dispatched method is
+  // *supplied* rather than that its name exists upstream, and carries `parser` on the
+  // object it dispatches against. Every visitor below is unchanged, including its `this`.
+  const renderer: Partial<WalkRendererMethods> = {};
   // **The allocator gets the budget, not the target width** (WP-3), and that changed
   // here because the thing that used to hide the difference is gone.
   //
@@ -1074,28 +1081,45 @@ export function renderDocumentDetailed(
     // everywhere *except* a list item, and why a blockquote nested *inside* a list
     // item is fine while the item's own text is not.
     //
-    // **Only a *tight* item routes here, and that is the whole scope of the defect.**
-    // This comment claimed the opposite when WP-14 landed — that a loose item's
-    // children reached the block `text` case with `top === true` and were wrapped in a
-    // synthesised paragraph whose text token had no `tokens`, so one override fixed
-    // tight and loose together. That mechanism is not what `marked` does; WP-13
-    // re-measured it and corrected the record.
+    // **Both a tight and a loose item route here, and WP-2 of
+    // `plans/own-the-token-walk.md` restored the description WP-13 removed.**
     //
-    // What decides it is the **token type an item's children carry**, not the marker.
-    // `marked`'s list lexer stamps `loose` (`marked/lib/marked.cjs:557-561`) and the
-    // block tokenizer then gives a **tight** item `text` children and a **loose** item
-    // `paragraph` children — both carrying the same inline `tokens`. `listitem`
-    // dispatches either through `Parser.parse(item.tokens, !!item.loose)`
-    // (`marked-terminal` `index.js:184`), so a loose item's children land on the
-    // `paragraph` case, whose override already calls `parseInline`. **Loose items were
-    // never broken.** Verified at the library baseline: a tight item renders `**b**`
-    // verbatim, a loose one renders it bold.
+    // The record has now been written twice in each direction, so here is the measurement
+    // rather than another assertion. WP-14's original comment said a loose item's children
+    // reach the block `text` case with `top === true` and are wrapped in a **synthesised**
+    // paragraph whose text token has no `tokens`. WP-13 called that "not what `marked`
+    // does" and replaced it with "the block tokenizer gives a tight item `text` children
+    // and a loose item `paragraph` children". **WP-13's correction is the wrong one**, and
+    // owning the walk (`src/walk.ts`) is what made it checkable: `Tokenizer.prototype.list`
+    // (`marked.cjs:550-561`) lexes every item body with `state.top = false` and then only
+    // *stamps* `loose` — it never re-lexes — so `- one\n\n- two\n` yields `loose = true`
+    // with `items[n].tokens` of `["text"]`, not `["paragraph"]`. Pinned in
+    // `tests/walk.test.ts`.
     //
-    // So this override fixes tight items of every marker kind — unordered, ordered,
-    // task — plus every nested item whose own list is tight, at any depth. It does not
-    // touch the loose path and must not: a loose item's `paragraph` token never reaches
-    // here, and the `text` tokens `parseInline` dispatches from inside it carry no
-    // `tokens`, so condition 3 excludes them. That is what stops a double parse.
+    // What decides the path is the **`top` argument**, not the child token type.
+    // `src/lists.ts` dispatches every item through `parse(item.tokens, !!item.loose)`:
+    //
+    // - **tight** (`top === false`) — the block `text` case emits the rendered body raw,
+    //   and this seam is the only thing that parses it. One dispatch:
+    //   `text(hasTokens=true)`.
+    // - **loose** (`top === true`) — the same block `text` token arrives here first and
+    //   *is* parsed here, and its result is then wrapped in the synthesised paragraph, so
+    //   `paragraph` runs too. Three dispatches: `text(hasTokens=true)` →
+    //   `paragraph(tokens=["text"])` → `text(hasTokens=false)`.
+    //
+    // **Condition 3 is what keeps the loose path from double-parsing**, and it is the
+    // synthesised token that makes it work: the paragraph's inner text token is
+    // `{type, raw, text}` with **no `tokens` key** (`src/walk.ts`, block `text` case), so
+    // the second visit takes the `raw` return above and passes the already-rendered body
+    // through verbatim. `src/walk.ts` reproduces that token shape byte-for-byte for
+    // exactly this reason; adding an empty `tokens` array to it would re-parse every loose
+    // item in the corpus.
+    //
+    // **Loose items were never broken**, and that part of the record stands: at the
+    // library baseline a tight item rendered `**b**` verbatim and a loose one rendered it
+    // bold, because the loose path reached `paragraph` and `paragraph` called
+    // `parseInline`. The seam still fixes tight items of every marker kind — unordered,
+    // ordered, task — plus every nested item whose own list is tight, at any depth.
     //
     // `inlineDepth` is raised for the duration, upholding this seam's own condition 2
     // for the recursive calls `parseInline` makes: the text tokens inside `strong`,
@@ -1392,9 +1416,22 @@ export function renderDocumentDetailed(
     }
     return renderBlockquote(layout, body);
   };
-  instance.use({ renderer });
+  // **The seam this repo now owns** (WP-2 of `plans/own-the-token-walk.md`). This was
+  // `instance.use({ renderer })` followed by `instance.parse(processedBody, { async: false })`
+  // — one call that lexed *and* walked, with `marked`'s `Parser` as the tree walker and the
+  // sixteen methods above as its callbacks. The lexer half is kept verbatim; the walk is
+  // `src/walk.ts`, which reproduces `Parser`'s full contract (see its header table) and
+  // rendered byte-identically across the full differential harness at every axis.
+  //
+  // `instance.lexer(processedBody)` lexes with `instance.defaults`, where `instance.parse`
+  // lexed with `{ ...instance.defaults, async: false }`. Those are the same values —
+  // `_getDefaults()` already sets `async: false` (`marked.cjs:17-30`) and `use()` only ever
+  // reasserted it — and the lexer reads neither `async` nor `renderer`, so the token stream
+  // is identical. `extractCodeRanges` below still receives one flat string; `RenderResult`
+  // does not move in this package.
+  const walker = new TokenWalker(renderer);
 
-  const renderedBody = instance.parse(processedBody, { async: false });
+  const renderedBody = walker.parse(instance.lexer(processedBody));
   const { text: strippedBody, codeRanges: bodyRanges } = extractCodeRanges(renderedBody);
 
   // Deliberately a second, separate pass from `extractCodeRanges` above rather than
