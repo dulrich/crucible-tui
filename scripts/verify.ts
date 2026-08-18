@@ -158,11 +158,47 @@ const steps: Step[] = [
     // `charDiff=5`, and `scripts/render-diff.ts --expect a` over 440 combos in each colour
     // mode reports `diffed=0` over the new text. `--max-sgr` did not move.
     //
+    // **`--max-sgr` was 20 until `plans/styled-runs-and-colour-policy.md` was written and
+    // is 25 because that file joined the globbed population**, with no source change in
+    // the commit at all — and the cause is the same one the 20 already had. `sgrOnly`
+    // does **not** mean "the two modes' escape streams differ"; it means the *colourless*
+    // render still contains SGR (`classifyColourAxis`, `scripts/corpus.ts:1069-1075`), so
+    // it is a leak counter, and the leak is `styleWikiLink`'s unconditional escapes. The
+    // new plan file carries eight `[[…]]` occurrences. Isolated with a one-file manifest
+    // per the procedure in `scripts/AGENTS.md`: the file as written reports
+    // `charDiff=0 sgrAny=5`, and the same file with every wiki-link textually removed
+    // reports `charDiff=0 sgrAny=0 identical=5`. Same renderer, same widths, −5.
+    //
+    // **`--max-char-diff` moved 65 → 66 in the same commit, and the extra one is a real
+    // defect firing on the new plan file's own text.** Population again, not renderer —
+    // but this time the new population member *demonstrates* one of the defects the plan
+    // exists to remove, which is worth more than a clean number. Isolated to
+    // `(plans/styled-runs-and-colour-policy.md, width 100)`; the other four widths are
+    // character-identical. Rendered under `FORCE_COLOR=3` and `FORCE_COLOR=0` and
+    // SGR-stripped, one bullet in that file's Summary differs two ways:
+    //
+    //   off: "…the shorthand for it"      / "       **bold** contributes nothing…"
+    //   on:  "…the shorthand for it is"   / "    **bold** contributes nothing…"
+    //
+    // The wrap point moves — the coloured render packs one more word onto the line — and
+    // the continuation indent differs by three columns. Neither run overflows; `--check`
+    // passes at width 100 in both modes. Candidate sites are the three the plan
+    // enumerates: `src/wrap.ts:44-62` (an escape-only part is accumulated into the
+    // current word instead of flushing it, so the entry list differs), and
+    // `src/lists.ts:147-150` / `:425` for the indent. **Not attributed to one of them
+    // here** — that is the plan's WP-4 job, with this as its witness.
+    //
+    // **This is the last legitimate rise in either number.** No package in
+    // `plans/styled-runs-and-colour-policy.md` adds a file to the globbed population, so
+    // "the population grew" stops being available as an explanation from this commit on.
+    // That plan makes `charDiff=0` a gate at its WP-4 and `sgrAny=0` a gate at its WP-5,
+    // and treats any residual as a named defect rather than a re-seed.
+    //
     // The full-corpus pass stays opt-in: it is the private manifest's job, run by hand
     // with `MDVIEW_CORPUS_MANIFEST` set, and is deliberately not wired in here.
     name: "sweep (colour axis)",
     run: () =>
-      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "65", "--max-sgr", "20"]),
+      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "66", "--max-sgr", "25"]),
   },
   { name: "security scan", run: runSecurityStep },
 ];
