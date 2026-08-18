@@ -134,6 +134,26 @@ const steps: Step[] = [
   },
   { name: "sweep (unicode)", run: () => sh(["bun", "run", "sweep"]) },
   { name: "sweep (ascii)", run: () => sh(["bun", "run", "sweep", "--", "--glyphs", "ascii"]) },
+  {
+    // The colour axis (WP-1, `plans/own-the-token-walk.md`): the same bundled corpus,
+    // rendered twice more — once in a forced-colour child, once in a colourless one —
+    // and compared SGR-stripped against SGR-stripped. It costs about one extra sweep of
+    // wall time because the two children run in parallel.
+    //
+    // **The two numbers are ratchets seeded from this instrument's own output**, not
+    // targets: they are what the bundled corpus measured when the axis landed, and what
+    // must not happen is either going up. They are also a function of the *population* —
+    // the bundled manifest globs `plans/*.md`, so adding a plan file changes both. A WP
+    // that adds one and trips this re-measures with the same command and re-seeds here,
+    // in the same commit, exactly as the sweep's own file count is re-quoted with its
+    // commit. See `scripts/AGENTS.md`'s colour-axis section for the seeding record.
+    //
+    // The full-corpus pass stays opt-in: it is the private manifest's job, run by hand
+    // with `MDVIEW_CORPUS_MANIFEST` set, and is deliberately not wired in here.
+    name: "sweep (colour axis)",
+    run: () =>
+      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "62", "--max-sgr", "20"]),
+  },
   { name: "security scan", run: runSecurityStep },
 ];
 

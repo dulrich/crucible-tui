@@ -25,23 +25,40 @@
  * recorded runs. Point `MDVIEW_CORPUS_MANIFEST` at your own manifest to reproduce.
  *
  * **The parser below is deliberately written flag-by-flag rather than driven by a
- * declarative specification.** Its ten flags reduce to five validation shapes, three of
- * which need per-flag behaviour anyway (`--widths` delegates to `parseWidths`, the two
- * `--max-*` flags also turn detection on), so a spec plus a dispatcher costs the same
- * and makes the one thing this parser has to support harder: reading it line by line
- * against an archived command line to establish what a recorded run measured.
+ * declarative specification.** Its fourteen flags reduce to five validation shapes, three
+ * of which need per-flag behaviour anyway (`--widths` delegates to `parseWidths`, the two
+ * detector `--max-*` flags also turn detection on and the two colour ones also turn the
+ * axis on), so a spec plus a dispatcher costs the same and makes the one thing this parser
+ * has to support harder: reading it line by line against an archived command line to
+ * establish what a recorded run measured.
  *
  * Usage: bun run sweep [--corpus <name|all>] [--all]
  *                                    [--widths 80,100,160] [--limit N]
  *                                    [--glyphs unicode|ascii] [--manifest <path>]
  *                                    [--ambiguous narrow|wide]
+ *                                    [--colour-mode on|off|both]
+ *                                    [--max-char-diff N] [--max-sgr N]
+ *
+ * **`--colour-mode` is not spelled `--color`, and never may be** (WP-1,
+ * `plans/own-the-token-walk.md`). `has-flag` — which `supports-color` and
+ * `@colors/colors` both consult — scans the whole of `process.argv`, so a harness flag
+ * spelled `--color` or `--no-color` would silently flip the colour decision of the very
+ * renderer this instrument is measuring. The axis itself lives in `scripts/corpus.ts`
+ * with the rest of the render seam; this file owns its flags, its printed line and its
+ * two ratchets.
  */
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 import { NARROW_MEASURE, measureFor, type Measure } from "../src/width";
 import {
+  colourChildEnv,
+  emitColourDigests,
   loadManifest,
   resolveManifestSource,
+  runColourAxis,
   sweepCorpus,
+  type ColourAxisMode,
+  type ColourAxisResult,
+  type ColourMode,
   type CorpusManifest,
   type CorpusResult,
   type SweepOptions,
@@ -108,6 +125,10 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
   let detect = false;
   let maxOrphans: number | undefined;
   let maxOverIndent: number | undefined;
+  let colourMode: ColourMode = "off";
+  let colourChild: ColourAxisMode | undefined;
+  let maxCharDiff: number | undefined;
+  let maxSgr: number | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -155,6 +176,52 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
       index += 1;
       continue;
     }
+    if (arg === "--colour-mode") {
+      // Not `--color`. See this file's header: `has-flag` scans the whole argv, so that
+      // spelling would flip the colour decision of the thing being measured.
+      const value = argv[index + 1];
+      if (value !== "on" && value !== "off" && value !== "both") {
+        throw new Error(`--colour-mode must be "on", "off" or "both", got: ${value}`);
+      }
+      colourMode = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--colour-child") {
+      // Internal: set by `collectColourDigests` on the command line it builds for each
+      // child. A human never passes it, and it is not documented in the usage line.
+      const value = argv[index + 1];
+      if (value !== "on" && value !== "off") {
+        throw new Error(`--colour-child must be "on" or "off", got: ${value}`);
+      }
+      colourChild = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--max-char-diff") {
+      const value = argv[index + 1];
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`--max-char-diff must be a non-negative number, got: ${value}`);
+      }
+      maxCharDiff = parsed;
+      // Same precedent as `--max-orphans` turning `--detect` on: a threshold for a
+      // measurement that is not being taken is a gate that cannot fail.
+      colourMode = "both";
+      index += 1;
+      continue;
+    }
+    if (arg === "--max-sgr") {
+      const value = argv[index + 1];
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`--max-sgr must be a non-negative number, got: ${value}`);
+      }
+      maxSgr = parsed;
+      colourMode = "both";
+      index += 1;
+      continue;
+    }
     if (arg === "--limit") {
       const value = argv[index + 1];
       if (!value) throw new Error("missing value for --limit");
@@ -193,7 +260,24 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
     }
   }
 
-  return { corpus, options: { widths, limit, all, glyphs, measure, manifestFlag, detect, maxOrphans, maxOverIndent } };
+  return {
+    corpus,
+    options: {
+      widths,
+      limit,
+      all,
+      glyphs,
+      measure,
+      manifestFlag,
+      detect,
+      maxOrphans,
+      maxOverIndent,
+      colourMode,
+      colourChild,
+      maxCharDiff,
+      maxSgr,
+    },
+  };
 }
 
 export function printResult(result: CorpusResult, detect: boolean): void {
@@ -239,8 +323,118 @@ export function printResult(result: CorpusResult, detect: boolean): void {
   for (const line of offending) console.log(`  ${line}`);
 }
 
+/**
+ * The colour axis's printed line: **all three buckets, plus both totals**, on one line
+ * per corpus.
+ *
+ * The disjoint buckets are printed because they are what a reader assumes a two-way
+ * comparison produced, and the totals are printed beside them because the totals are what
+ * the ratchets read. `sgrOnly` alone misses every combo that carries unwanted SGR *and* a
+ * character difference — measured at roughly half of them — so a reader who takes
+ * `sgrOnly` for "the unwanted SGR count" is reading the wrong number. Both are here so
+ * neither can be mistaken for the other.
+ */
+export function printColourAxis(axis: ColourAxisResult): void {
+  console.log(
+    `[${axis.corpus}] colour-axis combos=${axis.combos} ` +
+      `charDiff=${axis.charDiff} (charDiffOnly=${axis.charDiffOnly} both=${axis.both}) ` +
+      `sgrAny=${axis.sgrAny} (sgrOnly=${axis.sgrOnly} both=${axis.both}) ` +
+      `identical=${axis.identical} errors=${axis.errors.length} ` +
+      `elapsed=${axis.elapsedSeconds.toFixed(1)}s`,
+  );
+  for (const entry of axis.errors.slice(0, 10)) {
+    console.log(`  colour-axis error width=${entry.width} ${entry.path}: ${entry.message}`);
+  }
+}
+
+/**
+ * The parent's own command line, with `--colour-mode <value>` removed.
+ *
+ * Every other flag is passed through untouched, so each child resolves the same manifest,
+ * the same corpora, the same sampling and the same widths by running **this same parser**
+ * over them. That is what pins the population in committed source: there is no second
+ * file-selection mechanism for the axis, only the manifest corpus the sweep already had.
+ */
+export function stripColourModeArgs(argv: string[]): string[] {
+  const kept: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--colour-mode") {
+      index += 1;
+      continue;
+    }
+    kept.push(argv[index] as string);
+  }
+  return kept;
+}
+
+/**
+ * `--colour-child on|off`: emit a digest stream instead of sweeping.
+ *
+ * **Nothing but JSONL reaches stdout here** — the manifest banner, the tier line and the
+ * per-corpus summary are all skipped, because the parent parses this stream. Diagnostics
+ * go to stderr, which the parent surfaces when a child exits non-zero.
+ */
+async function runColourChild(corpus: string, options: SweepOptions): Promise<void> {
+  const { path: manifestPath } = await resolveManifestSource(options.manifestFlag);
+  let manifest: CorpusManifest;
+  try {
+    manifest = await loadManifest(manifestPath);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+  const targets = corpus === "all" ? manifest.corpora : manifest.corpora.filter((spec) => spec.name === corpus);
+  if (targets.length === 0) {
+    console.error(
+      `unknown corpus: ${corpus} (expected one of: ${manifest.corpora.map((c) => c.name).join(", ")}, all)`,
+    );
+    process.exit(1);
+  }
+  // Flushed in chunks rather than per record: a full private-corpus run is ~220k lines,
+  // and neither one write syscall per line nor one 40 MB string is the right shape.
+  let buffer: string[] = [];
+  const flush = (): void => {
+    if (buffer.length === 0) return;
+    process.stdout.write(`${buffer.join("\n")}\n`);
+    buffer = [];
+  };
+  await emitColourDigests(targets, options, (line) => {
+    buffer.push(line);
+    if (buffer.length >= 512) flush();
+  });
+  flush();
+}
+
+/**
+ * `--colour-mode on`: the sweep itself, one process deeper, rendered in colour.
+ *
+ * The colour decision has to be pinned before the child's module graph loads, which is
+ * why this is a re-exec rather than a flag the renderer reads. `--colour-mode off` is
+ * appended **last** because the parser is last-write-wins and `--max-char-diff` in the
+ * inherited argv would otherwise turn the axis back on inside the child.
+ */
+async function reExecInColour(argv: string[]): Promise<number> {
+  const childArgs = [...stripColourModeArgs(argv), "--colour-mode", "off"];
+  const proc = Bun.spawn([process.execPath, "run", import.meta.path, ...childArgs], {
+    env: colourChildEnv("on", process.env),
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  return await proc.exited;
+}
+
 async function runCli(): Promise<void> {
-  const { corpus, options } = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const { corpus, options } = parseArgs(argv);
+
+  if (options.colourChild !== undefined) {
+    await runColourChild(corpus, options);
+    return;
+  }
+  if (options.colourMode === "on") {
+    process.exit(await reExecInColour(argv));
+  }
 
   const { path: manifestPath, source: manifestSource } = await resolveManifestSource(options.manifestFlag);
   console.log(`corpus manifest: ${manifestPath} (${manifestSource})`);
@@ -300,6 +494,26 @@ async function runCli(): Promise<void> {
     if (options.maxOverIndent !== undefined && driftTotal > options.maxOverIndent) {
       console.error(`[${result.name}] overIndent=${driftTotal} exceeds --max-over-indent ${options.maxOverIndent}`);
       anyFailure = true;
+    }
+  }
+
+  if (options.colourMode === "both") {
+    // Two fresh processes, one per mode — see `scripts/corpus.ts`'s colour-axis section
+    // for why a second mode cannot be reached from inside this one.
+    for (const axis of await runColourAxis(stripColourModeArgs(argv))) {
+      printColourAxis(axis);
+      // An unpaired combo or a child render failure is an instrument fault, and an
+      // instrument that fails quietly is the failure mode this whole package exists to
+      // avoid. It fails the run exactly like a sweep error does.
+      if (axis.errors.length > 0) anyFailure = true;
+      if (options.maxCharDiff !== undefined && axis.charDiff > options.maxCharDiff) {
+        console.error(`[${axis.corpus}] charDiff=${axis.charDiff} exceeds --max-char-diff ${options.maxCharDiff}`);
+        anyFailure = true;
+      }
+      if (options.maxSgr !== undefined && axis.sgrAny > options.maxSgr) {
+        console.error(`[${axis.corpus}] sgrAny=${axis.sgrAny} exceeds --max-sgr ${options.maxSgr}`);
+        anyFailure = true;
+      }
     }
   }
 
