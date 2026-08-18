@@ -211,6 +211,177 @@ Two traps, each recorded because it already cost a package real time:
   own sentinel `String.fromCharCode(0)` because a raw NUL twice landed in that file during
   editing; this script did not get the same treatment.
 
+
+#### The colour axis — the instrument for "colour must not change characters"
+
+WP-1 of `plans/own-the-token-walk.md`. The invariant it measures: **a colour decision may
+change which bytes a render emits; it must never change which *characters* it emits.** It
+is a measurement only — it changes no rendered byte, and it repairs none of the producers
+it makes visible.
+
+```bash
+bun run sweep -- --colour-mode both                       # the three buckets, no ratchet
+bun run sweep -- --colour-mode both --max-char-diff 62 --max-sgr 20   # what verify runs
+bun run sweep -- --colour-mode on                         # the ordinary sweep, in colour
+MDVIEW_CORPUS_MANIFEST=<private manifest> bun run sweep -- --colour-mode both   # opt-in
+```
+
+**`--colour-mode`, never `--color` or `--no-color`.** `has-flag` — which `supports-color`
+and `@colors/colors` both consult — scans the whole of `process.argv`, so a harness flag
+by either of those names is sniffed by the very packages whose decision is under
+measurement, and the instrument silently changes what it is reading. The spelling is a
+contract, pinned in `tests/sweep.test.ts`; do not "correct" it to the American spelling
+or to the conventional flag name.
+
+**Each colour mode is a whole fresh process, and it has to be.** `scripts/corpus.ts`
+statically imports `renderDocumentDetailed`, and `supports-color`, `cli-highlight`'s own
+`chalk` theme and `@colors/colors` each resolve their colour decision **at module load**,
+once, for the life of the process. A second render in this process therefore cannot be in
+a different colour mode, and mutating `FORCE_COLOR` between renders does nothing — Bun's
+module cache hands back the module that already resolved (the same finding
+`tests/helpers/color.ts:15-46` records from the test side). So the parent re-execs
+`scripts/sweep.ts --colour-child on|off`, one child per mode, with `FORCE_COLOR` set and
+`NO_COLOR` deleted **explicitly, on both children, always** — never inherited, because a
+developer or runner with `FORCE_COLOR` exported would otherwise run both children in the
+same mode and produce a gate that cannot fail. Each child emits one `{strippedSha,
+hasSgr}` digest per `(file, width)` as JSONL — never body text, so the axis stays
+affordable over the private corpus — and the parent joins the two streams by key.
+
+**`tests/colour-axis.test.ts` asserts the two children resolve *opposite* modes from
+observed output**, not from the environment the parent intended to set, and asserts it
+again with a hostile ambient `FORCE_COLOR`/`NO_COLOR` in place. That test is the reason to
+believe any number below.
+
+**Three buckets, and the ratchets read the totals, not the disjoint buckets.** Every
+`(file, width)` lands in exactly one of `charDiffOnly`, `sgrOnly` and `both`; the printed
+line carries all three plus `charDiff` (`charDiffOnly + both`) and `sgrAny`
+(`sgrOnly + both`). **`--max-char-diff` reads `charDiff` and `--max-sgr` reads `sgrAny`.**
+The disjoint `sgrOnly` bucket is *not* an unwanted-SGR counter: it cannot see unwanted SGR
+in a combo that also differs in characters. On the bundled corpus it says 10 where the
+honest total is 20 — it misses exactly half — which is the same shape the plan measured on
+a larger set (64 disjoint against 125). A reader who takes `sgrOnly` for "the unwanted SGR
+count" is reading the wrong number, which is why both are on the same line.
+
+**The seeds, and what defines them.** Measured by this instrument at base `4db427e` (the
+commit this section lands on), over the bundled manifest `corpus/default-manifest.json`,
+corpus `repo` — **22 files × the 5 default widths = 110 combos** — at both glyph tiers,
+which agree exactly:
+
+| | combos | identical | charDiffOnly | sgrOnly | both | **charDiff** | **sgrAny** | errors |
+|---|---|---|---|---|---|---|---|---|
+| unicode | 110 | 38 | 52 | 10 | 10 | **62** | **20** | 0 |
+| ascii | 110 | 38 | 52 | 10 | 10 | **62** | **20** | 0 |
+
+`scripts/verify.ts` runs the unicode pass with `--max-char-diff 62 --max-sgr 20`. **Both
+are ratchets, not targets** — the corpus is what it is today, and what must not happen is
+either number going up.
+
+**The population is the manifest corpus, and nothing else.** There is no second
+file-selection mechanism for the axis: the parent hands each child its own command line
+with `--colour-mode` removed, so both children resolve the same manifest, corpora,
+sampling and widths through the same parser. That also means the seeds move with the
+manifest — it globs `plans/*.md`, so **adding a plan file changes the population and can
+move both numbers**. A WP that adds one and trips a ratchet re-measures with the command
+above and re-seeds `scripts/verify.ts` in the same commit, quoting the commit here, exactly
+as this repo already re-quotes the sweep's own file count rather than adjusting it.
+
+**The width axis is asserted, not assumed.** `renderDocumentDetailed(source, targetWidth,
+…)` takes its width as a **positional number** (`src/render.ts:776-782`); passing an
+options object renders every width identically and produces counts about nothing. That
+mistake has invalidated this exact quantity **four times across three authors**, so
+`tests/colour-axis.test.ts` pins it directly — the same file must digest differently at 40
+and at 100 — and the per-width split is the corroborating evidence: **14 / 13 / 13 / 11 /
+11** character differences at 80 / 100 / 116 / 160 / 346, which sums to the 62 above and is
+not a multiple of anything.
+
+**What the numbers are made of, none of it repaired here.** The `sgrAny=20` are
+`styleWikiLink` (`src/render.ts:62-65`), which hardcodes `\x1b[36m\x1b[4m` and consults
+no colour decision at all — it is the one producer that fires in a colourless render. The
+`charDiff=62` are the three known colour-only defects the plan records as deliberately out
+of scope (`src/lists.ts`' `fixNestedLists` regex whose `\S` matches an SGR reset's `m`;
+`src/lists.ts`' raw-byte empty-line filter; `src/wrap.ts`' escape-only run becoming a
+zero-width word). A worked witness: `tests/fixtures/tight-list.md` at 80 columns wraps a
+`<br />` hard return one way colourless and another under colour, and the two renders even
+differ in *line count*. **Measuring them honestly is this instrument's first job; fixing
+them is the successor plan's.**
+
+**OSC-8 is outside what this can see.** `stripAnsi` (`src/list-lines.ts`) removes SGR only,
+and `src/inline.ts` emits hyperlinks independently of the colour decision, so no ratchet
+here reports on them. Recorded, deliberately, rather than papered over with a strip that
+would silently change what `hasSgr` means.
+
+**The axis flag is on the sweep and deliberately not on `scripts/render-diff.ts`.** That
+harness imports **both revisions into one process** (`loadRevision`, and the module cache
+resolves `supports-color` once for both), which is exactly right for a differential — both
+sides are measured in the same mode — and exactly why a `--colour-mode` flag there could
+only mean "re-exec myself", with no per-render switch to offer. A caller that wants both
+modes runs the CLI twice, once under `FORCE_COLOR=3` and once under `FORCE_COLOR=0`, with
+`NO_COLOR` unset in both; that is how WP-2's "full 20-axis T2, both colour modes" is run.
+
+##### The escape-site census
+
+The superseded plan claimed "40 removable escape sites". **That census was wrong in kind**,
+not merely in count: it mixed terminal-protocol logic that must stay with styling that
+might move. Re-censused below over all of `src/` and `scripts/`, in four categories. The
+successor plan sizes its work from this table, so a miscategorised row costs real
+estimation error.
+
+(Searching for these is subject to the NUL trap two sections up: `scripts/render-diff.ts`
+is binary to `grep` and `rg` without `-a`/`--text`, and a site sitting right there reads as
+absent. Every row below was found with `-a`.)
+
+**Producers — they put escape bytes into rendered text.**
+
+| Site | What it emits | Obeys `ctx.color`? |
+|---|---|---|
+| `src/inline.ts:205-226` (`applyStyle`) | the one styling primitive; every SGR pair in prose comes through here | **yes** — returns the input untouched at level 0 |
+| `src/inline.ts:339,348,363,382,420,424,427` | its inline call sites — strong, em, codespan, del, link | via `applyStyle` |
+| `src/blocks.ts:151,195,213,426,457,518` | its block call sites — code, hr, html, heading, paragraph, blockquote | via `applyStyle` |
+| `src/lists.ts:380` | its list-item call site | via `applyStyle` |
+| `src/inline.ts:421` (`ansiEscapes.link`) | **OSC-8**, not SGR | no — gated on `supportsHyperlinks.stdout` alone |
+| `src/render.ts:62-65` (`styleWikiLink`) | hardcoded `[36m[4m…`, injected **before the lexer** | **no** |
+| `src/frontmatter.ts:4-5` and their use sites | `DIM_START`/`DIM_END` around metadata | **no** — and outside the token stream entirely |
+| `src/table.ts:507-508` | `@colors/colors`' `grey`/`bold` for borders and headers | no — decided at module load |
+| `src/blocks.ts:1` + `highlightCode` | `cli-highlight`'s own `chalk` theme inside fences | no — decided at module load |
+| `src/inline.ts:283` (`detectInlineColor`) | **nothing** — it is the authority the first row obeys (`supports-color`) | n/a |
+
+**Layout-consumers — they read or strip escapes to decide where characters go.** These are
+the sites a style-last restructure has to satisfy, and the three known colour-only defects
+all live here.
+
+| Site | Why it looks at escapes |
+|---|---|
+| `src/list-lines.ts:53-55` (`ANSI_PATTERN`, `stripAnsi`) | the one strip implementation in the repo; everything below calls it |
+| `src/wrap.ts:24,26` and their uses at `:41-44`, `:66-70` | splits a styled token on complete escape sequences so wrapping measures display width, not bytes — **an escape-only run becomes a zero-width word here** |
+| `src/lists.ts:144` (`fixNestedLists`' regex) | its `\S` matches an SGR reset's `m` |
+| `src/lists.ts:425` | filters empty lines by raw bytes, so a line of escapes alone survives |
+| `src/lists.ts:458`, `:627` | bullet substitution and the de-drift claim on stripped text |
+| `src/blocks.ts:313` | drops a trailing line that is blank once stripped |
+| `src/render.ts:667-668` | the emoji trailing-space strip has to match *across* the SGR that closes the segment |
+| `src/detectors.ts:120,315,327,396,516,603,641` | measurement, not rendering — no rendered byte depends on these, but they read the same escapes |
+| `scripts/corpus.ts:693`, `:859` | the sweep's orphan line lookup, and this axis's own digest |
+
+**Final-output-consumers — a strip on the way out to a terminal or a file: there are
+none.** `src/cli.ts` writes the renderer's string through unchanged, and the width gate
+(`src/overflow.ts` via `src/width.ts`) measures with `string-width`, which strips SGR
+*inside the dependency* rather than at a site in this repo. This is the row that matters
+for the successor: `--plain` has no existing seam to hook, so it is new construction, not a
+move — and `stripAnsi` cannot serve as that seam while it removes SGR only.
+
+**Unrelated-protocol — terminal control that is not styling and must stay.**
+
+| Site | What it is |
+|---|---|
+| `src/width.ts:410` | `\x1b[6n` — the DSR cursor-position request the ambiguous-width probe sends |
+| `src/width.ts:363` | the regex that reads the terminal's DSR reply |
+| `src/width.ts:366` | escapes that reply for a diagnostic line, so it can be printed safely |
+| `src/width.ts:526` | `\x1b[<n>G\x1b[K` — moving to a column and erasing the line, cleaning up after the probe |
+| `src/cli.ts:102` | the `--help` text describing the probe; prose, not an escape |
+
+**Six of these were miscategorised by the count this replaces**: the four `src/width.ts`
+rows are DSR terminal protocol with nothing to do with colour, and `src/frontmatter.ts`'s
+two are producers rather than coping code.
+
 #### Defect detectors — the gates that can see *under* the width
 
 `src/detectors.ts` (WP-2d) is the answer to the section above. Every list-wrap defect this

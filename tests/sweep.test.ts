@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { parseArgs, parseWidths, printResult } from "../scripts/sweep";
+import { parseArgs, parseWidths, printColourAxis, printResult, stripColourModeArgs } from "../scripts/sweep";
 import {
   loadManifest,
   parseManifest,
@@ -926,5 +926,165 @@ describe("the missing-root state reports a hardcoded elapsedSeconds of 0 (WP-4)"
       await rm(walkDir, { recursive: true, force: true });
       await rm(globDir, { recursive: true, force: true });
     }
+  });
+});
+
+// The colour axis's CLI half (WP-1, `plans/own-the-token-walk.md`). The axis itself —
+// the two children, the digests and the join — is `tests/colour-axis.test.ts`; what is
+// pinned here is the flag surface, the passthrough that keeps both children looking at
+// the same population, and the printed line's three buckets.
+describe("parseArgs: the colour axis flags (WP-1)", () => {
+  test("the default is off, and every existing invocation is therefore unchanged", () => {
+    const { options } = parseArgs([]);
+    expect(options.colourMode).toBe("off");
+    expect(options.colourChild).toBeUndefined();
+    expect(options.maxCharDiff).toBeUndefined();
+    expect(options.maxSgr).toBeUndefined();
+  });
+
+  test("--colour-mode takes on, off or both and rejects anything else", () => {
+    expect(parseArgs(["--colour-mode", "on"]).options.colourMode).toBe("on");
+    expect(parseArgs(["--colour-mode", "off"]).options.colourMode).toBe("off");
+    expect(parseArgs(["--colour-mode", "both"]).options.colourMode).toBe("both");
+    expect(() => parseArgs(["--colour-mode", "auto"])).toThrow(
+      '--colour-mode must be "on", "off" or "both", got: auto',
+    );
+    expect(() => parseArgs(["--colour-mode"])).toThrow(
+      '--colour-mode must be "on", "off" or "both", got: undefined',
+    );
+  });
+
+  test("the flag is not spelled --color, and neither spelling is recognised", () => {
+    // `has-flag`, which `supports-color` and `@colors/colors` both consult, scans the
+    // whole of `process.argv`. A harness flag spelled `--color` or `--no-color` would
+    // therefore flip the ambient colour decision of the renderer under measurement — the
+    // instrument would be changing the thing it is reading. Pinned as a contract, not a
+    // style preference: this parser must never learn either spelling.
+    expect(parseArgs(["--color"]).options.colourMode).toBe("off");
+    expect(parseArgs(["--no-color"]).options.colourMode).toBe("off");
+  });
+
+  test("--max-char-diff and --max-sgr set a threshold and turn the axis on", () => {
+    // The `--max-orphans` precedent: a threshold for a measurement that is not being
+    // taken is a gate that cannot fail.
+    const charDiff = parseArgs(["--max-char-diff", "62"]).options;
+    expect(charDiff.maxCharDiff).toBe(62);
+    expect(charDiff.colourMode).toBe("both");
+    const sgr = parseArgs(["--max-sgr", "20"]).options;
+    expect(sgr.maxSgr).toBe(20);
+    expect(sgr.colourMode).toBe("both");
+  });
+
+  test("a ratchet of 0 is legal, and a negative or missing one throws", () => {
+    expect(parseArgs(["--max-char-diff", "0"]).options.maxCharDiff).toBe(0);
+    expect(parseArgs(["--max-sgr", "0"]).options.maxSgr).toBe(0);
+    expect(() => parseArgs(["--max-char-diff", "-1"])).toThrow(
+      "--max-char-diff must be a non-negative number, got: -1",
+    );
+    expect(() => parseArgs(["--max-sgr"])).toThrow("--max-sgr must be a non-negative number, got: undefined");
+  });
+
+  test("--colour-child is internal, validated, and never set by any other flag", () => {
+    expect(parseArgs(["--colour-child", "on"]).options.colourChild).toBe("on");
+    expect(parseArgs(["--colour-child", "off"]).options.colourChild).toBe("off");
+    expect(() => parseArgs(["--colour-child", "both"])).toThrow(
+      '--colour-child must be "on" or "off", got: both',
+    );
+    expect(parseArgs(["--colour-mode", "both"]).options.colourChild).toBeUndefined();
+  });
+});
+
+describe("stripColourModeArgs: what each child is handed (WP-1)", () => {
+  test("only --colour-mode and its value are removed; every measurement flag survives", () => {
+    expect(
+      stripColourModeArgs([
+        "--manifest",
+        "example/manifest.json",
+        "--colour-mode",
+        "both",
+        "--widths",
+        "80,100",
+        "--glyphs",
+        "ascii",
+        "--corpus",
+        "repo",
+        "--all",
+      ]),
+    ).toEqual([
+      "--manifest",
+      "example/manifest.json",
+      "--widths",
+      "80,100",
+      "--glyphs",
+      "ascii",
+      "--corpus",
+      "repo",
+      "--all",
+    ]);
+  });
+
+  test("an argv without the flag is passed through unchanged", () => {
+    expect(stripColourModeArgs(["--widths", "80"])).toEqual(["--widths", "80"]);
+    expect(stripColourModeArgs([])).toEqual([]);
+  });
+});
+
+describe("printColourAxis prints all three buckets and both totals (WP-1)", () => {
+  const axis = {
+    corpus: "repo",
+    combos: 110,
+    identical: 38,
+    charDiffOnly: 52,
+    sgrOnly: 10,
+    both: 10,
+    charDiff: 62,
+    sgrAny: 20,
+    errors: [],
+    elapsedSeconds: 2.84,
+  };
+
+  test("the line carries the disjoint buckets and the overlapping totals side by side", () => {
+    const originalLog = console.log;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printColourAxis(axis);
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured[0]).toBe(
+      "[repo] colour-axis combos=110 charDiff=62 (charDiffOnly=52 both=10) " +
+        "sgrAny=20 (sgrOnly=10 both=10) identical=38 errors=0 elapsed=2.8s",
+    );
+    // The reason both are printed: `sgrOnly` is not the unwanted-SGR count and must not
+    // be readable as one. `sgrAny` is, and it is on the same line.
+    expect(captured[0]).toContain("sgrAny=20");
+    expect(captured[0]).toContain("sgrOnly=10");
+  });
+
+  test("an instrument fault is printed under the line, not folded into a bucket", () => {
+    const originalLog = console.log;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printColourAxis({
+        ...axis,
+        errors: [
+          {
+            corpus: "repo",
+            path: "/example/a.md",
+            width: 80,
+            message: "present in the colourless stream but missing from the colour stream",
+          },
+        ],
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured[0]).toContain("errors=1");
+    expect(captured[1]).toBe(
+      "  colour-axis error width=80 /example/a.md: " +
+        "present in the colourless stream but missing from the colour stream",
+    );
   });
 });

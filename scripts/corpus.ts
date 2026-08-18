@@ -47,6 +47,14 @@ import { NARROW_MEASURE, type Measure } from "../src/width";
 // The width gate, imported rather than re-implemented (WP-2): the sweep used to carry
 // a second copy of `src/cli.ts`'s `checkOverflow`, identical argument for argument.
 import { findFirstOverflow } from "../src/overflow";
+// The one hash implementation this repo has (WP-1 of `plans/marked-terminal-replacement.md`),
+// imported rather than re-derived so the colour axis below and the differential harness agree
+// on what "the same text" means. **This closes an import cycle** — `scripts/render-diff.ts`
+// imports `parseWidths` from `scripts/sweep.ts`, which imports this module — and the cycle is
+// benign in both directions because neither module calls the other during module evaluation:
+// `sha256Hex` is a hoisted function declaration, and every `import.meta.main` gate is false in
+// a module that was imported rather than run. Verified from all three entry points.
+import { sha256Hex } from "./render-diff";
 
 export interface CorpusSpec {
   name: string;
@@ -106,6 +114,40 @@ export interface SweepOptions {
   maxOrphans?: number;
   /** `--max-over-indent N` — same, for the continuation over-indent detector. */
   maxOverIndent?: number;
+  /**
+   * `--colour-mode on|off|both` — which colour modes this sweep's renders are made in
+   * (WP-1, `plans/own-the-token-walk.md`). Defaults to `off`, which is byte-for-byte
+   * today's behaviour: one in-process sweep, in whatever mode the ambient environment
+   * resolved at module load.
+   *
+   * **It is not spelled `--color` and must never be.** `has-flag` — which both
+   * `supports-color` and `@colors/colors` consult — scans the whole of `process.argv`,
+   * so a harness flag by that name silently flips the colour decision of the very thing
+   * being measured.
+   */
+  colourMode?: ColourMode;
+  /**
+   * `--colour-child on|off` — the internal re-exec marker. Set only by
+   * `collectColourDigests` on the child command line it builds; a human never passes it.
+   * When present, the sweep emits a digest stream (see `emitColourDigests`) instead of
+   * running a sweep, and every other flag is honoured exactly as the parent honoured it.
+   */
+  colourChild?: ColourAxisMode;
+  /**
+   * `--max-char-diff N` — with the axis on, exit non-zero when the **character**
+   * difference count exceeds N. A ratchet, not a target: the count is what it is today,
+   * and what must not happen is it going up.
+   *
+   * It reads `charDiff` (`charDiffOnly + both`), the total, not the disjoint bucket.
+   */
+  maxCharDiff?: number;
+  /**
+   * `--max-sgr N` — same, for **any** SGR in a colourless render: `sgrAny`
+   * (`sgrOnly + both`). The disjoint `sgrOnly` bucket is not the counter — it cannot see
+   * unwanted SGR in a combo that also differs in characters, which is roughly half of
+   * them.
+   */
+  maxSgr?: number;
 }
 
 export interface OverflowEntry {
@@ -700,4 +742,377 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
     tableOverflow,
     symlinkedDirsSkipped: symlinkStats.symlinkedDirs,
   });
+}
+
+// ---------------------------------------------------------------------------
+// The colour axis (WP-1, `plans/own-the-token-walk.md`)
+// ---------------------------------------------------------------------------
+//
+// The invariant this instrument exists to measure: **a colour decision may change which
+// bytes a render emits; it must never change which characters it emits.** Everything
+// below is measurement only — no renderer source is touched and no rendered byte moves.
+//
+// ## Why this is two processes and cannot be one
+//
+// This module statically imports `renderDocumentDetailed` (the import at the top of this
+// file). `supports-color`, `cli-highlight`'s own `chalk` theme and `@colors/colors` each
+// resolve their colour decision **at module load**, once, for the life of the process.
+// So a second render inside this process cannot be in a different colour mode, and
+// mutating `FORCE_COLOR` between renders does nothing — Bun's module cache hands back
+// the module that already resolved. `tests/helpers/color.ts:15-46` records the same
+// finding from the test side, and its fix is the same one: a fresh subprocess whose
+// environment is fixed **before** its own module graph loads.
+//
+// So the parent re-execs the sweep CLI twice, once per mode, with the colour decision
+// pinned in the child's environment before any import happens. Each child renders the
+// same population and emits a **digest** per `(file, width)` — never body text, so this
+// stays affordable over a ~44.5k-file private corpus — and the parent joins the two
+// streams by key.
+//
+// ## Why the child's environment is set explicitly, both variables, every time
+//
+// A child that merely inherited the parent's environment would measure the machine, not
+// the renderer: a developer with `FORCE_COLOR` exported would silently run both children
+// in the same mode, and a colour axis that runs twice in one mode is a gate that cannot
+// fail — the shape root `AGENTS.md`'s "Flag order matters" paragraph forbids. Both
+// variables are therefore set (or deleted) on both children unconditionally, and
+// `tests/colour-axis.test.ts` asserts the two children resolve *opposite* modes from
+// their observed output rather than from the environment we intended to set.
+//
+// `NO_COLOR` is **deleted**, not set: it is honoured nowhere in this stack today
+// (`supports-color@7.2.0` contains no reference to it), and inventing a meaning for it
+// here would be a policy decision this package does not own.
+
+/** One end of the axis. `on` is the forced-colour child; `off` is the colourless one. */
+export type ColourAxisMode = "on" | "off";
+
+/** The `--colour-mode` flag's domain: measure one mode, or compare the two. */
+export type ColourMode = ColourAxisMode | "both";
+
+/** The digest of one `(file, width)` render, in one colour mode. */
+export interface ColourDigestRecord {
+  corpus: string;
+  path: string;
+  width: number;
+  /** sha256 of the SGR-stripped text — the *character* channel. */
+  strippedSha: string;
+  /**
+   * Whether the raw text carried any SGR escape. `stripAnsi` removes SGR and nothing
+   * else, which is exactly right here and is why OSC-8 hyperlinks are explicitly out of
+   * this instrument's scope (`src/inline.ts` emits them independently of colour).
+   */
+  hasSgr: boolean;
+}
+
+/** A render that threw in a child, carried through rather than swallowed. */
+export interface ColourErrorRecord {
+  corpus: string;
+  path: string;
+  width: number;
+  message: string;
+}
+
+/** One child's output for one corpus. */
+export interface ColourDigestStream {
+  corpus: string;
+  digests: ColourDigestRecord[];
+  errors: ColourErrorRecord[];
+}
+
+/**
+ * The three buckets, plus the two totals the ratchets actually read.
+ *
+ * The buckets are disjoint; the totals are not, and that is the point. **The unwanted-SGR
+ * ratchet reads `sgrAny` (`sgrOnly + both`), never `sgrOnly`** — unwanted SGR sitting in a
+ * combo that *also* differs in characters is invisible to the disjoint bucket, and that is
+ * roughly half of them (measured 64 disjoint against 125 total on a 36-file set). Same
+ * shape for characters: `charDiff` is `charDiffOnly + both`.
+ */
+export interface ColourAxisResult {
+  corpus: string;
+  /** `(file, width)` keys present in both streams. */
+  combos: number;
+  /** Same characters, no SGR in the colourless render — the invariant holding. */
+  identical: number;
+  /** `strippedSha` differs, and the colourless render carried no SGR. */
+  charDiffOnly: number;
+  /** `strippedSha` matches, but the colourless render carried SGR. */
+  sgrOnly: number;
+  /** `strippedSha` differs **and** the colourless render carried SGR. */
+  both: number;
+  /** `charDiffOnly + both` — what `--max-char-diff` ratchets. */
+  charDiff: number;
+  /** `sgrOnly + both` — what `--max-sgr` ratchets. */
+  sgrAny: number;
+  /** Child render failures, plus any key that appeared in only one of the two streams. */
+  errors: ColourErrorRecord[];
+  elapsedSeconds: number;
+}
+
+/**
+ * The digest of one rendered document.
+ *
+ * `hasSgr` compares lengths rather than strings because `stripAnsi` only ever removes:
+ * a shorter result means at least one SGR sequence was present.
+ */
+export function digestText(text: string): { strippedSha: string; hasSgr: boolean } {
+  const stripped = stripAnsi(text);
+  return { strippedSha: sha256Hex(stripped), hasSgr: stripped.length !== text.length };
+}
+
+/**
+ * The join key for one `(file, width)`.
+ *
+ * The separator is written as the escape `\u0000`, not as a raw byte, so — unlike
+ * `scripts/render-diff.ts`, whose three raw NULs make it binary to `grep` and `rg` (see
+ * `scripts/AGENTS.md`'s note on that trap) — this file stays plain text to both tools. A
+ * NUL cannot occur in a path, so the key is unambiguous.
+ */
+function comboKey(path: string, width: number): string {
+  return `${width}\u0000${path}`;
+}
+
+/**
+ * The child body: render every `(file, width)` of every requested corpus and write one
+ * JSON record per line to `write`.
+ *
+ * The render call is **byte-identical to `sweepCorpus`'s** — same positional argument
+ * order, same ruler default. `renderDocumentDetailed(source, targetWidth, glyphs,
+ * measure)` takes its width as a **positional number** (`src/render.ts:776-782`); passing
+ * an options object instead renders every width identically, which has invalidated four
+ * separate measurements of this exact quantity across three authors. Do not "tidy" this
+ * call into an object.
+ */
+export async function emitColourDigests(
+  specs: CorpusSpec[],
+  options: SweepOptions,
+  write: (line: string) => void,
+): Promise<void> {
+  for (const spec of specs) {
+    write(JSON.stringify({ corpus: spec.name, begin: true }));
+    const files = await resolveCorpusFiles(spec, {});
+    if (files === null || files.length === 0) continue;
+    const selected = selectCorpusFiles(files, spec, options);
+    for (const path of selected) {
+      let source: string;
+      try {
+        source = await readFile(path, "utf8");
+      } catch (error) {
+        // Recorded against every width, so the join stays symmetric rather than dropping
+        // the file from one side of it. The message is unprefixed, matching `sweepCorpus`:
+        // the read failed once, for the whole file, before any width was involved.
+        const message = error instanceof Error ? error.message : String(error);
+        for (const width of options.widths) {
+          write(JSON.stringify({ corpus: spec.name, path, width, error: message }));
+        }
+        continue;
+      }
+      for (const width of options.widths) {
+        try {
+          const measure = options.measure ?? NARROW_MEASURE;
+          const { text } = renderDocumentDetailed(source, width, options.glyphs, measure);
+          const { strippedSha, hasSgr } = digestText(text);
+          write(JSON.stringify({ corpus: spec.name, path, width, strippedSha, hasSgr }));
+        } catch (error) {
+          write(
+            JSON.stringify({
+              corpus: spec.name,
+              path,
+              width,
+              error: `width ${width}: ${error instanceof Error ? error.message : String(error)}`,
+            }),
+          );
+        }
+      }
+    }
+  }
+}
+
+/** Parse one child's JSONL stdout into per-corpus streams, in first-seen corpus order. */
+export function parseColourDigestStreams(stdout: string): ColourDigestStream[] {
+  const streams = new Map<string, ColourDigestStream>();
+  const streamFor = (corpus: string): ColourDigestStream => {
+    let stream = streams.get(corpus);
+    if (!stream) {
+      stream = { corpus, digests: [], errors: [] };
+      streams.set(corpus, stream);
+    }
+    return stream;
+  };
+  for (const line of stdout.split("\n")) {
+    if (line.trim().length === 0) continue;
+    const record = JSON.parse(line) as Record<string, unknown>;
+    const corpus = String(record.corpus);
+    const stream = streamFor(corpus);
+    if (record.begin === true) continue;
+    if (typeof record.error === "string") {
+      stream.errors.push({
+        corpus,
+        path: String(record.path),
+        width: Number(record.width),
+        message: record.error,
+      });
+      continue;
+    }
+    stream.digests.push({
+      corpus,
+      path: String(record.path),
+      width: Number(record.width),
+      strippedSha: String(record.strippedSha),
+      hasSgr: record.hasSgr === true,
+    });
+  }
+  return [...streams.values()];
+}
+
+/** The sweep CLI, which is also the colour axis's child entry point. */
+const SWEEP_CLI_PATH = join(import.meta.dir, "sweep.ts");
+
+/**
+ * The child environment, built explicitly rather than inherited.
+ *
+ * Both variables are decided here for both modes — never left to whatever the developer
+ * or CI happens to export — because the whole axis is worthless if the two children can
+ * resolve the same mode. `FORCE_COLOR=3` is the level `tests/helpers/color.ts` already
+ * uses for the forced-colour side; `FORCE_COLOR=0` is `supports-color`'s explicit "no".
+ * The child's stdout is a pipe, so it is not a TTY either way.
+ */
+export function colourChildEnv(
+  mode: ColourAxisMode,
+  base: Record<string, string | undefined>,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined) env[key] = value;
+  }
+  delete env.NO_COLOR;
+  env.FORCE_COLOR = mode === "on" ? "3" : "0";
+  return env;
+}
+
+/**
+ * Spawn one child in one colour mode and collect its digest streams.
+ *
+ * `childArgs` is the parent's own command line with `--colour-mode` removed, so the child
+ * resolves the same manifest, the same corpora, the same sampling and the same widths by
+ * running the same parser over the same flags — there is no second file-selection
+ * mechanism to drift. The population is the manifest corpus, and nothing else.
+ */
+export async function collectColourDigests(
+  mode: ColourAxisMode,
+  childArgs: string[],
+): Promise<ColourDigestStream[]> {
+  const proc = Bun.spawn([process.execPath, "run", SWEEP_CLI_PATH, "--colour-child", mode, ...childArgs], {
+    env: colourChildEnv(mode, process.env),
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    throw new Error(`colour-axis child (--colour-child ${mode}) exited ${exitCode}: ${stderr.trim()}`);
+  }
+  try {
+    return parseColourDigestStreams(stdout);
+  } catch (error) {
+    throw new Error(
+      `colour-axis child (--colour-child ${mode}) produced unparseable output: ` +
+        `${error instanceof Error ? error.message : String(error)}\nstderr: ${stderr.trim()}`,
+    );
+  }
+}
+
+/**
+ * Join two digest streams for one corpus and sort every `(file, width)` into exactly one
+ * of the three buckets.
+ *
+ * A key present in one stream and not the other is an **error**, not a silent drop: the
+ * two children resolve their populations independently, so a divergence there is a fact
+ * about the instrument that must be visible rather than a combo quietly missing from the
+ * denominator.
+ */
+export function classifyColourAxis(
+  corpus: string,
+  colour: ColourDigestStream | undefined,
+  colourless: ColourDigestStream | undefined,
+  elapsedSeconds: number,
+): ColourAxisResult {
+  const on = new Map((colour?.digests ?? []).map((digest) => [comboKey(digest.path, digest.width), digest]));
+  const off = new Map((colourless?.digests ?? []).map((digest) => [comboKey(digest.path, digest.width), digest]));
+  const errors: ColourErrorRecord[] = [
+    ...(colour?.errors ?? []).map((entry) => ({ ...entry, message: `colour-on ${entry.message}` })),
+    ...(colourless?.errors ?? []).map((entry) => ({ ...entry, message: `colour-off ${entry.message}` })),
+  ];
+
+  let identical = 0;
+  let charDiffOnly = 0;
+  let sgrOnly = 0;
+  let both = 0;
+  let combos = 0;
+
+  for (const [key, offDigest] of off) {
+    const onDigest = on.get(key);
+    if (!onDigest) {
+      errors.push({
+        corpus,
+        path: offDigest.path,
+        width: offDigest.width,
+        message: "present in the colourless stream but missing from the colour stream",
+      });
+      continue;
+    }
+    combos += 1;
+    const differs = onDigest.strippedSha !== offDigest.strippedSha;
+    // The colourless side is the one whose SGR is unwanted: colour in a colour render is
+    // the point, colour in a render that asked for none is the defect.
+    if (differs && offDigest.hasSgr) both += 1;
+    else if (differs) charDiffOnly += 1;
+    else if (offDigest.hasSgr) sgrOnly += 1;
+    else identical += 1;
+  }
+  for (const [key, onDigest] of on) {
+    if (off.has(key)) continue;
+    errors.push({
+      corpus,
+      path: onDigest.path,
+      width: onDigest.width,
+      message: "present in the colour stream but missing from the colourless stream",
+    });
+  }
+
+  return {
+    corpus,
+    combos,
+    identical,
+    charDiffOnly,
+    sgrOnly,
+    both,
+    charDiff: charDiffOnly + both,
+    sgrAny: sgrOnly + both,
+    errors,
+    elapsedSeconds,
+  };
+}
+
+/**
+ * Run the whole axis: both children, in parallel, then the join.
+ *
+ * The corpus order follows the colourless child's, which is the manifest's, which is the
+ * order the sweep itself printed a moment earlier.
+ */
+export async function runColourAxis(childArgs: string[]): Promise<ColourAxisResult[]> {
+  const started = performance.now();
+  const [colour, colourless] = await Promise.all([
+    collectColourDigests("on", childArgs),
+    collectColourDigests("off", childArgs),
+  ]);
+  const elapsedSeconds = (performance.now() - started) / 1000;
+  const byCorpus = new Map(colour.map((stream) => [stream.corpus, stream]));
+  return colourless.map((stream) =>
+    classifyColourAxis(stream.corpus, byCorpus.get(stream.corpus), stream, elapsedSeconds),
+  );
 }
