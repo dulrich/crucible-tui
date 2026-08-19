@@ -260,11 +260,13 @@ Two traps, each recorded because it already cost a package real time:
   editing; this script did not get the same treatment.
 
 
-#### The colour axis — three exact gates over three children
+#### The colour axis — three exact gates over four children
 
 WP-1 of `plans/own-the-token-walk.md`; **three exact gates over three children since WP-5
 of `plans/colour-policy.md`, replacing the two ratchet counters this section used to
-describe.** The invariant it measures: **a colour decision may change which bytes a
+describe; a fourth child, `formats`, since WP-4 of `plans/colour-modes.md`, folded into
+the existing G2/G3 rather than adding a fourth gate.** The invariant it measures: **a
+colour decision may change which bytes a
 render emits; it must never change which *characters* it emits — and an undirected,
 piped render must emit no terminal sequence at all.** It is a measurement only — it
 changes no rendered byte, and it repairs none of the producers it makes visible.
@@ -304,8 +306,29 @@ gate change with its own evidence to bring, not a side effect of the packages le
 colour variable is set, so `src/colour.ts`'s resolver falls to its `isTTY` floor, which is
 `false` on the child's piped stdout. That is the colour decision an ordinary
 `mdview file.md | somewhere` actually gets, and it is the one G1 holds to "zero sequences,
-full stop". So the parent re-execs `scripts/sweep.ts --colour-child on|off|default`, one
-child per mode, with `FORCE_COLOR` set (or, for `default`, deleted) and `NO_COLOR`/
+full stop".
+
+**WP-4 of `plans/colour-modes.md` added a fourth child, `formats`, pinned via
+`MDVIEW_COLOR=never`** — one of the three explicit `never`-directive routes Decision 5 of
+that plan moved off the `none` output onto the format-preserving `SgrMode`, the same
+directive a user reaches with `--color=never` or config `color: never`. G2 and G3 both
+read it: G2 gains the `visible(formats) === visible(off)` claim, which holds by
+construction for fenced code (Decision 3 keeps the syntax highlighter `full`-only) and by
+every other producer's own hue/format filter (`src/style.ts`) everywhere else; G3 gains a
+second, narrower vocabulary arm — a `formats`-child sequence must be a committed
+**format-class or control** pair (`src/style.ts`'s own `emitsUnder(name, "formats")` rule,
+asked as a membership test) or a well-formed OSC-8/tmux-DCS, exactly as the `on`-child arm
+already allows for those two kinds. Scoped exactly as the landed G1/G3 already are
+(cycle-3 f3): a vocabulary check over the fixed, ESC-free gate corpus, never a provenance
+audit — an audit-shaped check would reject the authored hue escape Decision 1 obliges to
+survive, which is rev 2's contradiction reborn. That is also why the authored fixture
+(`tests/colour-axis.test.ts`) now pins a **second** deliberate failure: its `31m`/`39m`
+escape fails the `formats` vocabulary by construction (`red` is hue-class) exactly as it
+already, deliberately, fails G1.
+
+So the parent re-execs `scripts/sweep.ts --colour-child on|off|default|formats`, one
+child per mode, with `FORCE_COLOR` set (or, for `default`, deleted; for `formats`, also
+deleted, with `MDVIEW_COLOR=never` set instead) and `NO_COLOR`/
 `MDVIEW_COLOR`/`TMUX`/`TERM` all deleted **explicitly, on every child, always** — never
 inherited, because a developer or runner with any of these exported would otherwise run
 every child in the same mode (or leak a real tmux session into what G1/G3 measure) and
@@ -313,7 +336,7 @@ produce a gate that cannot fail. Each child emits one **v2 wire record** —
 `{corpus, file, width, visibleSha, sequences, malformed}`, where `sequences` is every
 `sgr`/`osc8`/`dcs` span `src/ansi.ts`'s `scan()` found, each with its raw bytes — per
 `(file, width)` as JSONL, never body text, so the axis stays affordable over the private
-corpus; the parent joins the three streams by key.
+corpus; the parent joins the four streams by key.
 
 **`tests/colour-axis.test.ts` asserts the children resolve distinct modes from observed
 output**, not from the environment the parent intended to set, and asserts it again with a
@@ -321,7 +344,7 @@ hostile ambient `FORCE_COLOR`/`NO_COLOR`/`MDVIEW_COLOR`/`TMUX`/`TERM` in place. 
 the reason to believe any number below.
 
 **Three exact gates, no thresholds, over the union of every `(file, width)` key any of the
-three children reported.** The two-child join this replaced mapped over one stream only, so
+four children reported.** The two-child join this replaced mapped over one stream only, so
 a key present in one mode and absent from another was silently dropped from the denominator;
 the join now iterates the union and turns every incomplete key into a mode-tagged error
 (`{mode, corpus, file, width, reason: "missing" | "child-error"}`) instead. The printed
@@ -330,16 +353,19 @@ line is `[<corpus>] colour-axis combos=N g1=N g2=N g3=N errors=N elapsed=X.Xs`, 
 
 - **G1** — the `default` child's record for a combo carries at least one recognised
   sequence, or its `malformed` flag is set. Reads `default` alone.
-- **G2** — the `on` and `off` children's `visibleSha` differ for a combo. The character
-  channel: colour may change bytes, never characters.
+- **G2** — the `on` and `off` children's `visibleSha` differ for a combo, **or** the
+  `formats` and `off` children's do (WP-4). The character channel: colour may change
+  bytes, never characters, whichever explicit directive produced the render.
 - **G3** — a sequence in the `on` child's record does not parse as membership in
   `src/style.ts`'s committed SGR table, a well-formed OSC-8 hyperlink (`scan`'s own `osc8`
   classification, which is only ever assigned to a well-formed one), or a strictly-parsed
   tmux DCS wrapper whose payload, undoubled, is exactly one such OSC-8 sequence and nothing
   else (cycle-3 f7 — `src/ansi.ts`'s `link()` emits exactly that wrapper under tmux, so a
-  gate language without a DCS arm would reject a sequence the plan itself introduces). A
-  `malformed` on-child record also fails G3: nothing this renderer emits is ever malformed
-  by construction.
+  gate language without a DCS arm would reject a sequence the plan itself introduces); **or**
+  a sequence in the `formats` child's record does not parse as membership in the narrower
+  format/control subset of that same table, the same OSC-8 grammar, or the same DCS wrapper
+  (WP-4). A `malformed` record on either child also fails G3: nothing this renderer emits is
+  ever malformed by construction.
 
 **Why G1 can fire on correct output, and what that means for reading a non-zero G1.** An
 authored escape in a document's own source passes through every render verbatim, at every
@@ -373,6 +399,12 @@ buckets are deleted, not renamed** — WP-5's replacement is the three gates abo
 | unicode | 70 | 0 | 0 | 0 | 0 |
 | ascii | 70 | 0 | 0 | 0 | 0 |
 
+**Re-verified with the fourth child, `formats`, live (WP-4, `plans/colour-modes.md`): the
+same table, unmoved.** `combos` stays 70 — WP-4 added a child, not a corpus member — and
+`g1`/`g2`/`g3`/`errors` stay 0/0/0/0 at both glyph tiers, with the authored fixture's two
+deliberate failures (G1, and now G3's `formats` arm) accounted for outside the gate
+corpus, in `tests/colour-axis.test.ts`'s own synthetic manifest.
+
 **Per-file composition (one-file-manifest isolation, WP-1) — historical, both mechanisms
 closed.** `charDiff=31` was `blockquote-list.md` (5) + `coalesced-colon-guard-continuation.md`
 (1) + `fenced-list.md` (5) + `loose-list.md` (5) + `nested-list.md` (5) + `tight-list.md`
@@ -391,13 +423,27 @@ gates (see `runs/dispatch/colour-policy-wp5-report.md`).
 can pass vacuously — and G1/G2/G3 are each kept honest by a direct, non-vacuous test rather
 than by the gate corpus's own zero.** `tests/colour-axis.test.ts` exercises: G1 against the
 `authored.md` fixture (a real sequence that must be reported); G2 against a synthetic
-divergent pair; G3's SGR arm against both a committed and an uncommitted byte pair, its
-OSC-8 arm against a real (non-tmux) hyperlink from `src/ansi.ts`'s own `link()`, and its DCS
-arm against both a real **tmux-wrapped** hyperlink from the same function (the injected-tmux
-non-vacuity case cycle-3 f7 asks for) and a hostile DCS frame whose payload is not a valid
-OSC-8 sequence. The gate corpus deliberately contains no authored-escape file, which is
-asserted directly in `tests/wikilink.test.ts` rather than assumed, since a `g1=0` reading
-over that corpus depends on it.
+divergent pair on the `on`/`off` arm; G3's SGR arm against both a committed and an
+uncommitted byte pair, its OSC-8 arm against a real (non-tmux) hyperlink from
+`src/ansi.ts`'s own `link()`, and its DCS arm against both a real **tmux-wrapped**
+hyperlink from the same function (the injected-tmux non-vacuity case cycle-3 f7 asks for)
+and a hostile DCS frame whose payload is not a valid OSC-8 sequence. The gate corpus
+deliberately contains no authored-escape file, which is asserted directly in
+`tests/wikilink.test.ts` rather than assumed, since a `g1=0` reading over that corpus
+depends on it.
+
+**The `formats` child's two arms have their own non-vacuity seeds (WP-4,
+`plans/colour-modes.md`, cycle-1 f13 / cycle-3 f6), each proven live rather than merely
+absent.** The positive seed is a **table**: its bold head survives `formats` (asserted
+present) and its grey border does not (asserted absent), with both bytes first asserted
+present in the `on` child so an accidentally-inert filter cannot pass by rendering
+nothing at all. The negative seed is a hue-only codespan — `createStyler("yellow")` alone,
+no format wrapper — asserted styled under `on` and asserted to emit **zero** sequences
+under `formats`, the same "prove it's alive under `on` first" shape. `DEL`'s exact pairs
+are WP-2 of `plans/colour-policy.md`'s direct-visitor pin and are not duplicated here. The
+authored fixture's `31m`/`39m` is the deliberate **negative-control failure** for the
+`formats` vocabulary — pinned as an expected G3 failure, not a defect, exactly as it is
+already a deliberate G1 failure.
 
 **History — the population used to drift, and WP-1 of `plans/gate-corpus-reframe.md`
 replaced it because of that.** Before that WP, the corpus was a **glob over live

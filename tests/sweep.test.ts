@@ -983,11 +983,12 @@ describe("the missing-root state reports a hardcoded elapsedSeconds of 0 (WP-4)"
 });
 
 // The colour axis's CLI half (WP-1, `plans/own-the-token-walk.md`; three exact gates
-// since WP-5, `plans/colour-policy.md`). The axis itself — the three children, the
-// digests and the join — is `tests/colour-axis.test.ts`; what is pinned here is the flag
-// surface, the passthrough that keeps every child looking at the same population, and the
-// printed line's four counters.
-describe("parseArgs: the colour axis flags (WP-1/WP-5)", () => {
+// since WP-5, `plans/colour-policy.md`; the fourth `formats` child since WP-4,
+// `plans/colour-modes.md`). The axis itself — the four children, the digests and the
+// join — is `tests/colour-axis.test.ts`; what is pinned here is the flag surface, the
+// passthrough that keeps every child looking at the same population, and the printed
+// line's four counters.
+describe("parseArgs: the colour axis flags (WP-1/WP-5/WP-4)", () => {
   test("the default is off, and every existing invocation is therefore unchanged", () => {
     const { options } = parseArgs([]);
     expect(options.colourMode).toBe("off");
@@ -1032,12 +1033,13 @@ describe("parseArgs: the colour axis flags (WP-1/WP-5)", () => {
     expect("maxSgr" in options).toBe(false);
   });
 
-  test("--colour-child is internal, validated, and accepts the third child (WP-5)", () => {
+  test("--colour-child is internal, validated, and accepts all four children (WP-5/WP-4)", () => {
     expect(parseArgs(["--colour-child", "on"]).options.colourChild).toBe("on");
     expect(parseArgs(["--colour-child", "off"]).options.colourChild).toBe("off");
     expect(parseArgs(["--colour-child", "default"]).options.colourChild).toBe("default");
+    expect(parseArgs(["--colour-child", "formats"]).options.colourChild).toBe("formats");
     expect(() => parseArgs(["--colour-child", "both"])).toThrow(
-      '--colour-child must be "on", "off" or "default", got: both',
+      '--colour-child must be "on", "off", "default" or "formats", got: both',
     );
     expect(parseArgs(["--colour-mode", "both"]).options.colourChild).toBeUndefined();
   });
@@ -1078,7 +1080,7 @@ describe("stripColourModeArgs: what each child is handed (WP-1)", () => {
   });
 });
 
-describe("printColourAxis prints the three exact gates and the join-error count (WP-5)", () => {
+describe("printColourAxis prints the three exact gates and the join-error count (WP-5/WP-4)", () => {
   const axis = {
     corpus: "repo",
     combos: 110,
@@ -1125,7 +1127,7 @@ describe("printColourAxis prints the three exact gates and the join-error count 
     expect(captured[1]).toBe(`  colour-axis g1 width=80 /example/a.md: sequences=[sgr:${JSON.stringify(raw)}]`);
   });
 
-  test("a G2 failure names the file, width and the two visible-text hashes", () => {
+  test("a G2 failure names the file, width, pair and the two visible-text hashes", () => {
     const originalLog = console.log;
     const captured: string[] = [];
     console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
@@ -1133,16 +1135,43 @@ describe("printColourAxis prints the three exact gates and the join-error count 
       printColourAxis({
         ...axis,
         g2: 1,
-        g2Failures: [{ corpus: "repo", file: "/example/a.md", width: 80, onVisibleSha: "aaa", offVisibleSha: "bbb" }],
+        g2Failures: [
+          { corpus: "repo", file: "/example/a.md", width: 80, pair: "on-off", leftVisibleSha: "aaa", rightVisibleSha: "bbb" },
+        ],
       });
     } finally {
       console.log = originalLog;
     }
     expect(captured[0]).toContain("g2=1");
-    expect(captured[1]).toBe("  colour-axis g2 width=80 /example/a.md: on=aaa off=bbb");
+    expect(captured[1]).toBe("  colour-axis g2 width=80 /example/a.md: pair=on-off left=aaa right=bbb");
   });
 
-  test("a G3 failure names the file, width, sequence and reason", () => {
+  test("a G2 failure on the formats/off pair prints that pair's name (WP-4)", () => {
+    const originalLog = console.log;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printColourAxis({
+        ...axis,
+        g2: 1,
+        g2Failures: [
+          {
+            corpus: "repo",
+            file: "/example/a.md",
+            width: 80,
+            pair: "formats-off",
+            leftVisibleSha: "ccc",
+            rightVisibleSha: "ddd",
+          },
+        ],
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured[1]).toBe("  colour-axis g2 width=80 /example/a.md: pair=formats-off left=ccc right=ddd");
+  });
+
+  test("a G3 failure on the on child names the file, width, child, sequence and reason", () => {
     const originalLog = console.log;
     const esc = String.fromCharCode(27);
     const raw = `${esc}[92m`;
@@ -1157,6 +1186,7 @@ describe("printColourAxis prints the three exact gates and the join-error count 
             corpus: "repo",
             file: "/example/a.md",
             width: 80,
+            child: "on",
             sequence: { kind: "sgr", raw },
             reason: "sgr not in the committed style table",
           },
@@ -1167,7 +1197,36 @@ describe("printColourAxis prints the three exact gates and the join-error count 
     }
     expect(captured[0]).toContain("g3=1");
     expect(captured[1]).toBe(
-      `  colour-axis g3 width=80 /example/a.md: sgr:${JSON.stringify(raw)} — sgr not in the committed style table`,
+      `  colour-axis g3 width=80 /example/a.md: child=on sgr:${JSON.stringify(raw)} — sgr not in the committed style table`,
+    );
+  });
+
+  test("a G3 failure on the formats child names its own child and vocabulary reason (WP-4)", () => {
+    const originalLog = console.log;
+    const esc = String.fromCharCode(27);
+    const raw = `${esc}[31m`;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printColourAxis({
+        ...axis,
+        g3: 1,
+        g3Failures: [
+          {
+            corpus: "repo",
+            file: "/example/a.md",
+            width: 80,
+            child: "formats",
+            sequence: { kind: "sgr", raw },
+            reason: "sgr not in the committed format/control vocabulary",
+          },
+        ],
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured[1]).toBe(
+      `  colour-axis g3 width=80 /example/a.md: child=formats sgr:${JSON.stringify(raw)} — sgr not in the committed format/control vocabulary`,
     );
   });
 
