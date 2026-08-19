@@ -62,6 +62,106 @@ describe("renderDocument — wiki-links", () => {
   });
 });
 
+// The defect record — `src/AGENTS.md`, "The wiki-link carrier defect", and WP-1 of
+// `plans/colour-modes.md`. `markWikiLinks` (`src/wikilink.ts:116-121`, called from
+// `preprocessBody`, `src/render.ts:251-274`) is guarded only by `FENCE_LINE`
+// (` ``` `/`~~~`), so it fires on lines that later tokenize as indented code, block
+// HTML, or code nested under a blockquote or a list, exactly as it fires on ordinary
+// prose. **These tests assert the renderer's CURRENT output, byte-for-byte, in both
+// colour modes — recorded, not fixed.** If a future change moves any of these bytes,
+// one of these tests is the tripwire that is supposed to fail; the fix belongs to the
+// successor plan `src/AGENTS.md` names, not to this WP.
+describe("renderDocument — the wiki-link defect in verbatim contexts (plans/colour-modes.md WP-1, recorded not fixed)", () => {
+  const ESC = String.fromCharCode(27);
+  const CYAN_UNDERLINE_OPEN = `${ESC}[36m${ESC}[4m`;
+  const CYAN_UNDERLINE_CLOSE = `${ESC}[24m${ESC}[39m`;
+  const PLAIN = { color: false, hyperlinks: false, tmux: false } as const;
+  const COLOUR = { color: true, hyperlinks: false, tmux: false } as const;
+
+  test("defect record: indented code loses authored brackets — plain, alias, fragment, embed (pinned until the successor fix plan)", () => {
+    const source =
+      "Intro paragraph.\n\n" +
+      "    See [[slug]] here\n" +
+      "    See [[slug|Alias]] here\n" +
+      "    See [[slug#head|Alias]] here\n" +
+      "    See ![[embed]] here\n";
+
+    const plain = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, PLAIN);
+    expect(plain.text).toBe(
+      "Intro paragraph.\n\n" +
+        "    See slug here\n" +
+        "    See Alias here\n" +
+        "    See Alias here\n" +
+        "    See embed: embed here\n\n",
+    );
+    expect(plain.codeRanges).toEqual([[3, 6]]);
+
+    const coloured = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, COLOUR);
+    expect(coloured.text).toBe(
+      `${ESC}[0mIntro paragraph.${ESC}[0m\n\n` +
+        `    See ${CYAN_UNDERLINE_OPEN}slug${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m\n` +
+        `    See ${CYAN_UNDERLINE_OPEN}Alias${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m\n` +
+        `    See ${CYAN_UNDERLINE_OPEN}Alias${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m\n` +
+        `    See embed: ${CYAN_UNDERLINE_OPEN}embed${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m\n\n`,
+    );
+    // The blue on "here" is the syntax highlighter's own `highlightAuto` guess over the
+    // code range's content — never asserted away, per the brief: coloured code is
+    // intentionally passed through the highlighter, so "no SGR but the wiki-link's" would
+    // be the wrong claim to pin.
+    expect(coloured.codeRanges).toEqual([[3, 6]]);
+  });
+
+  test("defect record: block HTML loses authored brackets and carries no codeRange exemption", () => {
+    const source = "<div>\nSee [[slug]] here\n</div>\n";
+
+    const plain = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, PLAIN);
+    expect(plain.text).toBe("<div>\nSee slug here\n</div>\n");
+    // Unlike indented/blockquote/list-nested code, block HTML never passes through
+    // `wrapCode`, so `extractCodeRanges` records nothing here — this corruption carries
+    // no class-C protection and no `--check`/sweep exemption at all.
+    expect(plain.codeRanges).toEqual([]);
+
+    const coloured = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, COLOUR);
+    expect(coloured.text).toBe(
+      `${ESC}[90m<div>${ESC}[39m\n` +
+        `${ESC}[90mSee ${CYAN_UNDERLINE_OPEN}slug${CYAN_UNDERLINE_CLOSE} here${ESC}[39m\n` +
+        `${ESC}[90m</div>${ESC}[39m\n` +
+        `${ESC}[90m${ESC}[39m`,
+    );
+    expect(coloured.codeRanges).toEqual([]);
+  });
+
+  test("defect record: indented code nested inside a blockquote loses authored brackets", () => {
+    const source = "> Intro\n\n>     See [[slug]] here\n";
+
+    const plain = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, PLAIN);
+    expect(plain.text).toBe("    Intro\n\n        See slug here\n\n");
+    expect(plain.codeRanges).toEqual([[3, 3]]);
+
+    const coloured = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, COLOUR);
+    expect(coloured.text).toBe(
+      `${ESC}[90m${ESC}[3m    ${ESC}[0mIntro${ESC}[0m${ESC}[23m${ESC}[39m\n\n` +
+        `${ESC}[90m${ESC}[3m        See ${CYAN_UNDERLINE_OPEN}slug${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m${ESC}[90m${ESC}[23m${ESC}[39m\n\n`,
+    );
+    expect(coloured.codeRanges).toEqual([[3, 3]]);
+  });
+
+  test("defect record: indented code nested inside a list item loses authored brackets", () => {
+    const source = "- Intro\n\n      See [[slug]] here\n";
+
+    const plain = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, PLAIN);
+    expect(plain.text).toBe("    • Intro\n          See slug here\n\n");
+    expect(plain.codeRanges).toEqual([[2, 2]]);
+
+    const coloured = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, COLOUR);
+    expect(coloured.text).toBe(
+      `    • ${ESC}[0m${ESC}[0m${ESC}[0mIntro${ESC}[0m${ESC}[0m${ESC}[0m\n` +
+        `      ${ESC}[0m    See ${CYAN_UNDERLINE_OPEN}slug${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m${ESC}[0m\n\n`,
+    );
+    expect(coloured.codeRanges).toEqual([[2, 2]]);
+  });
+});
+
 describe("renderDocument — Obsidian task states", () => {
   test("task states render as glyphs, not literal bracket markers", () => {
     const source = "- [x] done thing\n- [ ] todo thing\n- [/] in progress thing\n";
