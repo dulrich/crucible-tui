@@ -1,7 +1,64 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { main, parseArgs, resolveWidth } from "../src/cli";
+import { loadManifest, resolveCorpusFiles } from "../scripts/corpus";
+import { BUNDLED_DEFAULT_MANIFEST } from "../src/config";
 
 const fixture = (name: string): string => `${import.meta.dir}/fixtures/${name}`;
+
+// Control bytes are built, never pasted — matching src/ansi.ts's own convention and
+// tests/ansi.test.ts's: a literal ESC or BEL in a source file is invisible in every
+// editor and every diff.
+const ESC = String.fromCharCode(0x1b);
+const BEL = String.fromCharCode(0x07);
+
+/**
+ * Set/restore one or more `process.env` variables around a run, matching the pattern
+ * `tests/width.test.ts`'s `mdview probe` test already established: scrub or set for the
+ * duration, restore exactly (including "was absent") afterward, whatever the run does or
+ * throws. `undefined` in `vars` means "delete this variable for the duration."
+ */
+async function withEnv<T>(vars: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of Object.keys(vars)) saved[key] = process.env[key];
+  for (const [key, value] of Object.entries(vars)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+/** Capture both stdout and stderr for the duration of `run`, restoring both after. */
+async function captureIO(run: () => Promise<void>): Promise<{ stdout: string; stderr: string }> {
+  const outChunks: string[] = [];
+  const errChunks: string[] = [];
+  const originalOut = process.stdout.write.bind(process.stdout);
+  const originalErr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((chunk: string) => {
+    outChunks.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string) => {
+    errChunks.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await run();
+  } finally {
+    process.stdout.write = originalOut;
+    process.stderr.write = originalErr;
+  }
+  return { stdout: outChunks.join(""), stderr: errChunks.join("") };
+}
 
 describe("resolveWidth", () => {
   test("explicit width wins over columns and fallback", () => {
@@ -33,6 +90,8 @@ describe("parseArgs", () => {
       licenses: false,
       probe: false,
       color: undefined,
+      hyperlinks: undefined,
+      plain: false,
     });
   });
 
@@ -79,15 +138,99 @@ describe("parseArgs", () => {
       expect(options.file).toBe("doc.md");
     });
 
-    test("--no-color is not a spelling this tool accepts", () => {
-      // It was one of the four argv spellings the retired library sniffed for. The ratified
-      // surface is `--color=never`, and an unknown flag is an error rather than a silent
-      // no-op that leaves the user believing colour is off.
-      expect(() => parseArgs(["doc.md", "--no-color"])).toThrow(/unknown argument: --no-color/);
-    });
-
     test("absent means absent — not 'auto' typed by the user", () => {
       expect(parseArgs(["doc.md"]).color).toBeUndefined();
+    });
+  });
+
+  /**
+   * `--no-color` (WP-3 of `plans/colour-modes.md`): an alias for `--color=never`, landing
+   * in the very same `color` field. **This used to be rejected outright** — the ratified
+   * surface was `--color=never` alone, and the test asserting that lived here until this
+   * WP added the alias on its own authority (Decision-adjacent, not Decision 1-8 numbered,
+   * but the plan's WP-3 text names it explicitly). It is not a second field: the whole
+   * point is that nothing downstream of `parseArgs` can see two colour flags disagreeing.
+   */
+  describe("--no-color", () => {
+    test("is an alias for --color=never, landing in the same field", () => {
+      expect(parseArgs(["doc.md", "--no-color"]).color).toBe("never");
+    });
+
+    test("takes no value — it is a bare flag, unlike --color", () => {
+      expect(() => parseArgs(["doc.md", "--no-color=never"])).toThrow(/unknown argument: --no-color=never/);
+    });
+
+    test("last-wins against --color, in both directions, exactly as --color=X --color=Y already does", () => {
+      expect(parseArgs(["doc.md", "--color=always", "--no-color"]).color).toBe("never");
+      expect(parseArgs(["doc.md", "--no-color", "--color=always"]).color).toBe("always");
+    });
+  });
+
+  /**
+   * `--plain` (Decision 2): a bare boolean, absolute and explicit. No `=WHEN` form — see
+   * `runView`'s own construction (exercised below, under "main — --plain") for what it does
+   * beyond parsing: the CLI-boundary short-circuit around `resolveColourPolicy` entirely.
+   */
+  describe("--plain", () => {
+    test("is recognized and defaults to false", () => {
+      expect(parseArgs(["doc.md", "--plain"]).plain).toBe(true);
+      expect(parseArgs(["doc.md"]).plain).toBe(false);
+    });
+
+    test("takes no value", () => {
+      expect(() => parseArgs(["doc.md", "--plain=true"])).toThrow(/unknown argument: --plain=true/);
+    });
+
+    test("coexists with --color and --hyperlinks at the parse level — parseArgs never adjudicates, only runView does", () => {
+      // parseArgs is a pure recorder of what was typed; the short-circuit that makes
+      // --plain override everything else lives in `runView`, not here. See "main —
+      // --plain" below for the behavioural half of this claim.
+      const options = parseArgs(["doc.md", "--plain", "--color=always", "--hyperlinks=always"]);
+      expect(options.plain).toBe(true);
+      expect(options.color).toBe("always");
+      expect(options.hyperlinks).toBe("always");
+    });
+  });
+
+  /**
+   * `--hyperlinks[=WHEN]` (Decision 6): `--color`'s own conventions, transplanted onto the
+   * independent hyperlink axis. The precedence itself — non-TTY ceiling, then this flag,
+   * then `MDVIEW_HYPERLINKS`, then config, then terminal detection — is `resolveHyperlinks`'s
+   * and is covered directly in `tests/colour.test.ts`; these cases are parsing only.
+   */
+  describe("--hyperlinks", () => {
+    test("bare --hyperlinks means always", () => {
+      expect(parseArgs(["doc.md", "--hyperlinks"]).hyperlinks).toBe("always");
+    });
+
+    test("each explicit value parses as itself", () => {
+      expect(parseArgs(["doc.md", "--hyperlinks=auto"]).hyperlinks).toBe("auto");
+      expect(parseArgs(["doc.md", "--hyperlinks=always"]).hyperlinks).toBe("always");
+      expect(parseArgs(["doc.md", "--hyperlinks=never"]).hyperlinks).toBe("never");
+    });
+
+    test("repeated, the last one wins — in both directions", () => {
+      expect(parseArgs(["doc.md", "--hyperlinks=never", "--hyperlinks"]).hyperlinks).toBe("always");
+      expect(parseArgs(["doc.md", "--hyperlinks=always", "--hyperlinks=never"]).hyperlinks).toBe("never");
+    });
+
+    test("an unrecognised value is a CLI error naming the three it accepts", () => {
+      expect(() => parseArgs(["doc.md", "--hyperlinks=sometimes"])).toThrow(
+        /--hyperlinks must be auto, always or never/,
+      );
+    });
+
+    test("absent means absent, independent of --color", () => {
+      expect(parseArgs(["doc.md", "--color=always"]).hyperlinks).toBeUndefined();
+      expect(parseArgs(["doc.md"]).hyperlinks).toBeUndefined();
+    });
+
+    test("--color and --hyperlinks are independent fields — a conflicting pair parses fine", () => {
+      // The conflict is adjudicated downstream, through one input object
+      // (`resolveColourPolicy`'s `flag`/`hyperlinkFlag`), not rejected here.
+      const options = parseArgs(["doc.md", "--color=always", "--hyperlinks=never"]);
+      expect(options.color).toBe("always");
+      expect(options.hyperlinks).toBe("never");
     });
   });
 
@@ -160,5 +303,180 @@ describe("main", () => {
     await expect(main([fixture("does-not-exist.md"), "--no-pager"])).rejects.toThrow(
       "cannot read file",
     );
+  });
+});
+
+/**
+ * `--no-color`, `--plain` and `--hyperlinks` at the `main` level (WP-3 of
+ * `plans/colour-modes.md`). Everything above this point exercises `parseArgs` in
+ * isolation; these exercise `runView`'s own construction — the `--no-color` alias
+ * reaching the same route WP-2 already landed bytes for, and Decision 2's CLI-boundary
+ * short-circuit around `resolveColourPolicy` under `--plain`.
+ */
+describe("main — --no-color / --plain", () => {
+  test("--no-color renders byte-identical to --color=never — the same route by two spellings (Decision 5)", async () => {
+    // Neither call sets FORCE_COLOR/NO_COLOR/MDVIEW_COLOR, so the only thing deciding the
+    // colour mode is the flag itself — the case the alias claim is actually about.
+    const viaNoColor = await captureIO(() => main([fixture("tight-list.md"), "--no-pager", "--no-color"]));
+    const viaColorNever = await captureIO(() => main([fixture("tight-list.md"), "--no-pager", "--color=never"]));
+    expect(viaNoColor.stdout).toBe(viaColorNever.stdout);
+    // Non-vacuous: `never` is `formats`, not `none` — the reset framing (Decision 8) still
+    // wraps every paragraph and list item, so both renders carry ESC bytes.
+    expect(viaNoColor.stdout).toContain(String.fromCharCode(27));
+  });
+
+  test("--plain: a malformed MDVIEW_COLOR produces no stderr warning — the CLI-boundary short-circuit (Decision 2)", async () => {
+    const { stderr } = await withEnv({ MDVIEW_COLOR: "sometimes" }, () =>
+      captureIO(() => main([fixture("simple.md"), "--no-pager", "--plain"])),
+    );
+    expect(stderr).toBe("");
+  });
+
+  test("the same malformed MDVIEW_COLOR, without --plain, does warn — the non-vacuity control for the case above", async () => {
+    const { stderr } = await withEnv({ MDVIEW_COLOR: "sometimes" }, () =>
+      captureIO(() => main([fixture("simple.md"), "--no-pager"])),
+    );
+    expect(stderr).toContain("MDVIEW_COLOR");
+  });
+
+  test("--plain: a malformed MDVIEW_HYPERLINKS produces no stderr warning, even on a terminal where it would otherwise be read", async () => {
+    // `resolveHyperlinks`'s non-TTY ceiling is checked *before* `MDVIEW_HYPERLINKS` is ever
+    // read, so this case is vacuous unless stdout is (made to look like) a terminal — the
+    // one deliberate `isTTY` fake in this file, restored in `finally` regardless of outcome.
+    const stdout = process.stdout as unknown as { isTTY?: boolean };
+    const savedIsTTY = stdout.isTTY;
+    stdout.isTTY = true;
+    try {
+      const { stderr } = await withEnv({ MDVIEW_HYPERLINKS: "maybe" }, () =>
+        captureIO(() => main([fixture("simple.md"), "--no-pager", "--plain"])),
+      );
+      expect(stderr).toBe("");
+    } finally {
+      stdout.isTTY = savedIsTTY;
+    }
+  });
+
+  test("the same malformed MDVIEW_HYPERLINKS, without --plain, does warn on a terminal — the control", async () => {
+    const stdout = process.stdout as unknown as { isTTY?: boolean };
+    const savedIsTTY = stdout.isTTY;
+    stdout.isTTY = true;
+    try {
+      const { stderr } = await withEnv({ MDVIEW_HYPERLINKS: "maybe" }, () =>
+        captureIO(() => main([fixture("simple.md"), "--no-pager"])),
+      );
+      expect(stderr).toContain("MDVIEW_HYPERLINKS");
+    } finally {
+      stdout.isTTY = savedIsTTY;
+    }
+  });
+
+  test("--plain overrides forced colour and forced hyperlinks, and is byte-identical to none+no-links (Decision 2)", async () => {
+    const stdout = process.stdout as unknown as { isTTY?: boolean };
+    const savedIsTTY = stdout.isTTY;
+    stdout.isTTY = true;
+    try {
+      const forcedFull = await withEnv({ FORCE_COLOR: "3", MDVIEW_HYPERLINKS: "always" }, () =>
+        captureIO(() => main([fixture("tight-list.md"), "--no-pager"])),
+      );
+      // Non-vacuous: the forced environment, without --plain, really did produce colour.
+      expect(forcedFull.stdout).toContain(String.fromCharCode(27));
+
+      const plain = await withEnv({ FORCE_COLOR: "3", MDVIEW_HYPERLINKS: "always" }, () =>
+        captureIO(() => main([fixture("tight-list.md"), "--no-pager", "--plain"])),
+      );
+      expect(plain.stdout).not.toContain(String.fromCharCode(27));
+
+      // NO_COLOR outranks FORCE_COLOR (`resolveColor`'s own precedence), so this reaches
+      // `sgr: "none"` even with FORCE_COLOR=3 still set — and MDVIEW_HYPERLINKS=never turns
+      // the other axis off explicitly, through the ordinary resolvers rather than the
+      // short-circuit. If these two renders differ, `--plain` moved a byte no plan
+      // authorized on some path other than the one this test isolates.
+      const noneNoLinks = await withEnv(
+        { FORCE_COLOR: "3", NO_COLOR: "1", MDVIEW_HYPERLINKS: "never" },
+        () => captureIO(() => main([fixture("tight-list.md"), "--no-pager"])),
+      );
+      expect(plain.stdout).toBe(noneNoLinks.stdout);
+    } finally {
+      stdout.isTTY = savedIsTTY;
+    }
+  });
+});
+
+/**
+ * The brief's own item 7 opens: "`--plain` ≡ `none`+no-links **byte-equivalence** on
+ * escape-bearing synthetics (authored SGR, OSC-8, DCS, malformed CSI, lone ESC) and the
+ * gate corpus files." The describe block above covers the equivalence on one styled
+ * fixture (`tight-list.md`, forced via `FORCE_COLOR`/`MDVIEW_HYPERLINKS`); it does not
+ * cover authored escape bytes surviving *through* the equivalence, and it does not cover
+ * the corpus. Both gaps are closed here — flagged in orchestrator review against the
+ * first pass of this WP, recorded in the report rather than silently folded in.
+ *
+ * Temp files only, per the brief's constraint: the gate corpus is a fixed, exact-set,
+ * wildcard-free manifest (`plans/gate-corpus-reframe.md`) and nothing may be added to it
+ * to build these cases; the synthetic document is written to a scratch directory and
+ * never touches `tests/fixtures/`.
+ */
+describe("main — --plain byte-equivalence, extended: escape-bearing synthetics and the gate corpus", () => {
+  async function withTempFile<T>(name: string, content: string, run: (path: string) => Promise<T>): Promise<T> {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-cli-plain-test-"));
+    try {
+      const path = join(dir, name);
+      await writeFile(path, content, "utf8");
+      return await run(path);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("--plain is byte-identical to none+no-links on a document carrying all five escape-bearing forms (Decision 2)", async () => {
+    // One tight paragraph, all five forms: authored SGR, an authored OSC-8 pair, an
+    // authored DCS sequence, a malformed (non-SGR) CSI, and a lone ESC. A bare "u" OSC-8
+    // destination rather than a real URL, matching tests/ansi.test.ts's own synthetics,
+    // so GFM autolinking is never a variable here; no `]` or backslash-then-punctuation
+    // appears anywhere, so CommonMark's own escape/link syntax never reinterprets a
+    // byte. Rendered at a width comfortably wider than the one visible line, so no wrap
+    // boundary is ever near an escape sequence — `src/wrap.ts` is span-native either way
+    // (WP-3 of `plans/colour-policy.md`), but this keeps the case about Decision 2 alone.
+    const synthetic =
+      `Escapes: sgr ${ESC}[31mred${ESC}[39m and osc8 ${ESC}]8;;u${BEL}label${ESC}]8;;${BEL} ` +
+      `and dcs ${ESC}Pdata${ESC}\\then and csi ${ESC}[2Jhere and lone a${ESC}b end.\n`;
+
+    await withTempFile("synthetic.md", synthetic, async (path) => {
+      const plain = await captureIO(() => main([path, "--no-pager", "--width", "200", "--plain"]));
+      const noneNoLinks = await withEnv({ NO_COLOR: "1", MDVIEW_HYPERLINKS: "never" }, () =>
+        captureIO(() => main([path, "--no-pager", "--width", "200"])),
+      );
+      expect(plain.stdout).toBe(noneNoLinks.stdout);
+
+      // Non-vacuous, and the fidelity half of Decision 2 (cycle-2 f6): every authored
+      // sequence reached the output unmoved and unmodified — content is never this
+      // tool's to strip, at any colour mode including --plain.
+      expect(plain.stdout).toContain(`${ESC}[31mred${ESC}[39m`);
+      expect(plain.stdout).toContain(`${ESC}]8;;u${BEL}label${ESC}]8;;${BEL}`);
+      expect(plain.stdout).toContain(`${ESC}Pdata${ESC}\\`);
+      expect(plain.stdout).toContain(`${ESC}[2J`);
+      expect(plain.stdout).toContain(`a${ESC}b`);
+    });
+  });
+
+  test("--plain is byte-identical to none+no-links on every gate corpus file, at one width", async () => {
+    // The bundled manifest's "repo" corpus — the same 14 files `bun run sweep` reports
+    // as `files=14` — resolved the way `tests/gate-corpus.test.ts` does, never by
+    // re-listing paths here: the gate corpus is a fixed exact set and this test must not
+    // be able to drift from it.
+    const manifest = await loadManifest(BUNDLED_DEFAULT_MANIFEST);
+    const spec = manifest.corpora.find((corpus) => corpus.name === "repo");
+    if (!spec) throw new Error('bundled manifest has no "repo" corpus');
+    const files = await resolveCorpusFiles(spec, {});
+    expect(files).not.toBeNull();
+    expect((files as string[]).length).toBe(14);
+
+    for (const file of files as string[]) {
+      const plain = await captureIO(() => main([file, "--no-pager", "--width", "100", "--plain"]));
+      const noneNoLinks = await withEnv({ NO_COLOR: "1", MDVIEW_HYPERLINKS: "never" }, () =>
+        captureIO(() => main([file, "--no-pager", "--width", "100"])),
+      );
+      expect(plain.stdout).toBe(noneNoLinks.stdout);
+    }
   });
 });

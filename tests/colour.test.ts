@@ -367,6 +367,64 @@ describe("resolveHyperlinks — every retained branch, positive and negative", (
   });
 });
 
+/**
+ * `flag`/`config` on `HyperlinkInput` (WP-3 of `plans/colour-modes.md`, Decision 6,
+ * cycle-3 f5's exact type relationship). One case per matrix row of the hyperlink axis,
+ * highest precedence first: the non-TTY ceiling (already covered above, and re-asserted
+ * here against the two new slots for completeness) → `flag` → `MDVIEW_HYPERLINKS` → `config`
+ * → terminal detection. `--plain`'s own row is a CLI-boundary short-circuit rather than a
+ * slot in this ladder — it never calls this function at all — and is tested at
+ * `tests/cli.test.ts`'s `main` level instead.
+ */
+describe("resolveHyperlinks — flag and config (WP-3 of plans/colour-modes.md, Decision 6)", () => {
+  test("the non-TTY ceiling stays absolute over flag and config both", () => {
+    expect(resolveHyperlinks({ isTTY: false, flag: "always" })).toBe(false);
+    expect(resolveHyperlinks({ isTTY: false, config: "always" })).toBe(false);
+    expect(resolveHyperlinks({ isTTY: false, flag: "always", config: "always" })).toBe(false);
+  });
+
+  test("flag decides, and beats everything below it — env, config and terminal detection alike", () => {
+    expect(resolveHyperlinks({ isTTY: true, flag: "always", env: { MDVIEW_HYPERLINKS: "never" } })).toBe(true);
+    expect(resolveHyperlinks({ isTTY: true, flag: "never", env: { MDVIEW_HYPERLINKS: "always" } })).toBe(false);
+    expect(resolveHyperlinks({ isTTY: true, flag: "never", env: { TERM: "alacritty" } })).toBe(false);
+    expect(resolveHyperlinks({ isTTY: true, flag: "always", config: "never" })).toBe(true);
+  });
+
+  test("flag's 'auto' decides nothing and falls through to the env slot", () => {
+    expect(resolveHyperlinks({ isTTY: true, flag: "auto", env: { MDVIEW_HYPERLINKS: "always" } })).toBe(true);
+    expect(resolveHyperlinks({ isTTY: true, flag: "auto", env: { TERM: "alacritty" } })).toBe(true);
+  });
+
+  test("MDVIEW_HYPERLINKS decides when flag does not, and beats config below it", () => {
+    expect(resolveHyperlinks({ isTTY: true, env: { MDVIEW_HYPERLINKS: "always" }, config: "never" })).toBe(true);
+    expect(resolveHyperlinks({ isTTY: true, env: { MDVIEW_HYPERLINKS: "never" }, config: "always" })).toBe(false);
+  });
+
+  test("config decides only when flag and env both say nothing", () => {
+    expect(resolveHyperlinks({ isTTY: true, config: "always" })).toBe(true);
+    expect(resolveHyperlinks({ isTTY: true, config: "never", env: { TERM: "alacritty" } })).toBe(false);
+    // 'auto' at config falls through to terminal detection, same as every other slot.
+    expect(resolveHyperlinks({ isTTY: true, config: "auto", env: { TERM: "alacritty" } })).toBe(true);
+    expect(resolveHyperlinks({ isTTY: true, config: "auto" })).toBe(false);
+  });
+
+  test("terminal detection is the floor, exactly as before this WP", () => {
+    expect(resolveHyperlinks({ isTTY: true, env: { TERM: "alacritty" } })).toBe(true);
+    expect(resolveHyperlinks({ isTTY: true })).toBe(false);
+  });
+
+  test("the whole ladder in one case: flag, env, config and detection all present, flag wins", () => {
+    expect(
+      resolveHyperlinks({
+        isTTY: true,
+        flag: "never",
+        env: { MDVIEW_HYPERLINKS: "always" },
+        config: "always",
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("resolveColourPolicy — the two axes together", () => {
   test("a pipe with nothing set: no colour, no hyperlinks", () => {
     expect(resolveColourPolicy({ env: {}, isTTY: false })).toEqual({
@@ -394,6 +452,53 @@ describe("resolveColourPolicy — the two axes together", () => {
 
   test("called with no argument at all it answers the safe way, reading nothing", () => {
     expect(resolveColourPolicy()).toEqual({ sgr: "none", hyperlinks: false, tmux: false });
+  });
+});
+
+/**
+ * `hyperlinkFlag`/`hyperlinkConfig` on `ColourPolicyInput`, mapped into the `HyperlinkInput`
+ * this function hands `resolveHyperlinks` (WP-3 of `plans/colour-modes.md`, Decision 6).
+ * `resolveHyperlinks`'s own precedence is `tests/colour.test.ts`'s describe block above this
+ * one; these cases are about the mapping itself, and about the two axes staying independent
+ * through **one** input object — the conflict-test requirement (`--color=always
+ * --hyperlinks=never` and the converse) the plan asks for.
+ */
+describe("resolveColourPolicy — hyperlinkFlag/hyperlinkConfig mapping (WP-3 of plans/colour-modes.md)", () => {
+  test("hyperlinkFlag reaches resolveHyperlinks as its flag", () => {
+    expect(resolveColourPolicy({ isTTY: true, hyperlinkFlag: "always" }).hyperlinks).toBe(true);
+    expect(resolveColourPolicy({ isTTY: true, hyperlinkFlag: "never" }).hyperlinks).toBe(false);
+  });
+
+  test("hyperlinkConfig reaches resolveHyperlinks as its config, below hyperlinkFlag", () => {
+    expect(resolveColourPolicy({ isTTY: true, hyperlinkConfig: "always" }).hyperlinks).toBe(true);
+    expect(
+      resolveColourPolicy({ isTTY: true, hyperlinkFlag: "never", hyperlinkConfig: "always" }).hyperlinks,
+    ).toBe(false);
+  });
+
+  test("--color=always --hyperlinks=never through one input object: colour on, hyperlinks off", () => {
+    expect(resolveColourPolicy({ flag: "always", hyperlinkFlag: "never", isTTY: true })).toEqual({
+      sgr: "full",
+      hyperlinks: false,
+      tmux: false,
+    });
+  });
+
+  test("the converse — --color=never --hyperlinks=always through one input object: hue dropped, hyperlinks on", () => {
+    expect(resolveColourPolicy({ flag: "never", hyperlinkFlag: "always", isTTY: true })).toEqual({
+      sgr: "formats",
+      hyperlinks: true,
+      tmux: false,
+    });
+  });
+
+  test("regular color flag/config do not leak into the hyperlink axis, and vice versa", () => {
+    // `flag`/`config` decide `sgr`; `hyperlinkFlag`/`hyperlinkConfig` decide `hyperlinks`.
+    // Neither axis's slot is consulted by the other's resolver — each of these on-a-terminal
+    // cases is decided by the *other* axis's own floor (isTTY for colour, terminal detection
+    // for hyperlinks), not by the flag this case sets for the axis it is not testing.
+    expect(resolveColourPolicy({ flag: "never", isTTY: true }).hyperlinks).toBe(false);
+    expect(resolveColourPolicy({ hyperlinkFlag: "always", isTTY: false }).sgr).toBe("none");
   });
 });
 

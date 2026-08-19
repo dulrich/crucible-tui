@@ -210,6 +210,86 @@ describe("loadConfig — the color key", () => {
   });
 });
 
+/**
+ * The `hyperlinks` key, added by WP-3 of `plans/colour-modes.md`, beside `color`
+ * (Decision 6). Read the identical way, through the same `parseColourDirective` and the
+ * same read-leniently contract — its own independent axis, not a second reading of `color`.
+ */
+describe("loadConfig — the hyperlinks key", () => {
+  const write = async (dir: string, value: unknown): Promise<string> => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({ corpusManifest: "/m.json", hyperlinks: value }));
+    return path;
+  };
+
+  test("the three directives load as themselves", async () => {
+    await withTempDir(async (dir) => {
+      for (const value of ["auto", "always", "never"] as const) {
+        const path = await write(dir, value);
+        expect((await loadConfig(path)).hyperlinks).toBe(value);
+      }
+    });
+  });
+
+  test("case and whitespace are forgiven, matching color's own leniency", async () => {
+    await withTempDir(async (dir) => {
+      expect((await loadConfig(await write(dir, " ALWAYS "))).hyperlinks).toBe("always");
+    });
+  });
+
+  test("an unrecognised value is dropped with one notice naming this key, and other keys survive", async () => {
+    await withTempDir(async (dir) => {
+      const path = await write(dir, "sometimes");
+      const capture = captureConsoleError();
+      try {
+        expect(await loadConfig(path)).toEqual({ corpusManifest: "/m.json" });
+        expect(capture.messages).toHaveLength(1);
+        expect(capture.messages[0]).toContain(path);
+        expect(capture.messages[0]).toContain("hyperlinks");
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
+  test("a boolean is not a directive, exactly as for color", async () => {
+    await withTempDir(async (dir) => {
+      const path = await write(dir, false);
+      const capture = captureConsoleError();
+      try {
+        expect((await loadConfig(path)).hyperlinks).toBeUndefined();
+        expect(capture.messages).toHaveLength(1);
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
+  test("color and hyperlinks are independent keys — setting one does not set the other", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "config.json");
+      await writeFile(path, JSON.stringify({ color: "always", hyperlinks: "never" }));
+      const config = await loadConfig(path);
+      expect(config.color).toBe("always");
+      expect(config.hyperlinks).toBe("never");
+    });
+  });
+
+  test("an absent key is absent, not 'auto', and says nothing on stderr", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "config.json");
+      await writeFile(path, JSON.stringify({ corpusManifest: "/m.json" }));
+      const capture = captureConsoleError();
+      try {
+        expect(await loadConfig(path)).toEqual({ corpusManifest: "/m.json" });
+        expect(capture.messages).toEqual([]);
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+});
+
 describe("writeHighlightAlias (WP-4)", () => {
   test("creates a config file that does not exist yet", async () => {
     await withTempDir(async (dir) => {
