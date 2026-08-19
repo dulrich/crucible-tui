@@ -106,7 +106,9 @@ src/wikilink.ts     wiki-link recognition (frozen), the carrier pair (code point
 src/colour.ts       the one colour/hyperlink decision — resolveColourPolicy over
                     the ratified precedence matrix, and owned OSC-8 terminal
                     detection; reads no process state at all (WP-1 of
-                    plans/colour-policy.md)
+                    plans/colour-policy.md); hyperlinks gained their own
+                    flag/config precedence slots at WP-3 of
+                    plans/colour-modes.md
 src/ansi.ts         the one terminal-sequence grammar, both directions — scan()
                     into an ordered span sequence (SGR, OSC-8, DCS, malformed;
                     non-text spans are width 0 by construction) and the owned
@@ -142,7 +144,7 @@ src/width.ts        display-width measurement + the East Asian Ambiguous probe (
 src/lang.ts         fence-language alias map + the supportsLanguage() fallback,
                     reached through src/highlight.ts
 src/config.ts       XDG config load + corpus-manifest path resolution, and the
-                    color directive
+                    color/hyperlinks directives
 src/detectors.ts    orphan / continuation-over-indent detectors
                     (see scripts/AGENTS.md)
 src/list-lines.ts   the rendered-line primitives both render.ts and detectors.ts

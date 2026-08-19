@@ -108,14 +108,37 @@ export interface ColourPolicyInput {
    * every library call that happens to render a document.
    */
   readonly warn?: (message: string) => void;
+  /**
+   * mdview's own `--hyperlinks` flag, already parsed (WP-3 of `plans/colour-modes.md`,
+   * Decision 6). Mapped into the `HyperlinkInput` `resolveColourPolicy` builds for
+   * `resolveHyperlinks` — kept as a separate field here, unambiguously named, rather than
+   * reusing `flag`, because the two axes are independent and a single field would make
+   * `--color=always --hyperlinks=never` inexpressible.
+   */
+  readonly hyperlinkFlag?: ColourDirective;
+  /** The config file's `hyperlinks` key (`src/config.ts`), mapped the same way. */
+  readonly hyperlinkConfig?: ColourDirective;
 }
 
-/** `resolveHyperlinks`' inputs — the plan's signature, exactly. */
+/**
+ * `resolveHyperlinks`' inputs.
+ *
+ * `flag`/`config` were added at WP-3 of `plans/colour-modes.md` (Decision 6, cycle-3 f5):
+ * `resolveHyperlinks` is typed to this interface and cannot read `ColourPolicyInput`'s
+ * fields directly, so the two new slots live here, unambiguous inside a hyperlink-scoped
+ * interface, and `resolveColourPolicy` maps `hyperlinkFlag`/`hyperlinkConfig` into them.
+ * `resolveHyperlinks`'s own signature — this interface, unchanged in shape — is what stays
+ * unchanged; only its membership grew.
+ */
 export interface HyperlinkInput {
   readonly env?: EnvironmentLike;
   readonly isTTY?: boolean;
   readonly platform?: string;
   readonly warn?: (message: string) => void;
+  /** mdview's own `--hyperlinks` flag, already parsed. **The only argv authority.** */
+  readonly flag?: ColourDirective;
+  /** The config file's `hyperlinks` key (`src/config.ts`). */
+  readonly config?: ColourDirective;
 }
 
 const NOOP = (): void => {};
@@ -287,9 +310,16 @@ function parseVersion(versionString: string | undefined): { major: number; minor
  * - the `supportsColor(stream)` prerequisite — hyperlinks are an independent axis here, so
  *   `NO_COLOR` and `--color=never` leave them alone.
  *
- * The **non-TTY ceiling is absolute** and is checked first: a pipe cannot render a
- * hyperlink, so nothing — not `MDVIEW_HYPERLINKS=always`, not any terminal signature —
- * turns them on off a terminal.
+ * **Full precedence, highest first, since WP-3 of `plans/colour-modes.md` (Decision 6)**:
+ * `--plain` (absolute off, short-circuited at the CLI boundary before this function is ever
+ * called — see `src/cli.ts`) → the non-TTY ceiling → `--hyperlinks` flag → `MDVIEW_HYPERLINKS`
+ * → config `hyperlinks` → terminal detection. The **non-TTY ceiling stays absolute and is
+ * checked first**: a pipe cannot render a hyperlink, so nothing below it — not
+ * `--hyperlinks=always`, not `MDVIEW_HYPERLINKS=always`, not any terminal signature — turns
+ * them on off a terminal. `flag` and `config` slot in exactly where `--color`/config `color`
+ * slot into `resolveColor` — flag above env above config above detection — and use the same
+ * `always`/`never` vocabulary; `auto` at either falls through, matching `MDVIEW_HYPERLINKS`'s
+ * own `auto` handling below.
  */
 export function resolveHyperlinks(input: HyperlinkInput = {}): boolean {
   const env = input.env ?? {};
@@ -298,9 +328,15 @@ export function resolveHyperlinks(input: HyperlinkInput = {}): boolean {
   // The ceiling. Everything below it only ever runs on a terminal.
   if (input.isTTY !== true) return false;
 
+  if (input.flag === "always") return true;
+  if (input.flag === "never") return false;
+
   const directive = directiveFromEnv(env, "MDVIEW_HYPERLINKS", warn);
   if (directive === "always") return true;
   if (directive === "never") return false;
+
+  if (input.config === "always") return true;
+  if (input.config === "never") return false;
 
   // Windows Terminal, which supports OSC-8 on a platform whose default console does not.
   if (env.WT_SESSION !== undefined) return true;
@@ -349,11 +385,22 @@ export function resolveHyperlinks(input: HyperlinkInput = {}): boolean {
  * half. `src/cli.ts` builds it from the flag, the config and the real environment;
  * `src/render.ts` builds a default one for callers that pass none (the sweep, the
  * differential harness, every test that only cares about layout).
+ *
+ * `hyperlinkFlag`/`hyperlinkConfig` are mapped into the `flag`/`config` fields of the
+ * `HyperlinkInput` handed to `resolveHyperlinks` — this function's own signature is
+ * unchanged (WP-3 of `plans/colour-modes.md`, Decision 6); only what it forwards grew.
  */
 export function resolveColourPolicy(input: ColourPolicyInput = {}): ColourPolicy {
   return {
     sgr: resolveColor(input),
-    hyperlinks: resolveHyperlinks(input),
+    hyperlinks: resolveHyperlinks({
+      env: input.env,
+      isTTY: input.isTTY,
+      platform: input.platform,
+      warn: input.warn,
+      flag: input.hyperlinkFlag,
+      config: input.hyperlinkConfig,
+    }),
     tmux: resolveTmux(input.env ?? {}),
   };
 }

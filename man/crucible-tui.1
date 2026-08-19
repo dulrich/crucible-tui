@@ -9,6 +9,9 @@ crucible\-tui \- terminal markdown viewer (installed command: \fBmdview\fR)
 [\fB\-\-check\fR]
 [\fB\-\-ascii\fR|\fB\-\-unicode\fR]
 [\fB\-\-color\fR[=\fIWHEN\fR]]
+[\fB\-\-no\-color\fR]
+[\fB\-\-plain\fR]
+[\fB\-\-hyperlinks\fR[=\fIWHEN\fR]]
 [\fB\-\-help\fR]
 .br
 .B mdview view
@@ -172,6 +175,40 @@ shell's life. See
 .B MDVIEW_COLOR
 under ENVIRONMENT for the full resolution order.
 .TP
+.B \-\-no\-color
+Alias for
+.BR \-\-color=never .
+.TP
+.B \-\-plain
+Emit nothing of this tool's own: no SGR colour codes, no OSC\-8 hyperlinks.
+Explicit and absolute \(em it overrides every other colour and hyperlink
+input, including a malformed
+.B MDVIEW_COLOR
+or
+.BR MDVIEW_HYPERLINKS ,
+neither of which is even read under
+.B \-\-plain
+(so no warning about either is printed). Escape bytes already present in the
+document being viewed are content, not this tool's output, and pass through
+unchanged \(em exactly as they do under
+.BR \-\-color=never .
+.TP
+.BR \-\-hyperlinks [= \fIWHEN\fR ]
+When to emit OSC\-8 hyperlinks:
+.BR auto " (the default), " always " or " never .
+Same conventions as
+.B \-\-color
+above: a bare
+.B \-\-hyperlinks
+means
+.BR \-\-hyperlinks=always ,
+the last occurrence wins, and an unrecognized
+.I WHEN
+is an error. See
+.B MDVIEW_HYPERLINKS
+under ENVIRONMENT for how this combines with the non\-TTY ceiling, which
+stays absolute regardless of this flag.
+.TP
 .B \-\-probe
 Run the terminal ambiguous\-width diagnostic and exit, exactly as
 .B mdview probe
@@ -204,6 +241,19 @@ A standing colour preference, below both
 and
 .B MDVIEW_COLOR
 in the order given under ENVIRONMENT.
+.TP
+.B hyperlinks
+.RB ( auto ", " always " or " never )
+A standing hyperlink preference, its own axis independent of
+.BR color .
+Below both
+.B \-\-hyperlinks
+and
+.B MDVIEW_HYPERLINKS
+and above terminal detection, in the order given under ENVIRONMENT; the
+non\-TTY ceiling and
+.B \-\-plain
+both still outrank it absolutely.
 .TP
 .B highlightAs
 An object mapping a fence language to a highlighter language, written by
@@ -282,8 +332,14 @@ to get the box drawing back and accept the overflow.
 Whether to emit colour. An unrecognized or empty value is ignored with one
 line on standard error rather than rejected, exactly as for
 .BR MDVIEW_GLYPHS .
+Under
+.BR \-\-plain ,
+this variable is never read at all, so a malformed value produces no warning
+either.
 .IP
 Resolution order, highest first:
+.B \-\-plain
+(absolute \(em see OPTIONS above);
 .BR \-\-color ;
 this variable;
 .BR NO_COLOR ;
@@ -319,9 +375,23 @@ Whether to emit OSC\-8 hyperlinks, which are an axis of their own: they are
 never emitted when standard output is not a terminal, whatever this or any
 colour setting says, and
 .B NO_COLOR
-does not affect them. On a terminal,
+does not affect them. An unrecognized or empty value is ignored with one line
+on standard error, exactly as for
+.BR MDVIEW_COLOR ,
+and is never read at all under
+.BR \-\-plain .
+.IP
+Resolution order, highest first:
+.B \-\-plain
+(absolute off);
+the non\-TTY ceiling (never on, off a terminal, whatever else is set);
+.BR \-\-hyperlinks ;
+this variable;
+the config file's
+.B hyperlinks
+key; and finally terminal detection \(em on a terminal,
 .B auto
-(the default) asks what the terminal advertises.
+asks what it advertises.
 .TP
 .B MDVIEW_GLYPHS
 .RB ( ascii " or " unicode )

@@ -29,6 +29,10 @@ import { parseColourDirective, type ColourDirective } from "./colour";
  * `highlightAs` one: read once in `src/cli.ts`'s view path, handed to `resolveColourPolicy`
  * as one input among five, never layered and never mutated into a global. Its value is a
  * directive (`auto`/`always`/`never`) rather than a boolean — see `MdviewConfig.color`.
+ *
+ * WP-3 of `plans/colour-modes.md` adds `hyperlinks`, beside `color` and read the same way:
+ * a directive, parsed with the same `parseColourDirective`, sitting below `--hyperlinks` and
+ * `MDVIEW_HYPERLINKS` in the hyperlink precedence table (`src/colour.ts`'s `resolveHyperlinks`).
  */
 export interface MdviewConfig {
   /** Path to a corpus manifest (see `scripts/sweep.ts`'s `CorpusManifest`). */
@@ -59,6 +63,15 @@ export interface MdviewConfig {
    * invocation.
    */
   color?: ColourDirective;
+  /**
+   * The user's standing hyperlink preference: `always`, `never`, or `auto` (follow terminal
+   * detection). WP-3 of `plans/colour-modes.md`, `hyperlinks` — its own independent axis,
+   * beside `color` rather than folded into it. Sits **below** both `--hyperlinks` and
+   * `MDVIEW_HYPERLINKS`, and **above** terminal detection, in `resolveHyperlinks`'s
+   * precedence table (`src/colour.ts`); the non-TTY ceiling and `--plain` both still outrank
+   * it absolutely, off a terminal and at the CLI boundary respectively.
+   */
+  hyperlinks?: ColourDirective;
 }
 
 const CONFIG_DEFAULTS: MdviewConfig = {};
@@ -156,6 +169,17 @@ export async function loadConfig(path = resolveConfigPath()): Promise<MdviewConf
         config.color = color;
       } else {
         console.error(`mdview: ignoring malformed "color" at ${path}: expected auto, always or never`);
+      }
+    }
+    if (record.hyperlinks !== undefined) {
+      // Same convention as `color` immediately above, for the same reason: `hyperlinks` is
+      // an independent axis and reads exactly like its sibling directive.
+      const hyperlinks =
+        typeof record.hyperlinks === "string" ? parseColourDirective(record.hyperlinks) : undefined;
+      if (hyperlinks !== undefined) {
+        config.hyperlinks = hyperlinks;
+      } else {
+        console.error(`mdview: ignoring malformed "hyperlinks" at ${path}: expected auto, always or never`);
       }
     }
     return config;

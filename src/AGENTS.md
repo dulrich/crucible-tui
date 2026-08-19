@@ -1287,12 +1287,23 @@ put an author's own bare `*` at the start of a continuation line.
 ### Command-line surface (WP-4)
 
 ```
-mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--probe] [--help]
+mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--probe] [--help]
 mdview view <file.md> [options ...]
 mdview highlight-as <fence> <language>
 mdview probe [--refresh] [--no-cache] [--timeout MS]
 mdview help [subcommand]
 ```
+
+**`--no-color`, `--plain` and `--hyperlinks[=WHEN]` (WP-3 of `plans/colour-modes.md`)** follow
+`--color`'s own conventions exactly, parsed in the same flat `for` loop in `parseArgs`:
+`--no-color` is not a second field, it is parsed straight into the same `color` local as
+`--color=never` — so `--no-color --color=always` and the reverse both resolve by the one
+last-wins rule `--color` already has, and nothing downstream of `parseArgs` ever sees two
+colour flags that could disagree. `--hyperlinks[=WHEN]` is `--color`'s shape transplanted onto
+the independent hyperlink axis: bare means `always`, repeated last-wins, an unrecognised value
+throws. `--plain` alone has no `=WHEN` form — it is a bare boolean, because "plain" is not a
+point on the `auto`/`always`/`never` scale the other two flags share; see "Colour" below for
+what it does at the CLI boundary, which is the part that is not just flag parsing.
 
 **`mdview <file.md>` with no subcommand is load-bearing, not a convenience.** It predates
 subcommands and is the invocation the user runs daily, so `main` dispatches to a named handler
@@ -1322,7 +1333,10 @@ default wins. `color` is `auto`/`always`/`never` and is **a directive rather tha
 unlike the `emoji` key beside it: colour has an explicit third state a user may want to write
 down (*I know this key exists and I want the default*), which is not the same statement as
 omitting the key. It is the fifth slot in the precedence table under "Colour" below, so it
-loses to anything said about this invocation.
+loses to anything said about this invocation. `hyperlinks` (WP-3 of `plans/colour-modes.md`)
+sits beside it, read the identical way through the same `parseColourDirective`, and is its own
+independent axis rather than a second reading of `color` — see "Colour" below for its own
+precedence slot.
 
 **The resolver is a value, built once, and there is no process state behind it.**
 `src/cli.ts`'s `runView` calls `makeFenceLanguageResolver(config.highlightAs)` after
@@ -1389,7 +1403,29 @@ who exported the first said something about this machine; a `FORCE_COLOR` inheri
 parent process did not), and **a malformed `FORCE_COLOR` decides nothing and falls through** —
 `"0"`/`"false"` are no, `""`/`"true"`/`"1"`-`"3"` are yes, and anything else is not a directive.
 Hyperlinks are an independent axis with an absolute non-TTY ceiling; `NO_COLOR` does not touch
-them.
+them. **The hyperlink axis's own precedence**, highest first, since WP-3 of
+`plans/colour-modes.md` (Decision 6): the non-TTY ceiling (checked first inside
+`resolveHyperlinks`, and still absolute — nothing below it can turn a hyperlink on off a
+terminal) → `--hyperlinks` flag → `MDVIEW_HYPERLINKS` → config `hyperlinks` → terminal
+detection. `HyperlinkInput` — the interface `resolveHyperlinks` is typed to — carries the new
+`flag`/`config` fields; `resolveColourPolicy`'s own signature is unchanged, and it maps its
+`ColourPolicyInput`'s new `hyperlinkFlag`/`hyperlinkConfig` fields into them (cycle-3 f5's exact
+type relationship, so `resolveHyperlinks` never has to know the shape of the larger input).
+
+**`--plain` sits above both axes and is not a fifth precedence slot — it is a short-circuit at
+the CLI boundary, and where that happens matters.** Decision 2: the policy under `--plain` is
+built by hand in `src/cli.ts`'s `runView` — `{ sgr: "none", hyperlinks: false, tmux:
+resolveTmux(env) }` — **without calling either `resolveColor` or `resolveHyperlinks` at all**.
+The alternative — giving `--plain` the top slot in each ladder and letting the existing
+functions return early — was rejected (cycle-3 f4): even an early return still *evaluates* the
+call, and both functions read `MDVIEW_COLOR`/`MDVIEW_HYPERLINKS` and call `warn` on a malformed
+one before deciding anything else, so a `--plain` render would have printed a warning about an
+environment variable it was about to ignore. Short-circuiting one level up — never calling the
+resolver — is the only shape where a malformed value under `--plain` produces silence, which is
+what `tests/cli.test.ts`'s no-warning-under-`--plain` cases assert. `tmux` is still resolved
+under `--plain`: it is a fact about the destination an OSC-8 emitter would need, not a colour
+decision, and resolving it costs nothing even though `--plain`'s `hyperlinks: false` means it
+never gets used.
 
 *History, because the conclusion inverted.* Until WP-6 this asked `marked-terminal` directly: a
 throwaway extension was built, its `strong` was handed a probe string, and the answer was
