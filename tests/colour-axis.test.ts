@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { link as osc8Link } from "../src/ansi";
 import {
   classifyColourAxis,
   collectColourDigests,
@@ -333,12 +334,27 @@ describe("digestText: the character channel and the SGR flag", () => {
     expect(plain.hasSgr).toBe(false);
   });
 
-  test("an OSC-8 hyperlink is not SGR, and this instrument does not claim to see it", () => {
-    // `stripAnsi` (`src/list-lines.ts`) removes SGR only. `src/inline.ts` emits OSC-8
-    // hyperlinks independently of the colour decision, so they are deliberately outside
-    // what this axis measures — recorded in the plan, not a gap to close here.
+  test("an OSC-8 hyperlink is a sequence this instrument now sees — WP-3", () => {
+    // **This pin is inverted from what it said before WP-3 of `plans/colour-policy.md`,
+    // and the inversion is the change.** `stripAnsi` (`src/list-lines.ts`) removed SGR
+    // only, so an OSC-8 hyperlink — and the tmux DCS envelope around it — survived every
+    // strip in the repo intact: counted as visible text by the character channel, missed
+    // entirely by the flag. It is `src/ansi.ts`'s scanner now, so both halves hold — the
+    // destination is not part of the stripped text, and the flag reports the sequence.
+    //
+    // The name `hasSgr` is deliberately left alone: WP-5 of the same plan deletes this
+    // field along with `--max-sgr` and the bucket line, replacing all of it with the three
+    // exact gates, and renaming a field on its way out would cost a diff in every consumer
+    // for one package's worth of accuracy.
     const link = digestText("\u001b]8;;https://example.com\u0007text\u001b]8;;\u0007");
-    expect(link.hasSgr).toBe(false);
+    expect(link.hasSgr).toBe(true);
+    expect(link.strippedSha).toBe(digestText("text").strippedSha);
+  });
+
+  test("a tmux-wrapped hyperlink is seen too, envelope and all", () => {
+    const wrapped = digestText(osc8Link("text", "https://example.com", true));
+    expect(wrapped.hasSgr).toBe(true);
+    expect(wrapped.strippedSha).toBe(digestText("text").strippedSha);
   });
 });
 

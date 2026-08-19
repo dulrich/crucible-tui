@@ -43,6 +43,12 @@ export interface ColourPolicy {
   readonly color: boolean;
   /** Whether this render emits OSC-8 hyperlinks. */
   readonly hyperlinks: boolean;
+  /**
+   * Whether the destination is inside tmux, which needs every OSC sequence wrapped in a
+   * DCS envelope to pass it through (`resolveTmux`; emitted by `src/ansi.ts`'s `link`).
+   * Not a second colour decision — a fact about the destination the emitter needs.
+   */
+  readonly tmux: boolean;
 }
 
 /** `process.env`-shaped, without being `process.env`. */
@@ -285,5 +291,31 @@ export function resolveColourPolicy(input: ColourPolicyInput = {}): ColourPolicy
   return {
     color: resolveColor(input),
     hyperlinks: resolveHyperlinks(input),
+    tmux: resolveTmux(input.env ?? {}),
   };
+}
+
+/**
+ * Whether this render's destination is inside tmux, which is the one thing an OSC-8
+ * emitter needs to know beyond "emit or not": tmux only passes an OSC sequence through
+ * when it is wrapped in its own DCS envelope (`src/ansi.ts`'s `link`).
+ *
+ * Transcribed from `ansi-escapes@7.3.0`, `base.js:12`:
+ *
+ * ```js
+ * const isTmux = !isBrowser && (process.env.TERM?.startsWith('screen')
+ *   || process.env.TERM?.startsWith('tmux') || process.env.TMUX !== undefined);
+ * ```
+ *
+ * with two changes and no third: the `isBrowser` conjunct is dropped (this is a terminal
+ * program; `environment`, the package that answered it, leaves the closure with
+ * `ansi-escapes`), and **the environment is an argument rather than a module-load read of
+ * `process.env`** — which is the whole point of resolving it here. It is deliberately
+ * *not* gated on `hyperlinks`: what tmux is, and whether a link may be emitted at all,
+ * are two different questions with two different answers, and the emitter asks both.
+ */
+export function resolveTmux(env: EnvironmentLike): boolean {
+  const term = env.TERM;
+  if (term !== undefined && (term.startsWith("screen") || term.startsWith("tmux"))) return true;
+  return env.TMUX !== undefined;
 }

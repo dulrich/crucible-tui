@@ -5,6 +5,7 @@ import {
   resolveColor,
   resolveColourPolicy,
   resolveHyperlinks,
+  resolveTmux,
   type EnvironmentLike,
 } from "../src/colour";
 
@@ -314,13 +315,18 @@ describe("resolveHyperlinks — every retained branch, positive and negative", (
 
 describe("resolveColourPolicy — the two axes together", () => {
   test("a pipe with nothing set: no colour, no hyperlinks", () => {
-    expect(resolveColourPolicy({ env: {}, isTTY: false })).toEqual({ color: false, hyperlinks: false });
+    expect(resolveColourPolicy({ env: {}, isTTY: false })).toEqual({
+      color: false,
+      hyperlinks: false,
+      tmux: false,
+    });
   });
 
   test("a forced colour on a pipe does not invent hyperlink support", () => {
     expect(resolveColourPolicy({ flag: "always", env: {}, isTTY: false })).toEqual({
       color: true,
       hyperlinks: false,
+      tmux: false,
     });
   });
 
@@ -328,10 +334,33 @@ describe("resolveColourPolicy — the two axes together", () => {
     expect(resolveColourPolicy({ env: { NO_COLOR: "1", TERM: "alacritty" }, isTTY: true })).toEqual({
       color: false,
       hyperlinks: true,
+      tmux: false,
     });
   });
 
   test("called with no argument at all it answers the safe way, reading nothing", () => {
-    expect(resolveColourPolicy()).toEqual({ color: false, hyperlinks: false });
+    expect(resolveColourPolicy()).toEqual({ color: false, hyperlinks: false, tmux: false });
+  });
+});
+
+describe("resolveTmux — the destination fact the OSC-8 emitter needs (WP-3)", () => {
+  test("TMUX present, whatever TERM says", () => {
+    expect(resolveTmux({ TMUX: "/tmp/tmux-1000/default,123,0" })).toBe(true);
+    expect(resolveTmux({ TMUX: "", TERM: "xterm-256color" })).toBe(true);
+  });
+
+  test("the two TERM prefixes upstream matches, and only as prefixes", () => {
+    expect(resolveTmux({ TERM: "tmux-256color" })).toBe(true);
+    expect(resolveTmux({ TERM: "screen.xterm-256color" })).toBe(true);
+    expect(resolveTmux({ TERM: "xterm-screen" })).toBe(false);
+  });
+
+  test("nothing set, and an unrelated terminal, are both false", () => {
+    expect(resolveTmux({})).toBe(false);
+    expect(resolveTmux({ TERM: "xterm-ghostty" })).toBe(false);
+  });
+
+  test("it rides the policy, so an injected environment decides it with no subprocess", () => {
+    expect(resolveColourPolicy({ env: { TMUX: "x", TERM: "alacritty" }, isTTY: true }).tmux).toBe(true);
   });
 });

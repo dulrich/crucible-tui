@@ -12,6 +12,8 @@ import {
   tableGrid,
   wrapText,
 } from "../src/table";
+// The production strip, imported rather than re-spelled — see `tests/glyphs.test.ts`.
+import { stripAnsi } from "../src/list-lines";
 import { splitToken } from "../src/text";
 import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
 import { NARROW_MEASURE, WIDE_MEASURE, type Measure } from "../src/width";
@@ -19,8 +21,6 @@ import { NARROW_MEASURE, WIDE_MEASURE, type Measure } from "../src/width";
 // --- helpers ---------------------------------------------------------------
 
 const ESC = String.fromCharCode(27);
-const ANSI = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
-const stripAnsi = (text: string): string => text.replace(ANSI, "");
 
 /** Lex a markdown source string down to its first table token. */
 function lexTable(source: string): Tokens.Table {

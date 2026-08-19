@@ -415,21 +415,37 @@ mistake has invalidated this exact quantity **four times across three authors**,
 `tests/colour-axis.test.ts` pins it directly — the same file must digest differently at
 40 and at 100 — independent of which population the manifest names.
 
-**What the numbers are made of, none of it repaired here.** `charDiff=31`'s mechanisms
-are unchanged from the history above, only their population is smaller: `src/lists.ts`'
-`fixNestedLists` regex whose `\S` matches an SGR reset's `m`; `src/lists.ts`' raw-byte
-empty-line filter; `src/wrap.ts`' escape-only run becoming a zero-width word. A worked
-witness: `tests/fixtures/tight-list.md` at 80 columns wraps a `<br />` hard return one
-way colourless and another under colour, and the two renders even differ in *line
-count*. `sgrAny=20`'s two mechanisms are `src/render.ts:62-65` (`styleWikiLink`,
-hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `src/frontmatter.ts`'s
-`DIM_START`/`DIM_END`, both unconditional. **Measuring them honestly is this
-instrument's first job; fixing them is `plans/colour-policy.md`'s (rev 3, WP-3).**
+**What the numbers were made of, and what closed them.** `charDiff=31`'s mechanisms were
+`src/lists.ts`' `fixNestedLists` regex whose `\S` matches an SGR reset's `m`;
+`src/lists.ts`' raw-byte empty-line filter; `src/wrap.ts`' escape-only run becoming a
+zero-width word — plus two more the first repair exposed, `src/render.ts`'s hard-break
+seam and its three marker-shape guards (with `substituteBullets`), all of them the same
+defect: a layout decision made on bytes rather than on columns. A worked witness:
+`tests/fixtures/tight-list.md` at 80 columns wrapped a `<br />` hard return one
+way colourless and another under colour, and the two renders differed in *line
+count*. **WP-3 of `plans/colour-policy.md` repaired all five: the measured `charDiff` is
+0 over the fixed corpus at both tiers, with the colourless render byte-identical in 140
+of 140 combos** (the direction was pinned before the work — the colourless side is the
+frozen baseline and only the coloured side moves). The seed stays at 31 until WP-5
+replaces both counters with the three exact gates; what must not happen is the measured
+number going up.
 
-**OSC-8 is outside what this can see.** `stripAnsi` (`src/list-lines.ts`) removes SGR only,
-and `src/inline.ts` emits hyperlinks independently of the colour decision, so no ratchet
-here reports on them. Recorded, deliberately, rather than papered over with a strip that
-would silently change what `hasSgr` means.
+`sgrAny=20`'s two mechanisms are `src/render.ts:62-65` (`styleWikiLink`,
+hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `src/frontmatter.ts`'s
+`DIM_START`/`DIM_END`, both unconditional; the second went behind the policy at WP-1, so
+the measured number is **5** — `simple.md`'s wiki-link alone, WP-4's to remove.
+
+**OSC-8 used to be outside what this can see, and WP-3 brought it inside.** `stripAnsi`
+(`src/list-lines.ts`) removed SGR only, so a hyperlink — and the tmux DCS envelope around
+it — passed through the strip intact: counted as visible text by the character channel,
+invisible to `hasSgr`. It is a derivation of `src/ansi.ts`'s scanner now, so `hasSgr`
+means "carries any terminal sequence" and the character channel measures the columns a
+reader sees. **Neither seed moved with that change**, and the reason is structural rather
+than lucky: hyperlinks are off on every non-TTY destination, so neither child of this axis
+emits one. The paragraph this replaces said the widening would "silently change what
+`hasSgr` means" — it did change it, deliberately and in one recorded package, and the pin
+in `tests/colour-axis.test.ts` was inverted in the same commit rather than left to be
+discovered.
 
 **The axis flag is on the sweep and deliberately not on `scripts/render-diff.ts`.** That
 harness imports **both revisions into one process** (`loadRevision`; when this was written the
@@ -460,7 +476,7 @@ absent. Every row below was found with `-a`.)
 | `src/inline.ts:339,348,363,382,420,424,427` | its inline call sites — strong, em, codespan, del, link | via `applyStyle` |
 | `src/blocks.ts:151,195,213,426,457,518` | its block call sites — code, hr, html, heading, paragraph, blockquote | via `applyStyle` |
 | `src/lists.ts:380` | its list-item call site | via `applyStyle` |
-| `src/inline.ts` (`ansiEscapes.link`) | **OSC-8**, not SGR | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken |
+| `src/inline.ts`'s `renderLink`, through `src/ansi.ts`'s `link` | **OSC-8**, not SGR, plus the tmux DCS envelope | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken. The *emitter* was `ansiEscapes.link` until WP-3 of the same plan; it is this repo's transcription now, and the href is sanitized at emission |
 | `src/render.ts:62-65` (`styleWikiLink`) | hardcoded `[36m[4m…`, injected **before the lexer** | **no** |
 | `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit `color` argument since WP-1, through `src/style.ts`'s plain wrap since WP-2; it was two hardcoded constants and no decision at all |
 | `src/table.ts` (`styleBorder`/`styleHead`) | `grey`/`bold` for borders and headers | **yes** — `renderTable`'s `color` argument since WP-2; it was `@colors/colors`' own module-load answer, which did not consult `isTTY` |
@@ -468,16 +484,20 @@ absent. Every row below was found with `-a`.)
 | ~~`src/inline.ts:283` (`detectInlineColor`)~~ | **deleted** at WP-1 of `plans/colour-policy.md` with every consumer — the authority the first row obeys is `resolveColourPolicy` (`src/colour.ts`), threaded through `LayoutContext.color` | n/a |
 
 **Layout-consumers — they read or strip escapes to decide where characters go.** These are
-the sites a style-last restructure has to satisfy, and the three known colour-only defects
-all live here.
+the sites a style-last restructure has to satisfy, and the colour-only defects all lived
+here. **The "why it looks at escapes" column is now history for the first four rows** —
+WP-3 of `plans/colour-policy.md` repaired each one, and the entries are kept in the
+register this file uses for a defect that has been closed: the mechanism is the useful
+part, and each is the same mistake.
 
 | Site | Why it looks at escapes |
 |---|---|
-| `src/list-lines.ts:53-55` (`ANSI_PATTERN`, `stripAnsi`) | the one strip implementation in the repo; everything below calls it |
-| `src/wrap.ts:24,26` and their uses at `:41-44`, `:66-70` | splits a styled token on complete escape sequences so wrapping measures display width, not bytes — **an escape-only run becomes a zero-width word here** |
-| `src/lists.ts:144` (`fixNestedLists`' regex) | its `\S` matches an SGR reset's `m` |
-| `src/lists.ts:425` | filters empty lines by raw bytes, so a line of escapes alone survives |
-| `src/lists.ts:458`, `:627` | bullet substitution and the de-drift claim on stripped text |
+| `src/list-lines.ts`'s `stripAnsi` | the one strip implementation in the repo; everything below calls it. A derivation of `src/ansi.ts`'s scanner since WP-3 — it removed SGR only before that, so OSC-8 and DCS were invisible to every consumer here |
+| `src/wrap.ts` | splits a styled token so wrapping measures display width, not bytes — **an escape-only run became a zero-width word here**, and the private SGR-only tokenizer that did the splitting cut OSC-8 sequences in half. Both split paths consume `src/ansi.ts`'s spans since WP-3 |
+| `src/lists.ts`'s `fixNestedLists` | its `\S` matched an SGR reset's `m`; the decision is made on visible text and applied at the mapped byte offset since WP-3 |
+| `src/lists.ts`'s empty-line filter | filtered empty lines by raw bytes, so a line of escapes alone survived; `stripAnsi(line) !== ""` since WP-3 |
+| `src/lists.ts`' `substituteBullets` and `realignEmbeddedContinuations` | bullet substitution and the de-drift claim on stripped text — the de-drift since WP-5 of `plans/tn-review-remediation.md`, the substitution since WP-3 of this plan (its anchored regex could not match an encased marker line) |
+| `src/render.ts`'s `isHardBoundary` and its three marker-shape guards | a hard-break tail and a marker shape, both anchored on raw lines; asked of `stripAnsi(line)` since WP-3, which is what made the guards fire under colour at all |
 | `src/blocks.ts:313` | drops a trailing line that is blank once stripped |
 | `src/render.ts:667-668` | the emoji trailing-space strip has to match *across* the SGR that closes the segment |
 | `src/detectors.ts:120,315,327,396,516,603,641` | measurement, not rendering — no rendered byte depends on these, but they read the same escapes |
@@ -488,7 +508,12 @@ none.** `src/cli.ts` writes the renderer's string through unchanged, and the wid
 (`src/overflow.ts` via `src/width.ts`) measures with `string-width`, which strips SGR
 *inside the dependency* rather than at a site in this repo. This is the row that matters
 for the successor: `--plain` has no existing seam to hook, so it is new construction, not a
-move — and `stripAnsi` cannot serve as that seam while it removes SGR only.
+move. **The second half of that sentence used to read "and `stripAnsi` cannot serve as that
+seam while it removes SGR only" — that blocker is gone.** Since WP-3 of
+`plans/colour-policy.md` it removes every sequence kind the renderer can emit
+(`src/ansi.ts`'s `scan`/`stripSequences`), so a future `--plain` has a correct seam
+available; it still has to decide *where* to apply it, which is the part that was never
+about the strip.
 
 **Unrelated-protocol — terminal control that is not styling and must stay.**
 

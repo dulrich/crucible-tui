@@ -1,6 +1,6 @@
-import ansiEscapes from "ansi-escapes";
 import * as nodeEmoji from "node-emoji";
 import type { Token, Tokens } from "marked";
+import { link as osc8Link } from "./ansi";
 import type { LayoutContext } from "./layout-context";
 import { applyStyle, createStyler } from "./style";
 
@@ -232,7 +232,7 @@ export function renderDel(ctx: LayoutContext, token: Tokens.Del, parseInline: Pa
  *
  * - `hasText` is `text && text !== href` — a bare autolink renders as the href alone.
  * - Emoji substitution runs on the link *text* only, never on the href.
- * - With OSC-8 support, the styled label is wrapped in `ansiEscapes.link` and the URL has
+ * - With OSC-8 support, the styled label is wrapped in an OSC-8 hyperlink and the URL has
  *   `+` percent-encoded (upstream comment: its own `textLength` breaks on `+` in URLs).
  * - Without it, the shape is `text (href)`.
  * - Either way the whole thing is wrapped in `chalk.blue`, over an href that is already
@@ -245,6 +245,17 @@ export function renderDel(ctx: LayoutContext, token: Tokens.Del, parseInline: Pa
  * variable, two argv flag families and a pre-TTY `NETLIFY` bypass nobody here asked for. The
  * branch list that decided it is transcribed into `resolveHyperlinks` (`src/colour.ts`);
  * what reaches this line is the decision, already made.
+ *
+ * **And the emission is this repo's since WP-3 of the same plan.** `ansiEscapes.link` was
+ * the last third-party escape emitter in the renderer; `src/ansi.ts`'s `link` is its
+ * transcription (cited line by line there), with two differences that are the point of
+ * taking it over: the destination is **sanitized** at emission per Decision 1 — a
+ * document's own href is interpolated into a control sequence here, and it is the only
+ * place in the renderer where that happens — and the tmux DCS envelope is chosen from
+ * `ctx.tmux`, resolved once per render, rather than from a `process.env` read at the
+ * library's module load. The `%20` replace below is untouched, and stays *outside* the
+ * emitter: it is `marked-terminal`'s own workaround for its `textLength`, not part of the
+ * sequence grammar.
  */
 export function renderLink(ctx: LayoutContext, token: Tokens.Link, parseInline: ParseInline): string {
   const href = token.href;
@@ -254,7 +265,7 @@ export function renderLink(ctx: LayoutContext, token: Tokens.Link, parseInline: 
   let out = "";
   if (ctx.hyperlinks) {
     const label = text ? applyStyle(ctx, HREF, emojify(ctx, text)) : applyStyle(ctx, HREF, href);
-    out = ansiEscapes.link(label, href.replace(/\+/g, "%20"));
+    out = osc8Link(label, href.replace(/\+/g, "%20"), ctx.tmux);
   } else {
     if (hasText) out += `${emojify(ctx, text)} (`;
     out += applyStyle(ctx, HREF, href);

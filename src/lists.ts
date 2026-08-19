@@ -77,6 +77,7 @@
  * `tests/render-lists.test.ts`.
  */
 import type { Token, Tokens } from "marked";
+import { hasSequences, scan } from "./ansi";
 import { transform } from "./blocks";
 import type { GlyphSet } from "./glyphs";
 import { applyStyle, createStyler } from "./style";
@@ -129,6 +130,36 @@ const NUMBERED_POINT_REGEX = "\\d+\\.";
 const POINT_REGEX = `(?:${BULLET_POINT_REGEX}|${NUMBERED_POINT_REGEX})`;
 
 /**
+ * The visible text of `text`, plus the raw offset every visible character came from.
+ *
+ * The one primitive the two structural passes below share (WP-3 of
+ * `plans/colour-policy.md`): a decision about *columns* is made on `visible`, and the
+ * edit it implies is applied at `rawOffsets[i]` in the original bytes — so a pass can be
+ * escape-blind about what it decides while staying byte-exact about what it writes. It is
+ * the same correction `claimLine` already makes with `stripAnsi`, extended to the two
+ * passes whose decisions are *positional* and therefore need the offsets as well as the
+ * columns.
+ *
+ * `rawOffsets` carries one entry per visible character plus a final end-of-string entry,
+ * so a boundary at the very end of the text is addressable.
+ */
+function visibleMap(text: string): { visible: string; rawOffsets: number[] } {
+  const { spans } = scan(text);
+  let visible = "";
+  const rawOffsets: number[] = [];
+  let rawIndex = 0;
+  for (const span of spans) {
+    if (span.kind === "text") {
+      for (let i = 0; i < span.raw.length; i += 1) rawOffsets.push(rawIndex + i);
+      visible += span.raw;
+    }
+    rawIndex += span.raw.length;
+  }
+  rawOffsets.push(rawIndex);
+  return { visible, rawOffsets };
+}
+
+/**
  * `fixNestedLists()` — `index.js:516-529`, "prevents nested lists from joining their
  * parent list's last line".
  *
@@ -143,10 +174,46 @@ const POINT_REGEX = `(?:${BULLET_POINT_REGEX}|${NUMBERED_POINT_REGEX})`;
  * the library leaves the list joined, and at four or more it splits but keeps the extra
  * run. Reproducing those three cases structurally is strictly more code than transcribing
  * the regex that produces them.
+ *
+ * ## The `\S` matched an SGR reset's `m` — repair 1 of three, WP-3 of
+ * `plans/colour-policy.md`
+ *
+ * The regex asks whether the *last character of the parent's own text* sits immediately
+ * before a multiple-of-four indent run and a marker. Under colour that question was asked
+ * of the wrong bytes: `applyStyle`'s newline encasing puts the open code at the head of
+ * every line of an item's text, so a line that is `"        * item"` colourless arrives
+ * as `"    ESC[0m    * item"` — and `\S` matched the reset's own `m`. The regex then found
+ * a "join" that does not exist, split the line at the escape, and left behind a line whose
+ * entire content is that escape: the `"    ESC[0m"` lines this file's own repair 2 then
+ * had nothing to do with, because they are created *after* the empty-line filter has run.
+ * Measured on `tests/fixtures/nested-list.md` at width 80: **7 such lines under colour, 0
+ * colourless**, with the ten-line divergence they and repair 2 jointly produced.
+ *
+ * The repair keeps the transcribed regex exactly as it is and changes only **which bytes
+ * it is asked about**: the decision is made on the visible text, and the newline is
+ * inserted back at the corresponding offset in the raw body. Sequence bytes immediately
+ * before the split point stay with the line they were already on, so no sequence is ever
+ * cut and no byte is lost.
+ *
+ * **Text with no sequences in it takes the original single `replace` unchanged**, which
+ * is what makes the colourless render byte-identical *by construction* rather than by
+ * measurement — the frozen-baseline constraint this WP works under (cycle-3 f6).
  */
 function fixNestedLists(body: string, indent: string): string {
   const regex = new RegExp(`(\\S(?: |  )?)((?:${indent})+)(${POINT_REGEX}(?:.*)+)$`, "gm");
-  return body.replace(regex, `$1\n${indent}$2$3`);
+  if (!hasSequences(body)) return body.replace(regex, `$1\n${indent}$2$3`);
+
+  const { visible, rawOffsets } = visibleMap(body);
+  const insertions: number[] = [];
+  for (const match of visible.matchAll(regex)) {
+    const boundary = (match.index ?? 0) + (match[1] as string).length;
+    insertions.push(rawOffsets[boundary] as number);
+  }
+  let out = body;
+  for (const offset of insertions.reverse()) {
+    out = `${out.slice(0, offset)}\n${indent}${out.slice(offset)}`;
+  }
+  return out;
 }
 
 /**
@@ -400,6 +467,18 @@ function composeItem(
  * `.filter(identity)` drops **empty** strings only, never whitespace-only ones — which is
  * where a loose item's blank lines disappear, and why a blockquote's `indentify`-ed blank
  * line (four spaces) survives instead.
+ *
+ * **"Empty" means visibly empty since WP-3 of `plans/colour-policy.md`, and that is
+ * repair 2 of three.** The library's predicate was `line !== ""` on raw bytes, and under
+ * colour a loose item's blank line is not empty: `applyStyle`'s newline encasing re-emits
+ * the open code on every line of an item's text, so the blank line arrives as a bare
+ * `ESC[0m`. It therefore survived a filter written to drop it, `indentLines` then indented
+ * it (its `(.+)` matches escape bytes like any others), and the coloured render gained a
+ * blank line — four spaces wide — that the colourless render never had. Measured on
+ * `tests/fixtures/nested-list.md` at width 80: **71 lines colourless, 81 under colour**,
+ * every one of the ten a `"    ESC[0m"`. The filter now asks `stripAnsi(line) === ""`,
+ * which is the same question about the columns a reader sees — the identical correction
+ * `claimLine` below already applies to the marker decision, and by the same argument.
  */
 export function renderList(
   ctx: LayoutContext,
@@ -422,7 +501,9 @@ export function renderList(
     const last = segments.length - 1;
     segments[last] = (segments[last] as string).replace(/\s+$/, "");
   }
-  const groups = segments.map((segment) => segment.split("\n").filter((line) => line !== ""));
+  const groups = segments.map((segment) =>
+    segment.split("\n").filter((line) => stripAnsi(line) !== ""),
+  );
 
   const lines = token.ordered ? composeOrdered(groups, sentinel) : composeUnordered(groups, sentinel);
   const body = fixNestedLists(indentLines(TAB, lines.join("\n")), TAB);
@@ -684,11 +765,27 @@ export function substituteBullets(body: string, glyphs: GlyphSet, sentinel: stri
       }
       if (startedInsideCode) return line;
 
-      return line.replace(UNORDERED_MARKER_LINE, (_match, indent: string, gap: string) => {
-        const depth = Math.max(1, Math.round(indent.length / TAB.length));
-        const bullet = glyphs.bullets[(depth - 1) % glyphs.bullets.length] ?? glyphs.bullets[0] ?? "*";
-        return `${indent}${bullet}${gap}`;
-      });
+      const bulletFor = (indentColumns: number): string => {
+        const depth = Math.max(1, Math.round(indentColumns / TAB.length));
+        return glyphs.bullets[(depth - 1) % glyphs.bullets.length] ?? glyphs.bullets[0] ?? "*";
+      };
+
+      if (!hasSequences(line)) {
+        return line.replace(UNORDERED_MARKER_LINE, (_match, indent: string, gap: string) => {
+          return `${indent}${bulletFor(indent.length)}${gap}`;
+        });
+      }
+
+      // Escape-blind, exactly as `claimLine` is (WP-3 of `plans/colour-policy.md`): the
+      // marker is recognised in the columns a reader sees and rewritten at the matching
+      // byte offset. See `visibleMap` — and see this pass's own regex comment for why the
+      // indent must stay the four-column grid rather than `\s*`.
+      const { visible, rawOffsets } = visibleMap(line);
+      const match = UNORDERED_MARKER_LINE.exec(visible);
+      if (match === null) return line;
+      const indent = match[1] as string;
+      const at = rawOffsets[indent.length] as number;
+      return `${line.slice(0, at)}${bulletFor(indent.length)}${line.slice(at + 1)}`;
     })
     .join("\n");
 }

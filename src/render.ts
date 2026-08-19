@@ -25,7 +25,7 @@ import {
 } from "./inline";
 import { resolveFenceLanguage, type FenceLanguageResolver } from "./lang";
 import { createLayoutContext } from "./layout-context";
-import { MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, isGuardShapedLine } from "./list-lines";
+import { MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, isGuardShapedLine, stripAnsi } from "./list-lines";
 import { TASK_GLYPHS, renderList, substituteBullets } from "./lists";
 import { TokenWalker, type WalkRendererMethods } from "./walk";
 import { NARROW_MEASURE, type Measure } from "./width";
@@ -318,6 +318,26 @@ const LIST_INDENT_PER_LEVEL = 4;
 // `trimKeepingFirstIndent`).
 const BLOCKQUOTE_INDENT_PER_LEVEL = 4;
 
+/**
+ * Is this rendered line *shaped* like a marker line — asked of the columns a reader sees.
+ *
+ * **Every marker-shape question in this file goes through here since WP-3 of
+ * `plans/colour-policy.md`**, and each of them used to be asked of the raw bytes. All
+ * three wrapping seams below defuse a marker-shaped continuation line by giving it a
+ * guard space, and all three were silently inert under colour: `applyStyle`'s newline
+ * encasing puts the open code at the head of every line, so a line that reads `* or N..`
+ * to a reader begins with `ESC[33m` to an anchored regex and matched nothing. The
+ * measured consequence is not a missing space — it is a *different wrap*, because a seam
+ * that does not see the collision does not re-wrap a column narrower either:
+ * `tests/fixtures/fenced-list.md` at width 116 wrapped its paragraph at 114 columns
+ * colourless and at 116 under colour, a two-line divergence with no styling in it.
+ *
+ * The guard space itself is still inserted at the head of the raw line — ahead of the
+ * encoding's own open code — which is where it belongs: it is a column, and columns come
+ * before bytes on the page.
+ */
+const marksVisible = (pattern: RegExp, line: string): boolean => pattern.test(stripAnsi(line));
+
 // `MARKER_SHAPED_LINE` and `COLUMN_ZERO_MARKER` moved to `src/list-lines.ts` in WP-4 of
 // `plans/marked-terminal-replacement.md`, and `isGuardShapedLine` is the union both
 // wrapping seams below guard with. The second of the two used to be declared here *and* in
@@ -368,11 +388,25 @@ const HARD_RETURN = "\r";
  */
 const HARD_BREAK_TAIL = /(?: {2,}|\\|<br\s*\/?>)$/i;
 
-/** True when the break between two authored lines must be preserved, not coalesced. */
+/**
+ * True when the break between two authored lines must be preserved, not coalesced.
+ *
+ * **Every question here is asked of the visible text — repair 3 of WP-3 of
+ * `plans/colour-policy.md`.** All three used to be asked of the raw bytes, and all three
+ * answered differently under colour: a line is not blank when it carries `applyStyle`'s
+ * newline encasing, and `HARD_BREAK_TAIL` is anchored at end-of-line, where a styled
+ * `<br />` leaves a close code (`ESC[39m`) after the tag. Measured on
+ * `tests/fixtures/tight-list.md` at width 80: colour-off kept the author's break after
+ * `<br />` and colour-on coalesced across it, merging two rendered lines into one. The
+ * boundary is a fact about the text the author wrote, so it is decided on the text a
+ * reader sees; `HARD_RETURN` is this renderer's own marker and is asked of the raw bytes,
+ * where it lives.
+ */
 function isHardBoundary(before: string, after: string): boolean {
-  if (before.trim() === "" || after.trim() === "") return true;
+  const visibleBefore = stripAnsi(before);
+  if (visibleBefore.trim() === "" || stripAnsi(after).trim() === "") return true;
   if (before.includes(HARD_RETURN) || after.includes(HARD_RETURN)) return true;
-  return HARD_BREAK_TAIL.test(before);
+  return HARD_BREAK_TAIL.test(visibleBefore);
 }
 
 /**
@@ -511,7 +545,8 @@ function rewrapListBody(
 
       const wrapAt = (width: number): string[] => wrapAnsi(rest, Math.max(1, width), measure);
       const onGrid = prefixWidth % LIST_INDENT_PER_LEVEL === 0;
-      const collides = (lines: string[]): boolean => onGrid && lines.slice(1).some((l) => MARKER_SHAPED_LINE.test(l));
+      const collides = (lines: string[]): boolean =>
+        onGrid && lines.slice(1).some((l) => marksVisible(MARKER_SHAPED_LINE, l));
 
       let wrapped = wrapAt(budget - prefixWidth);
       const guarded = collides(wrapped);
@@ -520,7 +555,7 @@ function rewrapListBody(
       return wrapped
         .map((wrappedLine, index) => {
           if (index === 0) return `${prefix}${wrappedLine}`;
-          const space = guarded && MARKER_SHAPED_LINE.test(wrappedLine) ? " " : "";
+          const space = guarded && marksVisible(MARKER_SHAPED_LINE, wrappedLine) ? " " : "";
           return `${continuationPrefix}${space}${wrappedLine}`;
         })
         .join("\n");
@@ -890,6 +925,7 @@ export function renderDocumentDetailed(
     emoji,
     color: policy.color,
     hyperlinks: policy.hyperlinks,
+    tmux: policy.tmux,
   });
 
   // **The extension object, owned** (WP-6 of `plans/marked-terminal-replacement.md`).
@@ -1229,7 +1265,7 @@ export function renderDocumentDetailed(
     // `numberedLines` run, so one that *starts* `*` or `12.` is taken for a marker
     // line and, in an ordered list, is handed that item's number and rewritten.
     const collides = (text: string): boolean =>
-      text.split("\n").slice(1).some((line) => MARKER_SHAPED_LINE.test(line));
+      text.split("\n").slice(1).some((line) => marksVisible(MARKER_SHAPED_LINE, line));
     if (!collides(wrapped)) return settle(wrapped);
 
     // **The guard is as many spaces as it takes to land *off* the four-column grid, and
@@ -1309,11 +1345,11 @@ export function renderDocumentDetailed(
       text
         .split("\n")
         .slice(1)
-        .some((line) => REWRITABLE_MARKER_LINE.test(line));
+        .some((line) => marksVisible(REWRITABLE_MARKER_LINE, line));
     const guarded = (text: string, guard: string): string =>
       text
         .split("\n")
-        .map((line, index) => (index > 0 && MARKER_SHAPED_LINE.test(line) ? `${guard}${line}` : line))
+        .map((line, index) => (index > 0 && marksVisible(MARKER_SHAPED_LINE, line) ? `${guard}${line}` : line))
         .join("\n");
 
     const narrowed = wrapAt(budget - 1);
@@ -1407,7 +1443,7 @@ export function renderDocumentDetailed(
       // renumbering half of the hazard genuinely does not apply — no list is on the stack
       // — but the legibility half does, and the cost is one paragraph re-wrapped a column
       // narrower.
-      const marker = isGuardShapedLine;
+      const marker = (line: string): boolean => isGuardShapedLine(stripAnsi(line));
       const collides = (text: string): boolean => text.split("\n").slice(1).some(marker);
       if (!collides(result)) return result;
 

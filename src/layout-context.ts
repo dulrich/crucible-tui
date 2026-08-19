@@ -84,6 +84,18 @@ export interface LayoutContext {
    * load, that no caller could influence and no test could vary without a subprocess.
    */
   readonly hyperlinks: boolean;
+  /**
+   * Whether the destination is inside tmux — the DCS envelope every OSC sequence needs
+   * there (`src/ansi.ts`'s `link`, transcribed from `ansi-escapes@7.3.0`).
+   *
+   * It rides here rather than being read where it is used for the same reason `color` and
+   * `hyperlinks` do: WP-3 of `plans/colour-policy.md` took OSC-8 emission off
+   * `ansi-escapes`, whose own `isTmux` was a `process.env` read at module load — the exact
+   * shape the dependency-ownership rule removes. `resolveTmux` (`src/colour.ts`) answers
+   * it once per render from an environment handed in, so an injected-tmux test needs no
+   * subprocess.
+   */
+  readonly tmux: boolean;
 }
 
 /** One block renderer's contribution to the pending prefix. */
@@ -169,6 +181,8 @@ export interface LayoutContextInit {
    * one a forgotten argument should produce.
    */
   hyperlinks?: boolean;
+  /** Defaulted to `false` for the same reason `hyperlinks` is: no destination, no tmux. */
+  tmux?: boolean;
 }
 
 /**
@@ -188,5 +202,6 @@ export function createLayoutContext(init: LayoutContextInit): LayoutContext {
     emoji: init.emoji,
     color: init.color,
     hyperlinks: init.hyperlinks ?? false,
+    tmux: init.tmux ?? false,
   });
 }

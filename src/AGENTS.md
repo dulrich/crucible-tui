@@ -16,7 +16,7 @@ Run/verify contract, Conventions and the dependency record live there.
 | The list pipeline | composition, the two wrap paths, the de-drift, the claim domains, the retained passes |
 | The sentinels | two control characters, one literal, and why the walks differ |
 | The task-state pre-pass | the 84 lines it still corrupts, why the "indented code" follow-up is retired, and the re-tokenisation that blocks its removal |
-| Colourless gates cannot see colour-only defects | three measurements, one mechanism, and the rule it earns |
+| Colourless gates cannot see colour-only defects | three measurements, one mechanism, the rule it earns, and the WP-3 closure (`charDiff` 31 → 0) |
 | Glyph tier · Ambiguous width | the tier, the probe, and why `wide` forces ASCII |
 | Command-line surface · Colour | the CLI shape, config asymmetry, and the one owned colour/hyperlink policy |
 | Rendering policy · The `emoji` re-decision | the unqualified rules, and the tier-follows decision |
@@ -1095,6 +1095,46 @@ clean: "    - [ ] \x1b[31mFinal\x1b[39m …"
 colourless test.** Re-measure it under `FORCE_COLOR=3` before writing it down, and say which
 colour mode a recorded figure was taken in — a parity figure without its colour mode is a
 provenance gap, exactly as WP-2 found for the code-range populations.
+
+#### The closure: layout stopped reasoning about bytes — WP-3 of `plans/colour-policy.md`
+
+The class above is closed for the *layout* half, and the count that says so is the colour
+axis: **`charDiff` 31 → 0 over the fixed gate corpus, both glyph tiers, with the
+colour-off render byte-identical in 140 of 140 combos.** Read the second half of that
+sentence as the binding one — the direction of repair was pinned before the work started
+(cycle-3 f6): the colourless render is the frozen baseline, and every repair makes the
+*stripped colour-on* render equal it. Not one of them was allowed to move the colourless
+side.
+
+The mechanism was always one sentence — **a layout decision made on bytes rather than on
+columns** — and it had five instances, three recorded in the plan and two exposed by
+repairing the first:
+
+| Pass | The decision it made on bytes | What it produced under colour |
+|---|---|---|
+| `fixNestedLists` (`src/lists.ts`) | `\S` before a multiple-of-four indent matched an SGR reset's `m` | a join that does not exist, split at the escape — **7 lines of `"    ESC[0m"` in `nested-list.md` at width 80** |
+| the empty-line filter (`src/lists.ts`) | `line !== ""` on raw bytes | an encased blank line survived a filter written to drop it, and was then indented |
+| `wrapAnsi` (`src/wrap.ts`) | an escape-only run was a word | it consumed the pending space and left it trailing — `"…recorded at "` |
+| `isHardBoundary` (`src/render.ts`) | `HARD_BREAK_TAIL` anchored at end-of-*bytes* | a styled `<br />` stopped ending a line, merging two rendered lines into one |
+| the three marker-shape guards (`src/render.ts`) and `substituteBullets` (`src/lists.ts`) | anchored regexes over raw lines | the guards were **inert under colour** — not a missing space but a *different wrap*, because a seam that cannot see the collision does not re-wrap a column narrower either (`fenced-list.md` at width 116: 114 columns colourless, 116 under colour) |
+
+The last row is the one worth remembering, because it is the reason this section exists.
+Those guards had been described here for three work packages as if they ran; they ran on
+half the renders. **The repair in every row is the same and it is not a special case**:
+ask the question of `stripAnsi(line)` — or, where the answer is a *position* rather than a
+predicate, of the visible text plus `visibleMap`'s offsets (`src/lists.ts`) so the edit
+still lands on the right byte. `claimLine` had already made exactly this correction in
+WP-5 of `plans/tn-review-remediation.md` for the marker claim; what WP-3 did was finish
+applying it.
+
+**And `stripAnsi` itself was part of the class.** It removed SGR only, so an OSC-8
+hyperlink's destination URL counted as visible text everywhere in the repo — six
+production call sites, three hand-maintained copies in tests, and a fourth private copy
+inside `src/wrap.ts`'s tokenizer. It is a derivation of `src/ansi.ts`'s scanner now
+(SGR, OSC-8, DCS, malformed), the copies are imports, and `wrapAnsi` consumes the span
+sequence at **both** of its split paths — so no sequence can be cut and no sequence can be
+measured as text. What that closes is the second half of the same defect: a pass that
+reasons correctly about the escapes it knows and not at all about the ones it does not.
 
 ### Glyph tier
 

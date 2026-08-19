@@ -102,6 +102,11 @@ src/colour.ts       the one colour/hyperlink decision — resolveColourPolicy ov
                     the ratified precedence matrix, and owned OSC-8 terminal
                     detection; reads no process state at all (WP-1 of
                     plans/colour-policy.md)
+src/ansi.ts         the one terminal-sequence grammar, both directions — scan()
+                    into an ordered span sequence (SGR, OSC-8, DCS, malformed;
+                    non-text spans are width 0 by construction) and the owned
+                    OSC-8 link() with tmux DCS wrapping; replaced ansi-escapes
+                    (WP-3 of plans/colour-policy.md)
 src/style.ts        the one styling authority — the narrow committed style table
                     and the policy-driven emitter (chalk's applyStyle, plus the
                     plain wrap frontmatter needs); replaced @colors/colors
@@ -122,7 +127,9 @@ src/table.ts        the wide-table allocator — the reason the tool exists — 
                     plans/colour-policy.md)
 src/text.ts         grapheme splitting + display-width padding, shared by table.ts
                     and wrap.ts (which used to reach into table.ts for them)
-src/wrap.ts         ANSI-safe prose wrapping — the renderer's reflow engine
+src/wrap.ts         ANSI-safe prose wrapping — the renderer's reflow engine;
+                    span-native at both split paths since WP-3 of
+                    plans/colour-policy.md, so no sequence is ever cut
 src/glyphs.ts       Unicode/ASCII capability tier — the only module that reads env
                     (src/colour.ts is handed one instead of reading it)
 src/width.ts        display-width measurement + the East Asian Ambiguous probe (WP-3);
@@ -134,9 +141,12 @@ src/config.ts       XDG config load + corpus-manifest path resolution, and the
 src/detectors.ts    orphan / continuation-over-indent detectors
                     (see scripts/AGENTS.md)
 src/list-lines.ts   the rendered-line primitives both render.ts and detectors.ts
-                    share — stripAnsi, the marker regexes, trackListLine (WP-5 of
-                    plans/tn-review-remediation.md); imports only width.ts, so
-                    render.ts reaches them without pulling in the detectors
+                    share — stripAnsi (a derivation of src/ansi.ts's scanner
+                    since WP-3 of plans/colour-policy.md, so it removes OSC-8
+                    and DCS as well as SGR), the marker regexes, trackListLine
+                    (WP-5 of plans/tn-review-remediation.md); imports only
+                    width.ts and ansi.ts, so render.ts reaches them without
+                    pulling in the detectors
 src/overflow.ts     the width gate and the code-range exemption predicate — one
                     implementation, imported by --check, the sweep and the detectors
 corpus/             the bundled public-safe default manifest
@@ -276,9 +286,10 @@ re-opens a removal pass that costs review time for zero benefit.
 --compile`, see "Conventions" above) is ~102 MB, almost entirely Bun's own embedded
 runtime — present in every Bun-compiled binary regardless of what a project imports.
 The actual runtime dependency closure — `marked`, `highlight.js`, `node-emoji`,
-`ansi-escapes`, `string-width`, `yaml`, and everything each pulls in transitively — is
-**16 packages** (measured at WP-2 of `plans/colour-policy.md`, which removed
-`@colors/colors` and `cli-highlight`; **45** after WP-1 of the same plan, **46, ~8.6 MB**
+`string-width`, `yaml`, and everything each pulls in transitively — is
+**14 packages** (measured at WP-3 of `plans/colour-policy.md`, which removed
+`ansi-escapes` and, with it, `environment`; **16** after WP-2 of the same plan, which
+removed `@colors/colors` and `cli-highlight`; **45** after WP-1, **46, ~8.6 MB**
 at WP-7 before that; `bun run gen-licenses --check` walks exactly that closure and prints
 the count). **29 packages left in one work package and the notice file went 974 → 368
 lines**, because `cli-highlight` carried a CLI's worth of freight — `yargs`, `cliui`,
@@ -297,8 +308,10 @@ count is a measurement, not a target, and it is re-measured rather than adjusted
 
 **The declaration rule is unchanged and it is what removed both styling packages.** A
 package this repo's source imports is declared here, whatever a reachability tool says —
-`node-emoji` and `ansi-escapes` are declared because `src/inline.ts` imports them by
-name, `highlight.js` because `src/highlight.ts` does. `cli-highlight` and
+`node-emoji` is declared because `src/inline.ts` imports it by
+name, `highlight.js` because `src/highlight.ts` does. (`ansi-escapes` was declared under
+the same rule for the same file's `ansiEscapes.link` call, and left at WP-3 of
+`plans/colour-policy.md` the moment that import did — see the OSC-8 paragraph below.) `cli-highlight` and
 `@colors/colors` were declared under exactly that rule while `src/lang.ts` imported
 `supportsLanguage` and `src/table.ts` imported `@colors/colors/safe`; **WP-2 of
 `plans/colour-policy.md` deleted both imports, so both declarations went with them.**
@@ -354,6 +367,28 @@ byte pairs through `src/style.ts` under the resolved policy, and `chalk`'s own
 `applyStyle` rules — the nested re-open and the line-break encasing — are transcribed
 there rather than imported.
 
+**`ansi-escapes` was the last third-party escape *emitter*, and WP-3 of
+`plans/colour-policy.md` closed that half of the rule.** It was one function —
+`ansiEscapes.link` — called once, in `src/inline.ts`, and it carried two things this repo
+had to own: the OSC-8 byte grammar itself, and an `isTmux` constant computed from
+`process.env` **at module load** (`base.js:12`), which is exactly the shape the
+policy-dependency half of the rule removes. `src/ansi.ts` is the transcription (`link` and
+`wrapOsc`, cited line by line there); the tmux answer is `resolveTmux`'s
+(`src/colour.ts`), resolved once per render from an environment handed in and carried on
+the policy; and the destination is sanitized at emission, which the library did not do and
+could not have, since it never saw document content. The package left with its own
+transitive `environment` — 16 → **14** packages, `THIRD-PARTY-LICENSES.txt` 368 → **338**
+lines. **The renderer now emits no escape byte that this repo does not spell**: SGR through
+`src/style.ts`'s committed table, syntax colours through `src/highlight.ts`, OSC-8 and its
+tmux envelope through `src/ansi.ts`. The one exception is `styleWikiLink`'s pre-lexer pair
+(`src/render.ts`), which is WP-4's to retire.
+
+**And the same module is what layout reads.** The dependency-ownership rule is about who
+*decides* and who *emits*; WP-3 added the third question — what layout can *see* — because
+`stripAnsi` removed SGR only and `src/wrap.ts` kept a second private copy of that same
+SGR-only vocabulary. Both are derivations of `src/ansi.ts`'s scanner now, which is why an
+OSC-8 hyperlink is no longer measured as its own destination URL.
+
 **`highlight.js` is pinned at `10.7.3`**, two majors behind upstream — and since WP-2 of
 `plans/colour-policy.md` that is **this repo's own direct pin**, not a transitive one. It
 still cannot be subset to shrink it: the package's entry point is the full bundled
@@ -389,14 +424,15 @@ major version with nothing else in place.
 
 **Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
 installed and exercised by this test suite — `marked@14.1.4`, `highlight.js@10.7.3`,
-`node-emoji@2.2.0`, `ansi-escapes@7.3.0`, `string-width@7.2.0`, `yaml@2.9.0` — rather
+`node-emoji@2.2.0`, `string-width@7.2.0`, `yaml@2.9.0` — rather
 than left on `^` ranges that could silently
 resolve to an untested minor on a fresh `bun install` on a different machine. The four
 promoted from transitive to direct in WP-6 of `plans/marked-terminal-replacement.md`
 were pinned at **the versions already installed**, so the promotion added no package and
 moved no byte; two of those four — `supports-color` and `supports-hyperlinks` — left the
-list again at WP-1 of `plans/colour-policy.md`, and `cli-highlight` and `@colors/colors`
-at WP-2, which pinned `highlight.js` at the version its own removal had left installed.
+list again at WP-1 of `plans/colour-policy.md`, `cli-highlight` and `@colors/colors`
+at WP-2 (which pinned `highlight.js` at the version its own removal had left installed),
+and the last of the four, `ansi-escapes@7.3.0`, at WP-3.
 None of those removals moved a byte: the forced-colour render is byte-identical across
 both packages. **This rule pins; it does not upgrade.** Bumping any of these is a separate,
 deliberate decision with its own corpus/sweep verification pass, not a side effect of

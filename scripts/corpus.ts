@@ -875,7 +875,22 @@ export interface ColourAxisResult {
  * The digest of one rendered document.
  *
  * `hasSgr` compares lengths rather than strings because `stripAnsi` only ever removes:
- * a shorter result means at least one SGR sequence was present.
+ * a shorter result means at least one sequence was present.
+ *
+ * **What it removes widened at WP-3 of `plans/colour-policy.md`, and the field name did
+ * not.** `stripAnsi` (`src/list-lines.ts`) is a derivation of `src/ansi.ts`'s scanner now,
+ * so it takes out OSC-8 hyperlinks and tmux DCS envelopes as well as SGR — which means
+ * this flag reads "carries any terminal sequence", and the character channel no longer
+ * counts a hyperlink's destination URL as visible text. Both changes are in the direction
+ * this instrument always claimed to measure; the old strip was simply blind to two of the
+ * three sequence kinds the renderer can emit. Neither seed moved with it: the colourless
+ * child emits no hyperlink (they are off on every non-TTY destination, whatever the colour
+ * decision), so nothing this counter samples changed shape.
+ *
+ * The name stays `hasSgr` because WP-5 of the same plan **deletes** it, along with
+ * `--max-sgr`, `classifyColourAxis`'s buckets and the printed bucket line, replacing all
+ * of it with the three exact gates over a `sequences[]` wire record. Renaming a field on
+ * its way out would cost a diff in every consumer to buy one package of accuracy.
  */
 export function digestText(text: string): { strippedSha: string; hasSgr: boolean } {
   const stripped = stripAnsi(text);
