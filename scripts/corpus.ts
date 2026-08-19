@@ -120,10 +120,14 @@ export interface SweepOptions {
    * today's behaviour: one in-process sweep, in whatever mode the ambient environment
    * resolved at module load.
    *
-   * **It is not spelled `--color` and must never be.** `has-flag` — which both
-   * `supports-color` and `@colors/colors` consult — scans the whole of `process.argv`,
-   * so a harness flag by that name silently flips the colour decision of the very thing
-   * being measured.
+   * **It is not spelled `--color` and must never be.** `has-flag` — which
+   * `supports-color` consulted, and `@colors/colors` too until WP-2 of
+   * `plans/colour-policy.md` removed both from the runtime closure — scans the whole of
+   * `process.argv`, so a harness flag by that name silently flipped the colour decision of
+   * the very thing being measured. Neither package is installed now and the rule is
+   * unchanged: `--color` is `mdview`'s own flag and the top slot of the ratified
+   * precedence matrix (`src/cli.ts`), so a harness flag spelled that way would be read by
+   * the renderer itself instead — the same failure with a different owner.
    */
   colourMode?: ColourMode;
   /**
@@ -752,21 +756,28 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
 // bytes a render emits; it must never change which characters it emits.** Everything
 // below is measurement only — no renderer source is touched and no rendered byte moves.
 //
-// ## Why this is two processes and cannot be one
+// ## Why this is two processes — the reason it *had* to be, and the reason it stays
 //
 // This module statically imports `renderDocumentDetailed` (the import at the top of this
-// file). **The renderer's own colour decision is no longer one of the reasons this has to
-// be two processes** — WP-1 of `plans/colour-policy.md` made it a per-call resolution over
-// `process.env` (`src/colour.ts`), which a single process could vary between renders. Two
-// other decisions still resolve **at module load**, once, for the life of the process:
-// `cli-highlight`'s own `chalk` theme and `@colors/colors`' `enabled`. Both put styling
-// into rendered output, so a second render inside this process still cannot be in a
-// different colour mode overall, and mutating `FORCE_COLOR` between renders still does
-// nothing for them — Bun's module cache hands back the module that already resolved.
-// `tests/helpers/color.ts:15-46` records the same finding from the test side, and its fix
-// is the same one: a fresh subprocess whose environment is fixed **before** its own module
-// graph loads. WP-2 retires both remaining globals; until it does, this stays two
-// processes.
+// file). **No colour decision in this renderer resolves at module load any more.** WP-1 of
+// `plans/colour-policy.md` made the renderer's own decision a per-call resolution over
+// inputs handed in explicitly (`src/colour.ts`), and WP-2 retired the last two module-load
+// globals with the packages that owned them — `cli-highlight`'s bundled `chalk` theme and
+// `@colors/colors`' `enabled`, both of which put styling into rendered output that no
+// argument could reach, so a second render in one process genuinely could not be in a
+// different colour mode overall and mutating `FORCE_COLOR` between renders did nothing for
+// them (Bun's module cache hands back the module that already resolved;
+// `tests/helpers/color.ts` records the same finding from the test side). One process could
+// now render the same file both ways, correctly.
+//
+// **The two children stay, and the reason is what the instrument has to prove rather than
+// what the renderer can do.** A colour-axis number is only evidence if the two populations
+// really were rendered in opposite modes, and a child whose environment is fixed *before*
+// its own module graph loads makes that observable from the child's own output —
+// `tests/colour-axis.test.ts` asserts exactly that, against a hostile ambient
+// `FORCE_COLOR`/`NO_COLOR`. Collapsing this into one process changes what the gate proves
+// and owes its own evidence (WP-5 of `plans/colour-policy.md`); it is not a tidy-up that
+// falls out of removing two dependencies.
 //
 // So the parent re-execs the sweep CLI twice, once per mode, with the colour decision
 // pinned in the child's environment before any import happens. Each child renders the

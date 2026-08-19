@@ -1,6 +1,6 @@
-import colors from "@colors/colors/safe";
 import type { Token, Tokens } from "marked";
 import type { GlyphSet } from "./glyphs";
+import { applyStyle, createStyler } from "./style";
 import { type Align, padToWidth, splitToken } from "./text";
 import { NARROW_MEASURE, type Measure } from "./width";
 
@@ -487,25 +487,30 @@ function resolveBorderChars(chars: Readonly<Record<string, string>> | undefined)
 }
 
 /**
- * The two styles the old `style: { head: ["bold"], border: ["grey"] }` produced.
+ * The two styles the old `style: { head: ["bold"], border: ["grey"] }` produced — now
+ * emitted by `src/style.ts` under the resolved colour policy (WP-2 of
+ * `plans/colour-policy.md`).
  *
- * `@colors/colors` is imported rather than the codes being written out inline, and the
- * reason is the same one `NARROW_MEASURE` exists for: it makes this axis of the output
- * **unchanged by construction** instead of by measurement. That package decides whether
- * to colour at all — and it decides it *without* consulting `isTTY`, because
- * `cli-table3` called `colors.supportsColor()` with no stream argument, so the answer
- * comes from the environment alone (`TERM`, `--no-color`, `FORCE_COLOR`, CI markers).
- * That is a different rule from the one `chalk` applies to the rest of this renderer,
- * where a non-TTY means level 0 and no SGR codes at all. Reproducing the rule by hand
- * would have been ~60 lines of fidelity risk to change nothing on purpose.
+ * **The bytes did not change and the rule did.** `@colors/colors` supplied both pairs
+ * until this package (`grey` = `90m`/`39m`, `bold` = `1m`/`22m`, byte-identical to the
+ * committed table's `gray` and `bold`), *and it decided for itself whether to emit them*:
+ * `cli-table3` called `colors.supportsColor()` with no stream argument, so that package
+ * answered from the environment alone and **without consulting `isTTY`**. Measured at this
+ * package's base, that meant a plain `mdview wide-table.md | cat` — nothing forced, no
+ * terminal — emitted **205 grey pairs and 12 bold pairs** into a pipe, which is exactly
+ * what Decision 1 of the plan forbids and what made this module the fourth of five
+ * independent colour authorities. It now styles iff the resolved policy says so, like
+ * every other producer.
  *
- * It is now a **direct** dependency, declared in `package.json`, for the reason
- * `AGENTS.md` gives about `cli-highlight` and `cli-table3`: an import that resolves
- * only because some other package hoisted a compatible copy is code that works by
- * accident of a different package's dependency tree.
+ * The gate arrives as `color`, threaded from `renderTable`'s caller
+ * (`src/render.ts`, from `LayoutContext.color`); this module still reads no environment,
+ * and now it reads no library's opinion of one either.
  */
-const styleBorder = (text: string): string => colors.grey(text);
-const styleHead = (text: string): string => colors.bold(text);
+const BORDER = createStyler("gray"); // the old `border: ["grey"]`
+const HEAD = createStyler("bold"); // the old `head: ["bold"]`
+
+const styleBorder = (color: boolean, text: string): string => applyStyle({ color }, BORDER, text);
+const styleHead = (color: boolean, text: string): string => applyStyle({ color }, HEAD, text);
 
 /** A row's cells, each already wrapped into its own display lines. */
 type LaidOutRow = string[][];
@@ -521,7 +526,12 @@ type LaidOutRow = string[][];
  * `cli-table3` produced (one wrap per cell, not one per line). Reproducing it is what
  * makes the narrow-mode diff empty rather than merely equivalent.
  */
-function drawRule(widths: number[], chars: BorderChars, kind: "top" | "mid" | "bottom"): string {
+function drawRule(
+  widths: number[],
+  chars: BorderChars,
+  kind: "top" | "mid" | "bottom",
+  color: boolean,
+): string {
   const junctions = {
     top: { first: chars.topLeft, inner: chars.topMid, fill: chars.top, last: chars.topRight },
     mid: { first: chars.leftMid, inner: chars.midMid, fill: chars.mid, last: chars.rightMid },
@@ -537,7 +547,7 @@ function drawRule(widths: number[], chars: BorderChars, kind: "top" | "mid" | "b
     .map((width, column) => {
       const left = column === 0 ? junctions.first : junctions.inner;
       const right = column === widths.length - 1 ? junctions.last : "";
-      return styleBorder(left + junctions.fill.repeat(cellWidth(width)) + right);
+      return styleBorder(color, left + junctions.fill.repeat(cellWidth(width)) + right);
     })
     .join("");
 }
@@ -561,11 +571,12 @@ function drawLine(
   chars: BorderChars,
   isHead: boolean,
   measure: Measure,
+  color: boolean,
 ): string {
   return widths
     .map((width, column) => {
-      const left = styleBorder(column === 0 ? chars.left : chars.middle);
-      const right = column === widths.length - 1 ? styleBorder(chars.right) : "";
+      const left = styleBorder(color, column === 0 ? chars.left : chars.middle);
+      const right = column === widths.length - 1 ? styleBorder(color, chars.right) : "";
       const line = row[column]?.[lineIndex];
       const content =
         line === undefined
@@ -573,7 +584,7 @@ function drawLine(
           : " ".repeat(PADDING_LEFT) +
             padToWidth(line, width, aligns[column] ?? "left", measure) +
             " ".repeat(PADDING_RIGHT);
-      return left + (isHead ? styleHead(content) : content) + right;
+      return left + (isHead ? styleHead(color, content) : content) + right;
     })
     .join("");
 }
@@ -596,22 +607,23 @@ function composeTable(
   aligns: Align[],
   chars: BorderChars,
   measure: Measure,
+  color: boolean,
 ): string {
-  const out: string[] = [drawRule(widths, chars, "top")];
+  const out: string[] = [drawRule(widths, chars, "top", color)];
 
   const emitRow = (row: LaidOutRow, isHead: boolean): void => {
     const height = rowHeight(row);
     for (let lineIndex = 0; lineIndex < height; lineIndex += 1) {
-      out.push(drawLine(row, lineIndex, widths, aligns, chars, isHead, measure));
+      out.push(drawLine(row, lineIndex, widths, aligns, chars, isHead, measure, color));
     }
   };
 
   emitRow(header, true);
   for (const row of rows) {
-    out.push(drawRule(widths, chars, "mid"));
+    out.push(drawRule(widths, chars, "mid", color));
     emitRow(row, false);
   }
-  out.push(drawRule(widths, chars, "bottom"));
+  out.push(drawRule(widths, chars, "bottom", color));
 
   return `${out.join("\n")}\n`;
 }
@@ -629,12 +641,20 @@ function composeTable(
  * allocated geometry — `tests/table.test.ts` asserts `maxWidth(output) ===
  * allocation.totalWidth` directly. That equality is what makes a corrective render
  * pass unnecessary rather than merely absent.
+ *
+ * `color` is the resolved policy's, defaulted to `false` for the same reason
+ * `LayoutContext.hyperlinks` is: unstyled is the answer every gate, sweep and direct test
+ * call wants, and the one a forgotten argument should produce. `src/render.ts` passes
+ * `ctx.color`. Styling never changes the geometry — head and border styles wrap already
+ * measured strings — so the equality above holds at both settings, and
+ * `tests/table.test.ts` asserts it at both.
  */
 export function renderTable(
   token: Tokens.Table,
   targetWidth: number,
   glyphs: GlyphSet,
   measure: Measure = NARROW_MEASURE,
+  color = false,
 ): string {
   const grid = tableGrid(token);
   if (grid.columnCount === 0) return "";
@@ -655,5 +675,6 @@ export function renderTable(
     grid.aligns,
     chars,
     measure,
+    color,
   );
 }

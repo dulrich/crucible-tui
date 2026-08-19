@@ -97,8 +97,14 @@ dependency turns every citation of its internals — in the plan that removed it
 forensics that justified the replacement — into a finding overnight. That is what happened
 when WP-6 of `plans/marked-terminal-replacement.md` dropped `marked-terminal` and the plan's
 own citation of the file it replaced was flagged. `DOCUMENTED_FORMER_PACKAGES` in
-`tests/helpers/containment.ts` names the two packages that removal took out, with the reason
-each is there. **It is not a general escape hatch and must not become one:** an entry is
+`tests/helpers/containment.ts` names each such package with the reason it is there: the two
+that removal took out (`marked-terminal`, `cli-table3`), and `cli-highlight`, removed by WP-2
+of `plans/colour-policy.md` — whose `dist/theme.js` and `dist/index.js` are the transcription
+source for `src/highlight.ts`'s theme vocabulary and span grammar and are cited in that
+module and in two plans. **The list grows exactly this way, one entry per recorded removal,
+and it is the sanctioned response to that guard going red for this reason** — the alternative
+is deleting the citation that is the evidence for the decision. **It is not a general escape
+hatch and must not become one:** an entry is
 legitimate only for a package that was genuinely a declared dependency of *this* repo and
 was genuinely removed by a recorded work package, both checkable from
 `THIRD-PARTY-LICENSES.txt`'s history. It cannot launder a private sibling's name, because a

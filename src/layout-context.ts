@@ -60,12 +60,17 @@ export interface LayoutContext {
    * render from a `supports-color` module global that had already resolved — argv sniff and
    * all — before the first document was ever read.
    *
-   * **Two authorities still disagree with this one, and both are WP-2's to retire, not
-   * this field's to paper over.** `src/table.ts` styles through `@colors/colors`' own
-   * environment-only `enabled` flag, chosen there so the emitter reproduces what
-   * `cli-table3` used to decide; `cli-highlight` gates syntax colour on its bundled
-   * `chalk`'s module-load level. Until the owned emitter and colorizer land, a forced
-   * colour decision cannot reach either of them.
+   * **It is now the only authority, which it was not when this comment was first written.**
+   * Two others disagreed with it for one package: `src/table.ts` styled through
+   * `@colors/colors`' own environment-only `enabled` flag (chosen there so the emitter
+   * reproduced what `cli-table3` used to decide), and `cli-highlight` gated syntax colour
+   * on its bundled `chalk`'s module-load level — so a forced colour decision could reach
+   * neither of them, and `MDVIEW_COLOR=always` on a pipe produced a document with no
+   * highlighting and no table styling in it. WP-2 of `plans/colour-policy.md` retired both:
+   * the styles come from `src/style.ts`'s committed table, the colorizer is
+   * `src/highlight.ts`, and every producer reads *this field*. Measured at that package's
+   * close: `MDVIEW_COLOR=always` and `FORCE_COLOR=3` render every gate-corpus file
+   * byte-identically, at every width and both glyph tiers.
    */
   readonly color: boolean;
   /**

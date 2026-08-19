@@ -79,7 +79,7 @@
 import type { Token, Tokens } from "marked";
 import { transform } from "./blocks";
 import type { GlyphSet } from "./glyphs";
-import { applyStyle, createStyler } from "./inline";
+import { applyStyle, createStyler } from "./style";
 import type { LayoutContext } from "./layout-context";
 import { stripAnsi, trackListLine, type OpenListItem } from "./list-lines";
 import type { Measure } from "./width";

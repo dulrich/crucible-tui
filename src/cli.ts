@@ -90,7 +90,7 @@ const HIGHLIGHT_AS_USAGE = `usage: mdview highlight-as <fence> <language>
 
   <fence>       fence info-string language to alias (e.g. dataviewjs)
   <language>    highlighter language to render it as — validated against
-                cli-highlight's supported list before anything is written
+                highlight.js's supported list before anything is written
   --help, -h    print this message and exit
 
 Records "<fence> -> <language>" into the user config (the XDG config path;
@@ -416,7 +416,7 @@ async function runHighlightAs(args: string[]): Promise<void> {
   const [fence, language] = positional as [string, string];
   if (!isSupportedLanguage(language)) {
     throw new Error(
-      `highlight-as: unsupported language "${language}" — cli-highlight does not recognize it, so ` +
+      `highlight-as: unsupported language "${language}" — highlight.js does not recognize it, so ` +
         "the fence would render unhighlighted rather than mysteriously plain later. Common valid " +
         'targets: javascript, typescript, python, bash, sql, json, yaml, plaintext ("plaintext" is ' +
         "always accepted, if the fence should just not be highlighted).",

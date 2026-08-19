@@ -630,3 +630,61 @@ describe("renderTable with nine or more columns", () => {
     }
   });
 });
+
+/**
+ * The head/border styling, after it stopped being `@colors/colors`' decision — WP-2 of
+ * `plans/colour-policy.md`.
+ *
+ * Three things are separable and each is asserted on its own: the bytes (unchanged —
+ * `grey` is `90m`/`39m` and `bold` is `1m`/`22m`, exactly what the retired package's
+ * `styles` record supplied), the *gate* (the resolved policy, threaded in as an argument,
+ * where it used to be that package's own environment-only `enabled`), and the geometry
+ * (styling wraps already-measured strings, so it must not move a column at either
+ * setting).
+ *
+ * The gate is the change with a user-visible consequence, and it is the one Decision 1 of
+ * the plan requires: at this WP's base, `mdview wide-table.md | cat` — no TTY, nothing
+ * forced — emitted 205 grey pairs and 12 bold pairs into the pipe, because `cli-table3`
+ * had called `colors.supportsColor()` with no stream argument and `src/table.ts` kept that
+ * rule when it took the emitter over.
+ */
+describe("border and head styling obey the policy that is handed in", () => {
+  const table = lexTable(["| Head | Other |", "|---|---|", "| a | b |", ""].join("\n"));
+
+  test("colour off emits no escape at all", () => {
+    const output = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, false);
+    expect(output).not.toContain(ESC);
+  });
+
+  test("the default is colour off — a forgotten argument cannot leak styling", () => {
+    expect(renderTable(table, 40, UNICODE_GLYPHS)).not.toContain(ESC);
+    expect(renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE)).not.toContain(ESC);
+  });
+
+  test("colour on wraps every border piece in grey and every head cell in bold", () => {
+    const output = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, true);
+    expect(output).toContain(`${ESC}[90m`);
+    expect(output).toContain(`${ESC}[1m`);
+    // One wrap per *cell*, not one per line — the escape-sequence layout `cli-table3`
+    // produced and this emitter reproduces. A three-rule, two-row 2-column table has
+    // 2 pieces per rule row and 3 per content row.
+    const greyOpens = output.split(`${ESC}[90m`).length - 1;
+    expect(greyOpens).toBe(3 * 2 + 2 * 3);
+    // Two head cells, so two bold pairs.
+    expect(output.split(`${ESC}[1m`).length - 1).toBe(2);
+  });
+
+  test("styling changes no column: the two renders strip to the same text", () => {
+    const plain = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, false);
+    const styled = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, true);
+    expect(stripAnsi(styled)).toBe(plain);
+    expect(maxWidth(styled)).toBe(maxWidth(plain));
+  });
+
+  test("and the allocated geometry still equals the rendered geometry under colour", () => {
+    const styled = renderTable(WIDE_TABLE, 100, UNICODE_GLYPHS, NARROW_MEASURE, true);
+    const grid = tableGrid(WIDE_TABLE);
+    const allocation = allocateWidths(naturalWidths(grid.header, grid.rows), 100);
+    expect(maxWidth(styled)).toBe(allocation.totalWidth);
+  });
+});

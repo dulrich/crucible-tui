@@ -1,8 +1,13 @@
 import { parse } from "yaml";
+import { createStyler, styleSpan } from "./style";
 import { NARROW_MEASURE, type Measure } from "./width";
 
-const DIM_START = "\x1b[2m";
-const DIM_END = "\x1b[22m";
+/**
+ * `chalk.dim`'s pair, `2m`/`22m` — the two constants this module used to spell out for
+ * itself, now read from the one committed style table (`src/style.ts`, WP-2 of
+ * `plans/colour-policy.md`). The bytes are the same bytes.
+ */
+const DIM = createStyler("dim");
 
 /**
  * Dim a metadata key, or leave it alone — **now a decision this module is told rather than
@@ -15,11 +20,19 @@ const DIM_END = "\x1b[22m";
  * the one that contradicted the ratified Decision 1 — *default non-TTY stdout emits zero
  * tool-generated escape bytes* — on any document that has frontmatter at all.
  *
- * The bytes are unchanged and are still spelled out here rather than emitted through
- * anything: WP-2 moves them onto the owned style table. This package changes only whether
- * they are emitted.
+ * The bytes are unchanged, and since WP-2 they come from the one committed style table
+ * rather than from two constants declared here.
+ *
+ * **It emits through `styleSpan`, not `applyStyle`, and that is a measured choice.** Half
+ * this module's dimmed spans are multi-line — the raw echo of an unparseable frontmatter
+ * block, and the wrapped parse diagnostic above it — and today each carries exactly one
+ * `2m`/`22m` pair around the whole span. `chalk`'s rule (which `applyStyle` reproduces for
+ * the inline and block producers, because *their* bytes are chalk's) closes and reopens at
+ * every newline, so routing this through it would emit one pair per line and move
+ * forced-colour bytes on the two frontmatter witnesses in the gate corpus. Same table,
+ * same gate, different application rule — see `src/style.ts`.
  */
-const dim = (text: string, color: boolean): string => (color ? `${DIM_START}${text}${DIM_END}` : text);
+const dim = (text: string, color: boolean): string => styleSpan(color, DIM, text);
 
 // A line must look like a plausible top-level YAML key ("key:" or "key: value")
 // before a `---`...`---` pair is trusted as frontmatter. Without this guard, a

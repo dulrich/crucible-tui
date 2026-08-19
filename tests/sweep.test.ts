@@ -243,13 +243,13 @@ describe("renderWithForcedColor", () => {
   // to leak a highlight.js "language not found" diagnostic even under forced color —
   // that was the very bug this harness was built to make visible (see the module doc
   // comment in `tests/helpers/color.ts`). WP-3 fixes it: every fence language is now
-  // normalized to one `cli-highlight` supports before it reaches the gated `highlight()`
+  // normalized to one highlight.js supports before it reaches the gated `highlight()`
   // path (`src/lang.ts`), so no fence language reaches stderr any more, not even this
   // one, not even under forced color. Leaving the old assertion in place would mean
   // this test only passes when the bug it exists to catch is still present — i.e. it
   // would now fail forever by design, not by defect. A positive control proving the
   // console.error capture mechanism itself still works when a message *is* genuinely
-  // emitted (calling `cli-highlight` directly, bypassing the now-total normalization)
+  // emitted (calling the owned colorizer directly, bypassing the now-total normalization)
   // lives in `tests/render.test.ts`, so this flip cannot pass vacuously.
   test("a fence language that used to leak a highlight.js diagnostic under forced color now captures nothing (WP-3)", async () => {
     const { messages } = await renderWithForcedColor(unsupportedLangFence, 80);
@@ -992,11 +992,14 @@ describe("parseArgs: the colour axis flags (WP-1)", () => {
   });
 
   test("the flag is not spelled --color, and neither spelling is recognised", () => {
-    // `has-flag`, which `supports-color` and `@colors/colors` both consult, scans the
-    // whole of `process.argv`. A harness flag spelled `--color` or `--no-color` would
-    // therefore flip the ambient colour decision of the renderer under measurement — the
-    // instrument would be changing the thing it is reading. Pinned as a contract, not a
-    // style preference: this parser must never learn either spelling.
+    // `has-flag`, which `supports-color` consulted and `@colors/colors` too until WP-2 of
+    // `plans/colour-policy.md` removed both from the runtime closure, scans the whole of
+    // `process.argv`. A harness flag spelled `--color` or `--no-color` therefore flipped the
+    // ambient colour decision of the renderer under measurement — the instrument changing
+    // the thing it reads. Neither package is installed now and the contract is unchanged for
+    // a sharper reason: `--color` is `mdview`'s own flag and the top slot of the ratified
+    // precedence matrix, so that spelling would be read by the renderer directly. Pinned as
+    // a contract, not a style preference: this parser must never learn either spelling.
     expect(parseArgs(["--color"]).options.colourMode).toBe("off");
     expect(parseArgs(["--no-color"]).options.colourMode).toBe("off");
   });

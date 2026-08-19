@@ -1259,16 +1259,37 @@ behind it was ignored for the tool's entire life. Neither is a bug in that libra
 disqualifying for a policy this tool is supposed to own, which is why the dependency went.
 
 **`chalk` itself is not a dependency of this repo and is not read anywhere.** A copy survives in
-the tree at `4.1.2` only as `cli-highlight`'s and eslint's transitive; the nested `5.6.2` left
-with the library. **Two authorities still disagree with the policy above, and naming them is the
-point of this paragraph rather than an aside.** `src/table.ts` styles through `@colors/colors`'
-own environment-only `enabled` flag, and `cli-highlight` gates syntax colour on that `chalk@4`'s
-module-load level. So `MDVIEW_COLOR=always` on a pipe currently colours everything the renderer
-emits and **nothing** either of those two emits — measured on `tight-list.md` at width 80, where
-the forced-colour render carries the highlighter's `31m`/`36m` token colours and the
-`MDVIEW_COLOR=always` render does not, with identical visible text. `--color=always` happens to
-agree with `FORCE_COLOR=3` only because `@colors` sniffs argv for `--color` too, which is the
-same accident in a second package. WP-2 of `plans/colour-policy.md` owns both.
+the tree at `4.1.2` only as **eslint's** transitive — a devDependency of a devDependency, in
+nothing this ships; the nested `5.6.2` left with `marked-terminal` and the `4.1.2` that
+`cli-highlight` pulled in left with it at WP-2.
+
+**Two authorities disagreed with the policy above for exactly one work package, and closing
+them is what WP-2 of `plans/colour-policy.md` did.** `src/table.ts` styled through
+`@colors/colors`' own environment-only `enabled` flag, and `cli-highlight` gated syntax colour
+on that `chalk@4`'s module-load level. So `MDVIEW_COLOR=always` on a pipe coloured everything
+the renderer emitted and **nothing** either of those two emitted — measured on `tight-list.md`
+at width 80, where the forced-colour render carried the highlighter's `31m`/`36m` token colours
+and the `MDVIEW_COLOR=always` render did not, with identical visible text. `--color=always`
+happened to agree with `FORCE_COLOR=3` only because `@colors` sniffed argv for `--color` too,
+which was the same accident in a second package.
+
+**Both packages are gone and every producer reads `ctx.color`.** The styles come from
+`src/style.ts` — a narrow committed table of exactly the `[open, close]` pairs this renderer is
+authorized to emit, with `38`/`48` introducers rejected by an assertion independent of the
+emitter — and the syntax colours from `src/highlight.ts`, this repo's transcription of
+`cli-highlight`'s span walk over `highlight.js` direct. What that bought, measured at WP-2's
+close over all fourteen gate-corpus files at three widths in both glyph tiers:
+**`MDVIEW_COLOR=always` on a pipe is byte-identical to `FORCE_COLOR=3` in 84 of 84 combos**
+(36 of the 84 differed before), and the forced-colour render itself did not move a byte.
+
+**One colour-off consequence, and it is Decision 1 rather than a regression.** Because
+`@colors` answered from the environment without consulting `isTTY`, a plain
+`mdview file.md | cat` used to emit that package's table styling into the pipe — 205 grey pairs
+and 12 bold pairs on `wide-table.md` alone, with no colour requested anywhere. Those escapes are
+gone: the piped default now emits exactly what a `FORCE_COLOR=0` render always emitted, which is
+what the ratified spec's first decision asks for. The visible text is identical, and the
+sanitized colour-off renders every gate and sweep actually measures were byte-identical across
+the package (84 of 84).
 
 ### Ambiguous width (WP-3)
 
@@ -1502,8 +1523,11 @@ Measured over this repo's own 41 markdown files at six widths, both tiers, both 
 
 Narrow-mode output is **byte-identical** across those 492 renders — 0 differing bytes — because
 narrow measurement is where the two `string-width` majors happened to agree on this corpus, and
-because the emitter reproduces the library's escape-sequence layout and its `@colors/colors`
-styling decision exactly rather than approximately. It is *not* byte-identical in general: a
+because the emitter reproduces the library's escape-sequence layout — one style wrap per *cell*,
+not per line — and, at the time, `@colors/colors`' styling decision exactly rather than
+approximately. (The *layout* is still reproduced; the *decision* is the resolved policy since
+WP-2 of `plans/colour-policy.md`, and the two style pairs are committed literals in
+`src/style.ts`.) It is *not* byte-identical in general: a
 narrow-mode table carrying U+26A0 changes, and improves — that glyph is 1 column to
 `string-width@4` and 2 to `@7`, which is the original reconciliation bug, and its edge went from
 a spread of 3 to 0.
@@ -1570,13 +1594,20 @@ this repo may claim those pass.
   unstyled code whenever `ctx.color` is false — i.e. whenever the resolved policy
   (`src/colour.ts`) says so, which is every non-TTY run with nothing forced: `bun test`,
   `--check`, both sweeps, CI. It **used** to be the same gate the library's `highlight()`
-  applied at `index.js:591` (`chalk.level === 0`), and since WP-1 of `plans/colour-policy.md`
-  it is not: the two can now disagree, because `cli-highlight` still reads its own `chalk`'s
-  module-load level while this reads the policy. `--color=always` on a pipe takes this branch
-  *and* gets an unstyled highlighter — see "Colour" above. The `try`/`catch` never fires either,
-  because highlight.js *logs* rather than throws. **Exercising this behaviour requires
-  `FORCE_COLOR=3` and capturing `console.error`** — the same shape of trap as the fence
-  exemption: a gate that passes because the code under it never ran.
+  applied at `index.js:591` (`chalk.level === 0`); WP-1 of `plans/colour-policy.md` made the two
+  able to disagree — `cli-highlight` was still reading its own `chalk`'s module-load level while
+  this read the policy, so `--color=always` on a pipe took the styled branch *and* got an
+  unstyled highlighter — and WP-2 removed that package, so `ctx.color` is the only gate on this
+  path again. The `try`/`catch` is **not** dead, and the older claim that highlight.js "logs
+  rather than throws" is only half right: on a language it does not know it logs through
+  `console.error` **and then throws**, which is the branch that applies flat `chalk.yellow`.
+  `src/lang.ts` normalises every fence language so a real document never reaches it;
+  `tests/helpers/block-parity.ts`'s `unresolvable language` case reaches it deliberately, and
+  `tests/blocks.test.ts` captures and asserts the message. **Exercising the styled path still
+  requires a colour-on policy** — every gate `verify` runs is colour-off — but it no longer
+  requires a subprocess: an injected `{ color: true }` is enough now that no library resolves
+  colour at module load. That is the same shape of trap as the fence exemption, one step less
+  hidden: a gate that passes because the code under it never ran.
 - **The viewer never narrates parser internals to stderr.** `yaml` reports recoverable oddities
   through `process.emitWarning`, which no `try`/`catch` can intercept, so Node's default handler
   prints a ~15-line stack trace. Obsidian templates trigger it (`created: {{today}}` parses as a
@@ -1622,9 +1653,12 @@ this repo may claim those pass.
   `.gitignore` while this was a subfolder; extraction dropped that file, and the rule was
   restated locally (WP-6a) purely to keep the tracked set unchanged across the split — that
   restatement was never itself a decision to keep ignoring it going forward. **Pinning direct
-  dependencies (WP-5) does not reach the transitive tree** — `highlight.js@10.7.3`, pulled in
-  transitively via `cli-highlight`, is already two majors stale and would silently drift on a
-  fresh `bun install` on a different machine with no lockfile to hold it — and a published
+  dependencies (WP-5) does not reach the transitive tree** — `highlight.js@10.7.3` was the
+  example, pulled in transitively via `cli-highlight`, two majors stale and free to drift on a
+  fresh `bun install` on a different machine with no lockfile to hold it. (It is a *direct*
+  pin since WP-2 of `plans/colour-policy.md`, so that particular package is now held twice;
+  the rule it illustrates is unchanged and still applies to everything below the top level.)
+  And a published
   application should ship the lockfile that was actually tested against, not trust every future
   clone to re-resolve the same transitive tree. The `.gitignore` rule and its old explanatory
   comment are removed; the lockfile is committed like any other tracked file from here on.

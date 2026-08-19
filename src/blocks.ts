@@ -1,8 +1,9 @@
-import { highlight as highlightCli } from "cli-highlight";
+import { highlightToAnsi } from "./highlight";
 import type { Tokens } from "marked";
-import { COLON_REPLACER, applyStyle, createStyler, emojify, fixHardReturn, type ParseInline } from "./inline";
+import { COLON_REPLACER, emojify, fixHardReturn, type ParseInline } from "./inline";
 import type { LayoutContext } from "./layout-context";
 import { stripAnsi } from "./list-lines";
+import { applyStyle, createStyler } from "./style";
 import { wrapAnsi } from "./wrap";
 
 /**
@@ -31,9 +32,11 @@ import { wrapAnsi } from "./wrap";
  * `ctx.prefix.width()` — the columns enclosing blocks still owe — and both caches, plus
  * every `wrapOverBudgetLines` safety net they needed, are gone.
  *
- * `src/table.ts` and `src/inline.ts` are the model this follows: own the emitter, keep
- * `@colors/colors` as the source of the escape bytes, and record in the source *why* each
- * byte is the byte it is.
+ * `src/table.ts` and `src/inline.ts` are the model this follows: own the emitter, take the
+ * escape bytes from one table rather than writing them out inline, and record in the source
+ * *why* each byte is the byte it is. That table was `@colors/colors`' until WP-2 of
+ * `plans/colour-policy.md` and is `src/style.ts`'s committed one now; the syntax colorizer
+ * `code` reaches is `src/highlight.ts`, this repo's, in place of `cli-highlight`.
  */
 
 // ---------------------------------------------------------------------------
@@ -96,9 +99,9 @@ function unescapeEntities(html: string): string {
 
 // `marked-terminal`'s `defaultOptions` (`index.js:30-55`) for the six block methods this
 // module owns. `src/render.ts` overrides none of them, so the defaults are what shipped.
-// Built through `src/inline.ts`'s `createStyler`/`applyStyle` — WP-2's transcription of
-// `chalk`'s own `applyStyle`, over `@colors/colors`' byte table, gated on `ctx.color`.
-// Composing naively (`colors.green(colors.bold(x))`) diverges on real content: chalk
+// Built through `src/style.ts`'s `createStyler`/`applyStyle` — the transcription of
+// `chalk`'s own `applyStyle`, over the committed style table, gated on `ctx.color`.
+// Composing naively (`green(bold(x))`) diverges on real content: chalk
 // re-opens a style after a nested style closed it, and encases line breaks. Both fire here
 // — `heading` styles an already-reflowed multi-line block, and a paragraph carrying an
 // image gets a newline from `renderImage`'s trailing `\n`.
@@ -107,9 +110,9 @@ const BLOCKQUOTE = createStyler("italic", createStyler("gray")); // chalk.gray.i
 const HTML = createStyler("gray"); // chalk.gray
 const HEADING = createStyler("bold", createStyler("green")); // chalk.green.bold
 const FIRST_HEADING = createStyler("bold", createStyler("underline", createStyler("magenta"))); // chalk.magenta.underline.bold
-// `chalk.reset`, and it does have a `@colors/colors` entry under that name — `open` and
-// `close` are both `\x1b[0m`, byte-identical to chalk's. (This package's brief suspected
-// otherwise and said to check; checked, and it is there.)
+// `chalk.reset`, whose `open` and `close` are both `\x1b[0m`. `@colors/colors` carried an
+// entry under that name with the same two bytes (checked when this file was written, when
+// that package was the byte source); `src/style.ts`'s table commits them.
 const RESET = createStyler("reset"); // chalk.reset, used by `hr` and `paragraph`
 
 // ---------------------------------------------------------------------------
@@ -122,11 +125,12 @@ const RESET = createStyler("reset"); // chalk.reset, used by `hr` and `paragraph
  * 1. `:591` short-circuits to the raw, unstyled code whenever `chalk.level === 0`. That is
  *    the decision `LayoutContext.color` carries — since WP-1 of `plans/colour-policy.md`,
  *    `resolveColourPolicy`'s (`src/colour.ts`), threaded in rather than re-derived here.
- *    **The two are no longer the same gate**, and the gap is real rather than theoretical:
- *    `cli-highlight` consults its own bundled `chalk`'s module-load level, so under
- *    `--color=always` on a pipe this branch is taken and the highlighter still emits
- *    nothing. WP-2's owned colorizer is what closes it.
- * 2. `:598`, the success path, returns **`cli-highlight`'s own colours**. `opts.code`
+ *    **It is the only gate on this path again**, and WP-2 is what made that true: until it
+ *    landed, `cli-highlight` consulted its own bundled `chalk`'s module-load level, so
+ *    under `--color=always` on a pipe this branch was *not* taken and the highlighter still
+ *    emitted nothing. `src/highlight.ts` reads the policy it is handed and nothing else, so
+ *    the forced-colour and `MDVIEW_COLOR=always` renders are the same bytes.
+ * 2. `:598`, the success path, returns **the colorizer's own colours**. `opts.code`
  *    (`chalk.yellow`) is *not* applied here. An owned `code` that wraps its output in
  *    yellow would change content inside a `codeRange` — parity class C.
  * 3. `:600`, the `catch`, is where `chalk.yellow` is applied, over the **`fixHardReturn`-ed**
@@ -142,14 +146,15 @@ const RESET = createStyler("reset"); // chalk.reset, used by `hr` and `paragraph
  * `highlightOptions` is `{}`: `markedTerminal(options)` is called with one argument
  * throughout this repo, so the constructor's `highlightOptions || {}` (`:63`) takes the
  * fallback, and `Object.assign({}, { language }, {})` is just `{ language }` — including
- * when `language` is `undefined`, which is what makes `cli-highlight` auto-detect for an
- * unlabelled fence.
+ * when `language` is `undefined`, which is what makes the colorizer auto-detect for an
+ * unlabelled fence (`highlightAuto`; see `src/highlight.ts` for why the two call branches
+ * are not interchangeable).
  */
 function highlightCode(ctx: LayoutContext, code: string, language: string | undefined): string {
   if (!ctx.color) return code;
   const fixed = fixHardReturn(code);
   try {
-    return highlightCli(fixed, { language });
+    return highlightToAnsi(ctx, fixed, language);
   } catch {
     return applyStyle(ctx, CODE, fixed);
   }
@@ -159,9 +164,11 @@ function highlightCode(ctx: LayoutContext, code: string, language: string | unde
  * `code` — `index.js:91-100`. Parity class A.
  *
  * The declared language is normalised through `ctx.resolveFenceLanguage` before it reaches
- * `cli-highlight`, which does not throw on an unknown language — it logs via
- * `console.error` and carries on, so the library's own `try`/`catch` never helps and the
- * message would reach stderr on every unrecognised fence (see `src/lang.ts`).
+ * the colorizer, because highlight.js **logs and then throws** on a language it does not
+ * know: the `console.error` happens first, so catching the throw does not suppress the
+ * message, and it would reach stderr on every unrecognised fence (see `src/lang.ts`). The
+ * `catch` below is therefore reachable — it is what turns that throw into flat yellow — and
+ * this comment used to say the opposite, from the days when `cli-highlight` sat in front.
  *
  * `token.escaped` is read by the library (`:94`) and never used; there is nothing to
  * reproduce. `src/render.ts` brackets the result in `SENTINEL` (`wrapCode`) so `--check`

@@ -211,11 +211,14 @@ returns raw code when `LayoutContext.color` is false, which is every non-TTY run
 was unmeasured; code ranges are exempt). **When a gate passes, check that it passes for the
 right reason.**
 
-That third one is worth naming precisely, because the mechanism outlived the dependency that
-introduced it: the rule was `marked-terminal`'s `highlight()` short-circuiting at
-`chalk.level === 0`, and WP-3 of `plans/marked-terminal-replacement.md` transcribed it into
-this repo's own renderer, where the same decision is `supports-color`'s answer. Same gate,
-same blindness, owned — see `src/AGENTS.md`'s "Colour" section and its rendering policy.
+That third one is worth naming precisely, because the mechanism outlived every dependency
+that carried it: the rule was `marked-terminal`'s `highlight()` short-circuiting at
+`chalk.level === 0`, WP-3 of `plans/marked-terminal-replacement.md` transcribed it into this
+repo's own renderer, where the decision was `supports-color`'s answer, and WP-1 of
+`plans/colour-policy.md` made it `resolveColourPolicy`'s (`src/colour.ts`) — threaded in as a
+value, with no library asked. Same gate, same blindness, owned twice over. Since WP-2 of that
+plan the *whole* highlighting path obeys it, `cli-highlight`'s own `chalk` having been the
+last thing that did not — see `src/AGENTS.md`'s "Colour" section and its rendering policy.
 
 #### The differential harness is the instrument for that bar
 
@@ -259,19 +262,30 @@ MDVIEW_CORPUS_MANIFEST=<private manifest> bun run sweep -- --colour-mode both   
 ```
 
 **`--colour-mode`, never `--color` or `--no-color`.** `has-flag` — which `supports-color`
-and `@colors/colors` both consult — scans the whole of `process.argv`, so a harness flag
-by either of those names is sniffed by the very packages whose decision is under
-measurement, and the instrument silently changes what it is reading. The spelling is a
-contract, pinned in `tests/sweep.test.ts`; do not "correct" it to the American spelling
-or to the conventional flag name.
+consulted, and `@colors/colors` too until WP-2 of `plans/colour-policy.md` removed both from
+the runtime closure — scans the whole of `process.argv`, so a harness flag
+by either of those names was sniffed by the very packages whose decision was under
+measurement, and the instrument silently changed what it was reading. **Neither package is
+installed now and the spelling still stands**: `mdview`'s own `--color` flag is a real
+directive (`src/cli.ts`, the top slot of the ratified precedence matrix), so a harness flag
+by that name would now be read by the *renderer* rather than by a library — the same failure
+with a different owner. The spelling is a contract, pinned in `tests/sweep.test.ts`; do not
+"correct" it to the American spelling or to the conventional flag name.
 
-**Each colour mode is a whole fresh process, and it has to be.** `scripts/corpus.ts`
-statically imports `renderDocumentDetailed`, and `supports-color`, `cli-highlight`'s own
-`chalk` theme and `@colors/colors` each resolve their colour decision **at module load**,
-once, for the life of the process. A second render in this process therefore cannot be in
-a different colour mode, and mutating `FORCE_COLOR` between renders does nothing — Bun's
-module cache hands back the module that already resolved (the same finding
-`tests/helpers/color.ts:15-46` records from the test side). So the parent re-execs
+**Each colour mode is a whole fresh process, and the reason it *had* to be is gone.**
+`scripts/corpus.ts` statically imports `renderDocumentDetailed`, and `supports-color`,
+`cli-highlight`'s own `chalk` theme and `@colors/colors` each resolved their colour decision
+**at module load**, once, for the life of the process — so a second render in one process
+could not be in a different colour mode, and mutating `FORCE_COLOR` between renders did
+nothing, because Bun's module cache hands back the module that already resolved (the same
+finding `tests/helpers/color.ts:15-46` records from the test side). WP-1 of
+`plans/colour-policy.md` retired the first of those three and WP-2 the other two, so **no
+module-load global decides colour in this renderer any more** and one process could now vary
+the mode per render. **The two-child design stays regardless**, and deliberately: it is what
+makes each child's mode observable from its own output rather than from an environment the
+parent believes it set, and collapsing it is a gate change with its own evidence to bring
+(`plans/colour-policy.md`'s WP-5), not a side effect of the packages leaving. So the parent
+re-execs
 `scripts/sweep.ts --colour-child on|off`, one child per mode, with `FORCE_COLOR` set and
 `NO_COLOR` deleted **explicitly, on both children, always** — never inherited, because a
 developer or runner with `FORCE_COLOR` exported would otherwise run both children in the
@@ -319,9 +333,16 @@ wiki-link (`styleWikiLink`, 5 combos) plus the three frontmatter-bearing witness
 `defect-0-crlf-frontmatter.md`, `defect-1-2-unparseable-frontmatter.md`,
 `defect-3-nested-mapping.md` — each contributing 5 via `src/frontmatter.ts`'s
 `DIM_START`/`DIM_END` around metadata keys, which fires in the colourless render
-regardless of the colour decision (this is measured directly here, not gated on
-`supports-color` or `@colors/colors` the way the table-border styling below is). The
+regardless of the colour decision (this is measured directly here, where the table-border
+styling below was gated on `@colors/colors`' own answer and so could not appear at all). The
 other 7 of 14 files are `identical` at every width and every combo.
+
+**That composition is the seed's, and the *measured* number has since fallen.** WP-1 of
+`plans/colour-policy.md` put `src/frontmatter.ts`'s dim behind the resolved policy, so the
+three frontmatter witnesses stopped contributing: `sgrAny` measures **5** — `simple.md`'s
+wiki-link alone, which is WP-4's to remove — against a seed of 20. The seed is a ratchet and
+is left where it is until the plan's WP-5 replaces both counters with exact gates; what must
+not happen is the measured number going *up*.
 
 **History — the population used to drift, and WP-1 of `plans/gate-corpus-reframe.md`
 replaced it because of that.** Before this WP, the corpus was a **glob over live
@@ -354,18 +375,27 @@ history above used is still the right *instrument* for a member-only re-seed's e
 what changed is that there is no longer a glob to isolate a document out of, since every
 manifest member is already named explicitly.
 
-**What this axis structurally cannot see, recorded so `sgrAny=0` is not over-read.** The
-colourless child sets `FORCE_COLOR=0` (`colourChildEnv`, `:980-991`), which
-`supports-color` *and* `@colors/colors` both honour — so producers gated on either of
-them never leak into this measurement, whatever their rule is in the real world. In
-particular `src/table.ts`'s border and head styling reads `@colors/colors`' answer,
-which does **not** consult `isTTY`: piping `mdview` into a file with no `FORCE_COLOR` set
-emits `\x1b[90m` around every border and `\x1b[1m` around every head cell, and this axis
-reports that as `identical` since it is gated on a decision that itself honours
-`FORCE_COLOR=0`. `src/frontmatter.ts`'s `DIM_START`/`DIM_END` is **not** gated on either
-package — see the per-file composition above, where it is exactly what makes the three
-frontmatter witnesses land in `sgrOnly` rather than `identical`. `sgrAny` counts escapes
-that survive `FORCE_COLOR=0`; it is not a complete leak audit — see `plans/colour-policy.md`.
+**What this axis structurally could not see, and what closed it.** The colourless child sets
+`FORCE_COLOR=0` (`colourChildEnv`), which `supports-color` *and* `@colors/colors` both
+honoured — so a producer gated on either never leaked into this measurement, whatever its
+rule was in the real world. `src/table.ts`'s border and head styling was exactly that case:
+it read `@colors/colors`' answer, which does **not** consult `isTTY`, so piping `mdview` into
+a file with no `FORCE_COLOR` set emitted `\x1b[90m` around every border and `\x1b[1m` around
+every head cell — **205 grey pairs and 12 bold pairs on `wide-table.md` alone, measured** —
+while this axis reported the same combo as `identical`, because the leak was gated on a
+decision that itself honours `FORCE_COLOR=0`.
+
+WP-2 of `plans/colour-policy.md` removed that gate with the package: the table styles through
+`src/style.ts` under the resolved policy, so the piped default emits nothing and there is no
+longer a producer this instrument is blind to *by construction*. The seed did not move
+(`sgrAny=5` before and after), which is the expected result and not an accident — the escapes
+that disappeared were only ever emitted in the mode this axis does not sample.
+
+`src/frontmatter.ts`'s dim was **never** gated on either package; it is what made three
+frontmatter witnesses land in `sgrOnly` rather than `identical` until WP-1 put it behind the
+policy. `sgrAny` counts escapes that survive `FORCE_COLOR=0`; it is still not a complete leak
+audit — a producer that consulted something other than `FORCE_COLOR` would be invisible again
+— see `plans/colour-policy.md`.
 
 **The population is the fixed gate corpus, and nothing else.** There is no second
 file-selection mechanism for the axis: the parent hands each child its own command line
@@ -402,8 +432,9 @@ here reports on them. Recorded, deliberately, rather than papered over with a st
 would silently change what `hasSgr` means.
 
 **The axis flag is on the sweep and deliberately not on `scripts/render-diff.ts`.** That
-harness imports **both revisions into one process** (`loadRevision`, and the module cache
-resolves `supports-color` once for both), which is exactly right for a differential — both
+harness imports **both revisions into one process** (`loadRevision`; when this was written the
+module cache resolved `supports-color` once for both, and the same would be true of any
+colour-deciding module either revision loads), which is exactly right for a differential — both
 sides are measured in the same mode — and exactly why a `--colour-mode` flag there could
 only mean "re-exec myself", with no per-render switch to offer. A caller that wants both
 modes runs the CLI twice, once under `FORCE_COLOR=3` and once under `FORCE_COLOR=0`, with
@@ -425,16 +456,16 @@ absent. Every row below was found with `-a`.)
 
 | Site | What it emits | Obeys `ctx.color`? |
 |---|---|---|
-| `src/inline.ts:205-226` (`applyStyle`) | the one styling primitive; every SGR pair in prose comes through here | **yes** — returns the input untouched at level 0 |
+| `src/style.ts` (`applyStyle`) | the one styling primitive; every SGR pair in prose comes through here. Was `src/inline.ts:205-226` until WP-2 of `plans/colour-policy.md` moved it, with the byte table, into the module that owns styling | **yes** — returns the input untouched when the policy is off |
 | `src/inline.ts:339,348,363,382,420,424,427` | its inline call sites — strong, em, codespan, del, link | via `applyStyle` |
 | `src/blocks.ts:151,195,213,426,457,518` | its block call sites — code, hr, html, heading, paragraph, blockquote | via `applyStyle` |
 | `src/lists.ts:380` | its list-item call site | via `applyStyle` |
-| `src/inline.ts:421` (`ansiEscapes.link`) | **OSC-8**, not SGR | no — gated on `supportsHyperlinks.stdout` alone |
+| `src/inline.ts` (`ansiEscapes.link`) | **OSC-8**, not SGR | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken |
 | `src/render.ts:62-65` (`styleWikiLink`) | hardcoded `[36m[4m…`, injected **before the lexer** | **no** |
-| `src/frontmatter.ts:4-5` and their use sites | `DIM_START`/`DIM_END` around metadata | **no** — and outside the token stream entirely |
-| `src/table.ts:507-508` | `@colors/colors`' `grey`/`bold` for borders and headers | no — decided at module load |
-| `src/blocks.ts:1` + `highlightCode` | `cli-highlight`'s own `chalk` theme inside fences | no — decided at module load |
-| `src/inline.ts:283` (`detectInlineColor`) | **nothing** — it is the authority the first row obeys (`supports-color`) | n/a |
+| `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit `color` argument since WP-1, through `src/style.ts`'s plain wrap since WP-2; it was two hardcoded constants and no decision at all |
+| `src/table.ts` (`styleBorder`/`styleHead`) | `grey`/`bold` for borders and headers | **yes** — `renderTable`'s `color` argument since WP-2; it was `@colors/colors`' own module-load answer, which did not consult `isTTY` |
+| `src/blocks.ts`'s `highlightCode` | the syntax theme inside fences | **yes** — `ctx.color`, gating `src/highlight.ts` since WP-2; it was `cli-highlight`'s bundled `chalk` level, decided at module load |
+| ~~`src/inline.ts:283` (`detectInlineColor`)~~ | **deleted** at WP-1 of `plans/colour-policy.md` with every consumer — the authority the first row obeys is `resolveColourPolicy` (`src/colour.ts`), threaded through `LayoutContext.color` | n/a |
 
 **Layout-consumers — they read or strip escapes to decide where characters go.** These are
 the sites a style-last restructure has to satisfy, and the three known colour-only defects

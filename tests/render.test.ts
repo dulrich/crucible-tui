@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, test } from "bun:test";
 import stringWidth from "string-width";
-import { highlight as cliHighlight } from "cli-highlight";
+import { highlightToAnsi } from "../src/highlight";
 import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
 import { stripAnsi } from "../src/list-lines";
 import { renderWithForcedColor } from "./helpers/color";
@@ -337,13 +337,14 @@ describe("renderDocument — fence language normalization silences highlight.js 
 
   // Positive control, so the three tests above cannot pass vacuously: prove the
   // console.error capture mechanism itself still detects a real highlight.js
-  // "language not found" diagnostic when one is actually emitted. `cli-highlight`'s own
-  // `highlight()` (the function `marked-terminal`'s gated wrapper calls through to) logs
-  // via `console.error` unconditionally on a language `supportsLanguage()` rejects —
-  // it is not reachable from `renderDocumentDetailed` any more after this WP's fix
-  // (every fence language is normalized to something supported before it gets there),
-  // so this exercises the same underlying library entry point directly instead.
-  test("positive control: cli-highlight itself still emits a real console.error for a genuinely unsupported language", () => {
+  // "language not found" diagnostic when one is actually emitted. The owned colorizer
+  // (`src/highlight.ts`, which replaced the retired package in WP-2 of
+  // `plans/colour-policy.md`) calls `hljs.highlight` on any truthy language, and
+  // highlight.js logs via `console.error` *and then* throws on one it does not know.
+  // It is not reachable from `renderDocumentDetailed` after WP-3's fix — every fence
+  // language is normalized to something supported before it gets there — so this
+  // exercises the same entry point directly instead.
+  test("positive control: the owned colorizer still emits a real console.error for a genuinely unsupported language", () => {
     const original = console.error;
     const captured: string[] = [];
     console.error = (...args: unknown[]) => {
@@ -351,11 +352,12 @@ describe("renderDocument — fence language normalization silences highlight.js 
     };
     try {
       try {
-        cliHighlight("const x = 1;", { language: "not-a-real-language-xyz" });
+        highlightToAnsi({ color: true }, "const x = 1;", "not-a-real-language-xyz");
       } catch {
-        // cli-highlight throws in addition to logging for a genuinely unknown
-        // language; the console.error call happens before the throw, which is all
-        // this control needs to prove the capture mechanism works.
+        // highlight.js throws in addition to logging for a genuinely unknown language;
+        // the console.error call happens before the throw, which is all this control
+        // needs to prove the capture mechanism works. `src/blocks.ts` catches the same
+        // throw and falls back to flat yellow.
       }
     } finally {
       console.error = original;

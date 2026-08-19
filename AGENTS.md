@@ -102,6 +102,13 @@ src/colour.ts       the one colour/hyperlink decision — resolveColourPolicy ov
                     the ratified precedence matrix, and owned OSC-8 terminal
                     detection; reads no process state at all (WP-1 of
                     plans/colour-policy.md)
+src/style.ts        the one styling authority — the narrow committed style table
+                    and the policy-driven emitter (chalk's applyStyle, plus the
+                    plain wrap frontmatter needs); replaced @colors/colors
+                    (WP-2 of plans/colour-policy.md)
+src/highlight.ts    the owned syntax colorizer over highlight.js direct — the
+                    theme, the span grammar and both call branches cli-highlight
+                    had, plus supportsLanguage (WP-2)
 src/blocks.ts       the owned block leaves — code, hr, html, paragraph, heading,
                     blockquote — and the shared transform (WP-3)
 src/lists.ts        owned list composition: list, listitem, checkbox, ordered
@@ -110,7 +117,9 @@ src/lists.ts        owned list composition: list, listitem, checkbox, ordered
 src/frontmatter.ts  YAML split and metadata block formatting
 src/table.ts        the wide-table allocator — the reason the tool exists — and,
                     since WP-3 of plans/tn-review-remediation.md, the border/cell
-                    emitter that used to be cli-table3
+                    emitter that used to be cli-table3; its head/border styling
+                    goes through src/style.ts under the resolved policy (WP-2 of
+                    plans/colour-policy.md)
 src/text.ts         grapheme splitting + display-width padding, shared by table.ts
                     and wrap.ts (which used to reach into table.ts for them)
 src/wrap.ts         ANSI-safe prose wrapping — the renderer's reflow engine
@@ -118,7 +127,8 @@ src/glyphs.ts       Unicode/ASCII capability tier — the only module that reads
                     (src/colour.ts is handed one instead of reading it)
 src/width.ts        display-width measurement + the East Asian Ambiguous probe (WP-3);
                     the only module that imports string-width
-src/lang.ts         fence-language alias map + supportsLanguage() fallback
+src/lang.ts         fence-language alias map + the supportsLanguage() fallback,
+                    reached through src/highlight.ts
 src/config.ts       XDG config load + corpus-manifest path resolution, and the
                     color directive
 src/detectors.ts    orphan / continuation-over-indent detectors
@@ -265,11 +275,18 @@ re-opens a removal pass that costs review time for zero benefit.
 **Binary size is not a dependency problem.** The compiled binary (`bun build
 --compile`, see "Conventions" above) is ~102 MB, almost entirely Bun's own embedded
 runtime — present in every Bun-compiled binary regardless of what a project imports.
-The actual runtime dependency closure — `marked`, `cli-highlight`, `@colors/colors`,
-`node-emoji`, `ansi-escapes`, `string-width`, `yaml`, and everything each pulls in
-transitively — is **45 packages** (measured at WP-1 of `plans/colour-policy.md`, which
-undeclared `supports-color` and `supports-hyperlinks`; **46, ~8.6 MB** at WP-7, before
-that; `bun run gen-licenses --check` walks exactly that closure and prints the count). The rest of `node_modules` — **~63 MB installed in total** — is
+The actual runtime dependency closure — `marked`, `highlight.js`, `node-emoji`,
+`ansi-escapes`, `string-width`, `yaml`, and everything each pulls in transitively — is
+**16 packages** (measured at WP-2 of `plans/colour-policy.md`, which removed
+`@colors/colors` and `cli-highlight`; **45** after WP-1 of the same plan, **46, ~8.6 MB**
+at WP-7 before that; `bun run gen-licenses --check` walks exactly that closure and prints
+the count). **29 packages left in one work package and the notice file went 974 → 368
+lines**, because `cli-highlight` carried a CLI's worth of freight — `yargs`, `cliui`,
+`mz`, `parse5`, the htmlparser2 tree adapter, `chalk@4` and its `supports-color` — into a
+library this repo only ever called two functions of. That is the largest single closure
+reduction in the repo's history and it was **not** taken for size: it is the
+dependency-ownership rule (below) applied to policy and emission. The rest of
+`node_modules` — **~63 MB installed in total** — is
 devDependency tooling: `eslint`, `typescript`, `typescript-eslint`, `jiti`,
 `@types/bun`, and their own transitive closures, which never ship in the binary at
 all. Dependency weight is therefore a **couple of percent of the compiled artifact**.
@@ -278,17 +295,19 @@ dependency was removed on that basis, and none should be without re-measuring wh
 actually changes. (This section recorded 60 packages when it was written at WP-5; the
 count is a measurement, not a target, and it is re-measured rather than adjusted.)
 
-**`cli-highlight` and `@colors/colors` must stay declared in `dependencies`, and the
-premise that used to justify that has changed while the conclusion has not.** The
-original argument was that a dependency-pruning tool would flag both as reachable
-transitively through `marked-terminal`, so a declaration looked redundant. There is no
-such path now — that package is gone — and the reason to keep both declared is simply
-the plainer one it always rested on: `src/lang.ts` imports `supportsLanguage` from
-`cli-highlight` directly and `src/table.ts` imports `@colors/colors/safe` directly, so
-both are **first-party imports of this repo's own source**. The same rule covers
-`node-emoji` and `ansi-escapes`, both of which `src/inline.ts` imports by name. **A
-package this repo's source imports is declared here, whatever a reachability tool
-says**; the tool is reading reachability, not who actually imports what.
+**The declaration rule is unchanged and it is what removed both styling packages.** A
+package this repo's source imports is declared here, whatever a reachability tool says —
+`node-emoji` and `ansi-escapes` are declared because `src/inline.ts` imports them by
+name, `highlight.js` because `src/highlight.ts` does. `cli-highlight` and
+`@colors/colors` were declared under exactly that rule while `src/lang.ts` imported
+`supportsLanguage` and `src/table.ts` imported `@colors/colors/safe`; **WP-2 of
+`plans/colour-policy.md` deleted both imports, so both declarations went with them.**
+What replaced them is this repo's own code: `src/style.ts` holds a narrow committed style
+table (the `[open, close]` pairs this renderer is authorized to emit, `38`/`48`
+introducers banned by an independent assertion) and the emitter over it, and
+`src/highlight.ts` is the colorizer `cli-highlight` used to be, over `highlight.js`
+direct. The bytes did not move: the forced-colour render of every gate-corpus file is
+byte-identical across that package at every width and both glyph tiers.
 
 **And the rule runs in both directions, which WP-1 of `plans/colour-policy.md` is the
 first package to exercise.** `supports-color` and `supports-hyperlinks` were promoted to
@@ -297,10 +316,13 @@ again the moment `src/colour.ts` took over the two decisions they were consulted
 no file here imported either. Nothing about the rule changed; the imports did. **A
 package this repo's source stopped importing is undeclared here, even if it is still
 installed** — which `supports-color` still is, and legitimately: `cli-highlight → chalk@4
-→ supports-color` keeps it in the runtime closure until WP-2 removes `cli-highlight`, and
-the devDependency `eslint` keeps it in `bun.lock` after that. Undeclaring a package and
-removing it from the closure are two different events, and at WP-1 they happened to two
-different packages: the licence file lost `supports-hyperlinks` alone, 46 → 45.
+→ supports-color` kept it in the runtime closure until WP-2 removed `cli-highlight`, and
+the devDependency `eslint` keeps it in `bun.lock` now. Undeclaring a package and removing
+it from the closure are two different events, and at WP-1 they happened to two different
+packages: the licence file lost `supports-hyperlinks` alone, 46 → 45. **Both halves
+completed at WP-2**, one package apart from each other: `supports-color` left the runtime
+closure with the `cli-highlight → chalk@4` path that was its only remaining requirer, and
+it is still in `bun.lock` — dev-only — exactly as recorded.
 
 **`cli-table3` is gone from `node_modules` entirely, and that closes a two-part note
 this section used to carry.** It left `dependencies` in WP-3 of
@@ -310,48 +332,73 @@ required `^0.6.5` — so it stayed in the closure `scripts/gen-licenses.ts` walk
 `THIRD-PARTY-LICENSES.txt`. WP-6 of `plans/marked-terminal-replacement.md` removed the
 only thing requiring it, and it left with a nested `chalk@5.6.2`; the licence file went
 1,059 → 990 lines, 49 → 46 packages. `@colors/colors` took the declaration slot it
-vacated, deliberately: the emitter has to reproduce the old `style: { head: ["bold"],
-border: ["grey"] }` bytes, that package decides whether to colour at all, and
-reproducing its decision by hand would be fidelity risk spent to change nothing on
-purpose. **A `chalk@4.1.2` still sits in the tree** as `cli-highlight`'s and eslint's
-transitive; this repo neither imports it nor reads its level. It used to say the colour
-answer came from `supports-color` — the same implementation `chalk` wraps, measured to
-agree with it on a 36-cell environment matrix — and since WP-1 of
-`plans/colour-policy.md` the answer is `src/colour.ts`'s own, resolved from inputs
-handed in rather than asked of any library (`src/AGENTS.md`, "Colour"). What `chalk@4`
-still decides is `cli-highlight`'s syntax colours, which is a live disagreement with that
-policy and is WP-2's to close.
+vacated, deliberately: the emitter had to reproduce the old `style: { head: ["bold"],
+border: ["grey"] }` bytes, that package decided whether to colour at all, and
+reproducing its decision by hand looked like fidelity risk spent to change nothing on
+purpose. **That last clause turned out to be the defect.** Its decision consulted the
+environment and *not* `isTTY` — `cli-table3` called `colors.supportsColor()` with no
+stream argument — so a plain `mdview wide-table.md | cat` emitted 205 grey pairs and 12
+bold pairs into a pipe with no colour requested at all, which is what Decision 1 of
+`plans/colour-policy.md` forbids. WP-2 of that plan took the declaration back out: the
+two pairs are committed literals in `src/style.ts` and the gate is the resolved policy.
 
-**`highlight.js` is pinned at `10.7.3`** (a transitive pin, via `cli-highlight`), two
-majors behind upstream, **and cannot be subset to shrink it**: `cli-highlight`
-hardcodes a full `require` of highlight.js's entire bundled language set rather than
-importing individual languages one at a time, so there is no seam to trim unused
-languages through.
+**A `chalk@4.1.2` still sits in the tree** — as **eslint's** transitive now, `cli-highlight`
+having left at WP-2 — so it is a devDependency of a devDependency and ships in nothing.
+This repo neither imports it nor reads its level. It used to say the colour answer came
+from `supports-color` — the same implementation `chalk` wraps, measured to agree with it
+on a 36-cell environment matrix — and since WP-1 of `plans/colour-policy.md` the answer is
+`src/colour.ts`'s own, resolved from inputs handed in rather than asked of any library
+(`src/AGENTS.md`, "Colour"). What `chalk@4` still decided after that was `cli-highlight`'s
+syntax colours, and **that disagreement is closed**: `src/highlight.ts` applies the same
+byte pairs through `src/style.ts` under the resolved policy, and `chalk`'s own
+`applyStyle` rules — the nested re-open and the line-break encasing — are transcribed
+there rather than imported.
 
-**This is blocked, not deferred, and WP-5 of `plans/renderer-deferred-work.md`
-corrected the record to say so.** "Deferred" describes a choice — do it later, on
-purpose, when it is someone's priority. There is no such choice available here: the
-pin is transitive, owned by `cli-highlight@2.1.11`'s own dependency declaration, and
-this repo has no `highlight.js` import of its own to bump — `src/lang.ts` reaches
-`cli-highlight`'s `supportsLanguage`, never `highlight.js` directly. Moving past
-`10.7.3` requires either `cli-highlight` publishing a release pinned to a newer
-`highlight.js` (upstream's choice, not this repo's) or replacing `cli-highlight`
-itself, which is a dependency-swap with its own compatibility check against this
-tool's fence-language handling (`src/lang.ts`) and its own parity pass — not a version
-bump a future session can make unilaterally. Recorded here so a future pass does not
-"fix" the staleness by bumping a major version with nothing else in place.
+**`highlight.js` is pinned at `10.7.3`**, two majors behind upstream — and since WP-2 of
+`plans/colour-policy.md` that is **this repo's own direct pin**, not a transitive one. It
+still cannot be subset to shrink it: the package's entry point is the full bundled
+language set, and `src/highlight.ts` calls `hljs.highlightAuto` for an unlabelled fence,
+which needs every grammar loaded by construction. What changed is only who owns the pin.
+
+**It is a domain-data dependency and stays.** The dependency-ownership rule
+(`plans/colour-policy.md`) removes *policy* dependencies (anything reading env/argv/TTY at
+module load to decide) and *emission* dependencies (anything writing escape bytes);
+grammars are neither. `cli-highlight` was one package doing both jobs at once — grammar
+lookup plus a `chalk`-gated theme — which is why the split fell where it did.
+
+**This used to be blocked rather than deferred, and WP-2 of `plans/colour-policy.md`
+unblocked it without bumping anything.** The record below is kept because the distinction
+it draws is the useful part; what has changed is that the blocker is gone. "Deferred"
+describes a choice — do it later, on purpose, when it is someone's priority — and until
+WP-2 there was no such choice available: the pin was transitive, owned by
+`cli-highlight@2.1.11`'s own dependency declaration, and this repo had no `highlight.js`
+import of its own to bump, because `src/lang.ts` reached `cli-highlight`'s
+`supportsLanguage` and never `highlight.js` directly. **Both facts are now false**:
+`src/highlight.ts` imports `highlight.js` by name and `package.json` pins it, so a bump is
+this repo's decision to make. It is a *deferred* one, and the cost it was always going to
+carry is unchanged — see below. Moving past
+`10.7.3` is now a straight version bump in `package.json` — and it is still **not** a
+change a future session should make unilaterally, for the reason that always sat under
+the blocker: highlight.js's major versions change *which spans it emits*, so every fenced
+block in the corpus can change its forced-colour bytes, which is parity class C. It needs
+its own compatibility check against `src/lang.ts`'s fence-language handling, its own
+per-token-class byte comparison against `src/highlight.ts`'s theme (the `10.x` class
+vocabulary is what that theme is total over — `11.x` renamed several scopes), and its own
+corpus pass. Recorded here so a future pass does not "fix" the staleness by bumping a
+major version with nothing else in place.
 
 **Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
-installed and exercised by this test suite — `marked@14.1.4`, `cli-highlight@2.1.11`,
-`@colors/colors@1.5.0`, `node-emoji@2.2.0`, `ansi-escapes@7.3.0`,
-`string-width@7.2.0`, `yaml@2.9.0` — rather than left on `^` ranges that could silently
+installed and exercised by this test suite — `marked@14.1.4`, `highlight.js@10.7.3`,
+`node-emoji@2.2.0`, `ansi-escapes@7.3.0`, `string-width@7.2.0`, `yaml@2.9.0` — rather
+than left on `^` ranges that could silently
 resolve to an untested minor on a fresh `bun install` on a different machine. The four
 promoted from transitive to direct in WP-6 of `plans/marked-terminal-replacement.md`
 were pinned at **the versions already installed**, so the promotion added no package and
 moved no byte; two of those four — `supports-color` and `supports-hyperlinks` — left the
-list again at WP-1 of `plans/colour-policy.md`, and that removal moved no byte either
-(the forced-colour render is byte-identical across it). **This rule pins; it does not
-upgrade.** Bumping any of these is a separate,
+list again at WP-1 of `plans/colour-policy.md`, and `cli-highlight` and `@colors/colors`
+at WP-2, which pinned `highlight.js` at the version its own removal had left installed.
+None of those removals moved a byte: the forced-colour render is byte-identical across
+both packages. **This rule pins; it does not upgrade.** Bumping any of these is a separate,
 deliberate decision with its own corpus/sweep verification pass, not a side effect of
 installing on a new machine.
 

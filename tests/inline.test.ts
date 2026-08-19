@@ -52,8 +52,10 @@ describe("inline visitors — byte parity with the marked-terminal methods they 
   // `FORCE_COLOR` set before its module graph loaded, because the colour decision was a
   // `supports-color` module global and nothing in-process could move it. It is a parameter
   // now, so the table is built at the setting the test names and the two halves cost one
-  // process between them. (`tests/helpers/color.ts:15-46` still records the subprocess
-  // finding — it is still true for `cli-highlight`'s bundled `chalk`, which is WP-2's.)
+  // process between them. (`tests/helpers/color.ts` records the subprocess finding as
+  // history: it was still true for `cli-highlight`'s bundled `chalk` until WP-2 of the same
+  // plan retired that package, and `tests/blocks.test.ts`'s block table moved in-process
+  // then for the same reason this one did.)
   test("every case matches, colour off, shortcodes on", () => {
     expect(inlineParityFailures(true, false)).toEqual([]);
   });

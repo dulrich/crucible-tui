@@ -20,19 +20,23 @@ import { BLOCK_PARITY_GOLDEN } from "./block-parity-golden";
  * move to instead.
  *
  * Shaped after `tests/helpers/inline-parity.ts` and for the same reason: it has to run
- * **twice, in two processes**. `bun test` is never a TTY, so the colour decision resolves
- * to off, no escape sequences are emitted at all, and a colour-blind comparison would pass
- * vacuously on the axis WP-3 changed. The colour-on half runs the same table in a fresh
- * subprocess under `FORCE_COLOR=3` — see `tests/helpers/color.ts` for why setting the
- * variable inside a shared test process does nothing. Since WP-6 the split selects between
- * `colorOff` and `colorOn` in `./block-parity-golden.ts` rather than between two live
- * library answers.
+ * **twice**. `bun test` is never a TTY, so the resolved policy is colour-off, no escape
+ * sequences are emitted at all, and a colour-blind comparison would pass vacuously on the
+ * axis WP-3 changed. Since WP-6 the two sides are `colorOff` and `colorOn` in
+ * `./block-parity-golden.ts` rather than two live library answers.
  *
  * Colour matters more here than it did for the inline group, because `highlight()`
  * (`marked-terminal` `index.js:590-602`, transcribed into `src/blocks.ts`) *branches* on
- * it: with colour off it returns the fence's text unstyled and never calls `cli-highlight`
+ * it: with colour off it returns the fence's text unstyled and never calls the colorizer
  * at all, so the unforced half of this table cannot see the highlighting path even in
  * principle.
+ *
+ * **The colour-on half stopped needing its own process at WP-2 of
+ * `plans/colour-policy.md`.** It ran in a child under `FORCE_COLOR=3` because
+ * `cli-highlight` resolved its own `chalk`'s level at module load, so no argument could
+ * make it style inside a test process; `src/highlight.ts` reads the policy it is handed.
+ * `tests/blocks.test.ts` runs the colour-on table in-process *and* keeps the subprocess
+ * beside it as the control that the two still agree.
  */
 
 export interface BlockParityCase {
@@ -102,8 +106,9 @@ export function blockParityCases(color: boolean): BlockParityCase[] {
     // carriage return only. It is applied before the highlighter and only when colour is on.
     ["hard return", "before\rafter", "plaintext"],
     ["two hard returns", "a\rb\rc", "plaintext"],
-    // A language `cli-highlight` cannot resolve: still no throw upstream, so the `catch`
-    // branch (the only place `chalk.yellow` is applied) stays unreached.
+    // A language highlight.js cannot resolve: it logs through `console.error` and throws,
+    // so this is the one case that reaches `renderCode`'s `catch` — the only place
+    // `chalk.yellow` is applied. `tests/blocks.test.ts` captures and asserts the message.
     ["unresolvable language", "whatever", "not-a-real-language"],
     ["empty", "", "plaintext"],
     ["trailing newline", "line\n", "plaintext"],

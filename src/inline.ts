@@ -1,8 +1,8 @@
-import colors from "@colors/colors/safe";
 import ansiEscapes from "ansi-escapes";
 import * as nodeEmoji from "node-emoji";
 import type { Token, Tokens } from "marked";
 import type { LayoutContext } from "./layout-context";
+import { applyStyle, createStyler } from "./style";
 
 /**
  * The owned inline visitors — `strong`, `em`, `codespan`, `del`, `br`, `link`, `image`
@@ -19,8 +19,12 @@ import type { LayoutContext } from "./layout-context";
  * such and left alone; correcting it is a later package's decision, taken against a
  * parity class that allows output to move.
  *
- * `src/table.ts` is the model this follows: own the emitter, keep `@colors/colors` as the
- * source of the escape sequences, and say in the source *why* each byte is the byte it is.
+ * `src/table.ts` was the model this followed: own the emitter, take the escape sequences
+ * from a table rather than writing them out inline, and say in the source *why* each byte
+ * is the byte it is. The table was `@colors/colors`' until WP-2 of
+ * `plans/colour-policy.md`; it is `src/style.ts`'s committed one now, and the two modules
+ * that used to answer the colour question for themselves — `src/table.ts` and
+ * `src/frontmatter.ts` — style through the same emitter under the same policy.
  */
 
 /**
@@ -90,138 +94,17 @@ export function fixHardReturn(text: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * `@colors/colors`' style table — the escape sequences, without its enablement gate.
+ * The chain machinery moved to `src/style.ts` in WP-2 of `plans/colour-policy.md`.
  *
- * Two things are being separated here, and keeping them separate is the whole of trap 3
- * in this package's brief:
- *
- * - **Which bytes a style is.** `@colors/colors` decides that, per
- *   `plans/marked-terminal-replacement.md`'s decision 1, and it agrees with what the
- *   library emitted: every pair this module needs is byte-identical to `chalk`'s
- *   (`bold` `1m`/`22m`, `italic` `3m`/`23m`, `dim` `2m`/`22m`, `strikethrough` `9m`/`29m`,
- *   `underline` `4m`/`24m`, `yellow` `33m`/`39m`, `blue` `34m`/`39m`, `gray` `90m`/`39m`).
- *   Pinned by test rather than trusted.
- * - **Whether to emit them at all.** That is `LayoutContext.color`, and it must *not* be
- *   `@colors`' own answer — it is `resolveColourPolicy`'s (`src/colour.ts`), threaded in.
- *
- * Calling `colors.bold(x)` would fuse the two: those functions consult the global
- * `colors.enabled`, so they would silently answer the enablement question with the wrong
- * rule, and `colors.enable()`/`disable()` is a global mutation `src/table.ts:489-506`
- * explicitly depends on not happening. Reading the table instead takes the bytes and
- * leaves the gate.
- *
- * The cast is needed because `@colors/colors`' bundled `safe.d.ts` is a 2018 community
- * typing that predates this export and describes only the style *functions*; the package's
- * own main module assigns `colors.styles` unconditionally, on every entry point. The
- * test that pins the eight pairs above is what makes the cast safe.
+ * `Styler`, `createStyler` and `applyStyle` — and the two `chalk` helpers they are built
+ * from — lived here from WP-2 of `plans/marked-terminal-replacement.md` until this
+ * package, together with a `STYLE_CODES` read of `@colors/colors`' full styles record
+ * through a cast. They are unchanged; what moved is *where the bytes come from* (a narrow
+ * committed table rather than a dependency's record) and *who else calls them*
+ * (`src/table.ts` and `src/frontmatter.ts` now do, so the inline visitors are no longer
+ * the only styling authority in the renderer). The chains below are the six
+ * `marked-terminal`'s `defaultOptions` used, built the same way from the same names.
  */
-const STYLE_CODES = (colors as unknown as { styles: Record<string, { open: string; close: string }> }).styles;
-
-export interface Styler {
-  readonly open: string;
-  readonly close: string;
-  readonly openAll: string;
-  readonly closeAll: string;
-  readonly parent?: Styler;
-}
-
-/**
- * One link in a style chain, built exactly as `chalk`'s `createStyler` builds it
- * (`chalk@5.6.2`, `chalk/source/index.js`): `openAll` accumulates outermost-first, `closeAll`
- * innermost-first. `chalk.dim.gray.strikethrough` is therefore
- * `\x1b[2m\x1b[90m\x1b[9m` … `\x1b[29m\x1b[39m\x1b[22m`, and the nesting order is not
- * cosmetic — it is the byte order class A is measured against.
- */
-export function createStyler(name: string, parent?: Styler): Styler {
-  const code = STYLE_CODES[name];
-  if (!code) throw new Error(`mdview: no style named ${name} in the colour table`);
-  return {
-    open: code.open,
-    close: code.close,
-    openAll: parent === undefined ? code.open : parent.openAll + code.open,
-    closeAll: parent === undefined ? code.close : code.close + parent.closeAll,
-    parent,
-  };
-}
-
-// `chalk`'s own `stringReplaceAll` (`chalk/source/utilities.js`), transcribed. It differs from
-// `String.prototype.replaceAll` in that it re-emits the *substring as well as* the
-// replacer — the point is to re-open a style after a nested style closed it, not to
-// remove the close.
-function stringReplaceAll(string: string, substring: string, replacer: string): string {
-  let index = string.indexOf(substring);
-  if (index === -1) return string;
-
-  const substringLength = substring.length;
-  let endIndex = 0;
-  let returnValue = "";
-  do {
-    returnValue += string.slice(endIndex, index) + substring + replacer;
-    endIndex = index + substringLength;
-    index = string.indexOf(substring, endIndex);
-  } while (index !== -1);
-
-  returnValue += string.slice(endIndex);
-  return returnValue;
-}
-
-// `chalk`'s `stringEncaseCRLFWithFirstIndex`, transcribed. Closes the styling before every
-// line break and reopens it after, which is a workaround for a styling bleed on one
-// terminal (chalk PR #92) and, here, simply part of the bytes being reproduced.
-function stringEncaseCRLFWithFirstIndex(string: string, prefix: string, postfix: string, first: number): string {
-  let index = first;
-  let endIndex = 0;
-  let returnValue = "";
-  do {
-    const gotCR = string[index - 1] === "\r";
-    returnValue += string.slice(endIndex, gotCR ? index - 1 : index) + prefix + (gotCR ? "\r\n" : "\n") + postfix;
-    endIndex = index + 1;
-    index = string.indexOf("\n", endIndex);
-  } while (index !== -1);
-
-  returnValue += string.slice(endIndex);
-  return returnValue;
-}
-
-/**
- * Apply a style chain, reproducing `chalk`'s `applyStyle` exactly.
- *
- * **Wrapping in `open` … `close` is not sufficient and the difference is reachable from
- * ordinary markdown.** Two behaviours beyond the wrap:
- *
- * 1. If the input already contains an escape, every occurrence of *this chain's* close
- *    code gets the matching open appended after it, innermost link outward — the close is
- *    re-emitted and *then* the style resumes, which is `stringReplaceAll`'s whole point and
- *    is easy to get backwards. This fires on the very first `link` in a document: `link` is
- *    a blue wrap around an already-blue-and-underlined href, both closing with `39m`, so
- *    the href's close is followed by a blue re-open. It fires on `del` too, whenever a
- *    strikethrough span contains a code span — grey's close is `39m` as well.
- * 2. If the input contains a newline, the styling is closed before it and reopened after.
- *
- * Both are in the library's output today, so both are class-A obligations, not polish.
- */
-export function applyStyle(ctx: LayoutContext, chain: Styler, input: string): string {
-  // `chalk`'s own guard: level 0, or an empty string, and the input comes back untouched.
-  if (!ctx.color || !input) return input;
-
-  let string = input;
-  const { openAll, closeAll } = chain;
-
-  if (string.includes("\u001b")) {
-    let styler: Styler | undefined = chain;
-    while (styler !== undefined) {
-      string = stringReplaceAll(string, styler.close, styler.open);
-      styler = styler.parent;
-    }
-  }
-
-  const lfIndex = string.indexOf("\n");
-  if (lfIndex !== -1) {
-    string = stringEncaseCRLFWithFirstIndex(string, closeAll, openAll, lfIndex);
-  }
-
-  return openAll + string + closeAll;
-}
 
 // The six chains `marked-terminal`'s `defaultOptions` (`index.js:30-54`) uses for the
 // inline methods this module owns. `src/render.ts` overrides none of them, so the defaults
