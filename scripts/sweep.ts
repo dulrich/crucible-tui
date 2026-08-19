@@ -43,10 +43,11 @@
  * `--color` or `--no-color` silently flipped the colour decision of the very renderer this
  * instrument measures. The rule outlived both packages: `--color` is now `mdview`'s own
  * flag and the highest slot of the ratified precedence matrix, so that spelling would be
- * read by the renderer directly. The axis itself — now three exact gates over three
- * children (WP-5, `plans/colour-policy.md`), replacing the two ratchet ceilings this file
- * used to carry as `--max-char-diff`/`--max-sgr` — lives in `scripts/corpus.ts` with the
- * rest of the render seam; this file owns its flags, its printed line and its exit code.
+ * read by the renderer directly. The axis itself — three exact gates over four children
+ * since WP-4 of `plans/colour-modes.md` added `formats` (three children at WP-5,
+ * `plans/colour-policy.md`, replacing the two ratchet ceilings this file used to carry as
+ * `--max-char-diff`/`--max-sgr`) — lives in `scripts/corpus.ts` with the rest of the
+ * render seam; this file owns its flags, its printed line and its exit code.
  */
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 import { NARROW_MEASURE, measureFor, type Measure } from "../src/width";
@@ -190,10 +191,11 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
       // Internal: set by `collectColourDigests` on the command line it builds for each
       // child. A human never passes it, and it is not documented in the usage line.
       // `default` is the third child WP-5 added — the piped, env-sanitized render with no
-      // colour variable set at all, which is what G1 reads.
+      // colour variable set at all, which is what G1 reads. `formats` is the fourth (WP-4,
+      // `plans/colour-modes.md`) — pinned via `MDVIEW_COLOR=never`, which G2 and G3 read.
       const value = argv[index + 1];
-      if (value !== "on" && value !== "off" && value !== "default") {
-        throw new Error(`--colour-child must be "on", "off" or "default", got: ${value}`);
+      if (value !== "on" && value !== "off" && value !== "default" && value !== "formats") {
+        throw new Error(`--colour-child must be "on", "off", "default" or "formats", got: ${value}`);
       }
       colourChild = value;
       index += 1;
@@ -300,13 +302,17 @@ export function printResult(result: CorpusResult, detect: boolean): void {
 
 /**
  * The colour axis's printed line: **the three exact gates and the join-error count**, on
- * one line per corpus (WP-5, `plans/colour-policy.md`). Replaces the old three-bucket,
- * two-ratchet line — `combos=N g1=N g2=N g3=N errors=N` is the plan's own wire spec, and
- * `bun run verify`'s colour-axis step fails iff any of the four is non-zero, no thresholds
- * anywhere.
+ * one line per corpus (WP-5, `plans/colour-policy.md`; the fourth `formats` child folded
+ * into G2/G3 at WP-4 of `plans/colour-modes.md` — the gate count is unchanged, only the
+ * child count is). Replaces the old three-bucket, two-ratchet line — `combos=N g1=N g2=N
+ * g3=N errors=N` is the plan's own wire spec, and `bun run verify`'s colour-axis step
+ * fails iff any of the four is non-zero, no thresholds anywhere.
  *
  * Up to ten failures of each kind are printed beneath the summary line, each naming the
- * file and width so a failure is legible without re-running the axis by hand.
+ * file and width so a failure is legible without re-running the axis by hand. A G2/G3
+ * failure also names **which pair or child it came from** (`pair=on-off`/`pair=formats-off`;
+ * `child=on`/`child=formats`) since WP-4, because the two arms of each gate now check
+ * different comparisons and it would otherwise be ambiguous which one fired.
  */
 export function printColourAxis(axis: ColourAxisResult): void {
   console.log(
@@ -323,12 +329,14 @@ export function printColourAxis(axis: ColourAxisResult): void {
   for (const entry of axis.g2Failures.slice(0, 10)) {
     console.log(
       `  colour-axis g2 width=${entry.width} ${entry.file}: ` +
-        `on=${entry.onVisibleSha} off=${entry.offVisibleSha}`,
+        `pair=${entry.pair} left=${entry.leftVisibleSha} right=${entry.rightVisibleSha}`,
     );
   }
   for (const entry of axis.g3Failures.slice(0, 10)) {
     const sequence = entry.sequence ? `${entry.sequence.kind}:${JSON.stringify(entry.sequence.raw)}` : "(none)";
-    console.log(`  colour-axis g3 width=${entry.width} ${entry.file}: ${sequence} — ${entry.reason}`);
+    console.log(
+      `  colour-axis g3 width=${entry.width} ${entry.file}: child=${entry.child} ${sequence} — ${entry.reason}`,
+    );
   }
   for (const entry of axis.errors.slice(0, 10)) {
     console.log(
@@ -489,12 +497,15 @@ async function runCli(): Promise<void> {
   }
 
   if (options.colourMode === "both") {
-    // Three fresh processes, one per child — see `scripts/corpus.ts`'s colour-axis
-    // section for why a mode cannot be reached from inside another one.
+    // Four fresh processes, one per child (on/off/default/formats, WP-4 of
+    // `plans/colour-modes.md`) — see `scripts/corpus.ts`'s colour-axis section for why a
+    // mode cannot be reached from inside another one.
     for (const axis of await runColourAxis(stripColourModeArgs(argv))) {
       printColourAxis(axis);
       // Exact gates, no thresholds (WP-5, `plans/colour-policy.md`): the step fails iff
-      // any of the four counters is non-zero. A join-level error — an unpaired combo or a
+      // any of the four counters is non-zero — unchanged by WP-4, since the fourth child's
+      // failures fold into the existing g2/g3 counts rather than adding a fifth. A
+      // join-level error — an unpaired combo or a
       // child render failure — is an instrument fault and fails the run exactly like a
       // gate failure does, because an instrument that fails quietly is the failure mode
       // this whole package exists to avoid.

@@ -767,12 +767,14 @@ function stripEmojiTrailingSpace(body: string, codeRanges: ReadonlyArray<readonl
  * resolver, and any caller that wants determinism passes a policy instead.
  *
  * Keeping the default environment-derived rather than a flat `{color: false}` is load-bearing
- * for exactly one consumer: the colour axis (`scripts/corpus.ts`) re-execs the sweep three
- * times (WP-5 of `plans/colour-policy.md`: `on`, `off` and an env-sanitized `default`) with
- * the colour mode pinned — or, for `default`, deliberately left undecided — in each child's
- * environment, and joins the three digest streams. A default that ignored the environment
- * would make every child render identically — a gate that cannot fail, which is the shape
- * the root `AGENTS.md` forbids by name.
+ * for exactly one consumer: the colour axis (`scripts/corpus.ts`) re-execs the sweep four
+ * times (WP-4 of `plans/colour-modes.md` added the fourth: `on`, `off`, an env-sanitized
+ * `default`, and `formats`, pinned via `MDVIEW_COLOR=never` — WP-5 of
+ * `plans/colour-policy.md` had it at three) with the colour mode pinned — or, for
+ * `default`, deliberately left undecided — in each child's environment, and joins the
+ * four digest streams. A default that ignored the environment would make every child
+ * render identically — a gate that cannot fail, which is the shape the root `AGENTS.md`
+ * forbids by name.
  */
 function defaultColourPolicy(): ColourPolicy {
   return resolveColourPolicy({

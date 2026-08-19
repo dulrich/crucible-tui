@@ -136,22 +136,26 @@ const steps: Step[] = [
   { name: "sweep (ascii)", run: () => sh(["bun", "run", "sweep", "--", "--glyphs", "ascii"]) },
   {
     // The colour axis (WP-1, `plans/own-the-token-walk.md`; three exact gates since
-    // WP-5, `plans/colour-policy.md`): the same bundled corpus, rendered three times
-    // more — a forced-colour child, a colourless one, and an env-sanitized `default`
-    // child with no colour variable set at all — and joined on the union of every
-    // `(file, width)` key any of the three reported. It costs about one extra sweep of
-    // wall time because the three children run in parallel.
+    // WP-5, `plans/colour-policy.md`; a fourth child since WP-4, `plans/colour-modes.md`):
+    // the same bundled corpus, rendered four times more — a forced-colour child, a
+    // colourless one, an env-sanitized `default` child with no colour variable set at all,
+    // and a `formats` child pinned via `MDVIEW_COLOR=never` — and joined on the union of
+    // every `(file, width)` key any of the four reported. It costs about one extra sweep
+    // of wall time because the four children run in parallel.
     //
     // **No thresholds — three exact, per-combo gates, over the fixed, explicit,
     // wildcard-free gate corpus** (`corpus/default-manifest.json` — WP-1,
     // `plans/gate-corpus-reframe.md`): G1 the `default` child emits zero terminal
-    // sequences; G2 the `on`/`off` children's visible text is identical; G3 every `on`
-    // sequence parses as committed-table SGR, a well-formed OSC-8 hyperlink, or a
-    // strictly-parsed tmux DCS wrapper around one. The step exits non-zero iff any of
-    // `g1`/`g2`/`g3`/`errors` is non-zero — the two ratchet counters this replaced
-    // (`--max-char-diff 31 --max-sgr 20`) were already measured at 0 and are deleted with
-    // their flags; `scripts/AGENTS.md`'s colour-axis section carries the gate definitions
-    // and the history of what used to move these numbers.
+    // sequences; G2 the `on`/`off` children's visible text is identical, extended to
+    // `formats`/`off` at WP-4; G3 every `on` sequence parses as committed-table SGR, a
+    // well-formed OSC-8 hyperlink, or a strictly-parsed tmux DCS wrapper around one,
+    // extended at WP-4 to every `formats` sequence against the narrower format/control
+    // vocabulary. The step exits non-zero iff any of `g1`/`g2`/`g3`/`errors` is non-zero —
+    // still three gates, not four, since WP-4 folded the fourth child into G2/G3 rather
+    // than adding a G4; the two ratchet counters this replaced (`--max-char-diff 31
+    // --max-sgr 20`) were already measured at 0 and are deleted with their flags;
+    // `scripts/AGENTS.md`'s colour-axis section carries the gate definitions and the
+    // history of what used to move these numbers.
     //
     // The full-corpus pass stays opt-in: it is the private manifest's job, run by hand
     // with `MDVIEW_CORPUS_MANIFEST` set, and is deliberately not wired in here.
