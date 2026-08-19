@@ -1,12 +1,27 @@
 {
   "version": 1,
-  "generated": "2026-07-27T21:26:07Z",
-  "generator": "hand-authored (public-safe placeholder; see scripts/AGENTS.md's Corpus sweep section)",
+  "generated": "2026-08-18T00:00:00Z",
+  "generator": "WP-1, plans/gate-corpus-reframe.md — fixed, explicit, wildcard-free gate corpus. Superseded the live-document glob (README.md, AGENTS.md, plans/*.md, tests/fixtures/*.md), whose bytes moved every time any of those documents was edited. See scripts/AGENTS.md's Corpus sweep section.",
   "corpora": [
     {
       "name": "repo",
       "root": "..",
-      "globs": ["README.md", "AGENTS.md", "plans/*.md", "tests/fixtures/*.md"]
+      "globs": [
+        "tests/fixtures/blockquote-list.md",
+        "tests/fixtures/coalesced-colon-guard-continuation.md",
+        "tests/fixtures/coalesced-guard-collision.md",
+        "tests/fixtures/fenced-list.md",
+        "tests/fixtures/loose-list.md",
+        "tests/fixtures/nested-list.md",
+        "tests/fixtures/simple.md",
+        "tests/fixtures/task-ordered-text.md",
+        "tests/fixtures/tight-list.md",
+        "tests/fixtures/wide-table.md",
+        "tests/fixtures/witnesses/defect-0-crlf-frontmatter.md",
+        "tests/fixtures/witnesses/defect-1-2-unparseable-frontmatter.md",
+        "tests/fixtures/witnesses/defect-3-nested-mapping.md",
+        "tests/fixtures/witnesses/defect-wp14-list-item-inline-markup.md"
+      ]
     }
   ]
 }

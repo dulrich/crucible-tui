@@ -462,21 +462,24 @@ export function buildContext(root: string, listed: Set<string> = new Set()): Con
  * briefs, dispatch notes) that must cite real absolute paths to be self-contained, and
  * is deliberately *not* published-facing.
  *
- * **Why exempting a directory rather than widening a rule is safe here, and why it is
- * the only exemption of its kind.** The guard's job is to keep unpublishable content out
- * of the *shared corpus* — the user's own words: "we don't expose non-publishable
- * content in a corpus that is meant to be shared." The corpus is not "this whole
- * checkout"; it is the explicit glob list in `corpus/default-manifest.json`
- * (`README.md`, `AGENTS.md`, `plans/*.md`, `tests/fixtures/*.md`), and `runs/**` is not
- * in it. So exempting `runs/**` from the scan narrows the guard to match the corpus it
- * exists to protect, rather than the whole working tree. `tests/sweep.test.ts` pins the
- * one assertion that makes this enforceable rather than a convention: none of that
- * manifest's globs may ever match anything under `runs/**`. If that assertion ever
- * fails, this exemption is wrong and must shrink, not the manifest.
+ * **The guard's boundary is the whole repository minus `SKIP_DIRS` and this exemption,
+ * full stop.** It is **not** derived from what the gate corpus samples, and has not been
+ * since WP-1 of `plans/gate-corpus-reframe.md` — before that WP, this comment justified
+ * the `runs/**` exemption by pointing at `corpus/default-manifest.json`'s glob list, on
+ * the premise that the guard's job was to protect *that* corpus specifically. Reasoning
+ * from the corpus was true only by coincidence, and the coincidence was the risk: the
+ * gate corpus is now a fixed, explicit path list scoped to `tests/fixtures/`, so
+ * pointing at it here would no longer even describe a set that overlaps `plans/` or
+ * `README.md` at all. **`collectFiles` (below) scans the entire repository minus
+ * `SKIP_DIRS` and this exemption — independent of the gate corpus, and unchanged by
+ * this rewrite.** `tests/containment.test.ts` pins the one
+ * assertion that keeps this exemption and the gate corpus provably disjoint: no gate
+ * corpus entry may begin `runs/`, and no corpus root may be or resolve into `runs/`. If
+ * that assertion ever fails, this exemption is wrong and must shrink, not the manifest.
  *
- * **`plans/` is deliberately not here.** Plans are inside the corpus
- * (`plans/*.md`), so they stay fully governed by all three rules; a plan citing a real
- * private path is a real finding, not a control-plane exception.
+ * **`plans/` is deliberately not here.** Every file under `plans/` is fully governed by
+ * all three rules regardless of gate-corpus membership; a plan citing a real private
+ * path is a real finding, not a control-plane exception.
  *
  * **What this does not solve.** Whether `runs/` (or anything else) should be filtered out
  * of an eventual *public push* of this repo is a separate, live, cross-repo question,

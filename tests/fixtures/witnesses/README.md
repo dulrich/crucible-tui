@@ -64,11 +64,26 @@ table applies here — a minimal reconstruction that reproduces the defect's exa
 smaller, more durable, and (per the sprint's cross-repo caution) keeps corpus content and
 neighbour-repository material out of this repo entirely.
 
-## None of this is swept by `bun run sweep`
+## Four of these six are swept by `bun run sweep` — by name, not by glob
 
-The bundled default manifest's glob is `tests/fixtures/*.md` — one path segment per `*`, so
-it matches files directly under `tests/fixtures/` and does not descend into this
-subdirectory. These fixtures are read directly by their tests, never walked by
-the sweep or `--check`. They are still scanned by the containment guard
-(`tests/sweep.test.ts`'s containment describe, which walks the whole tree outside `runs/`),
-same as every other file in the repo.
+Before WP-1 of `plans/gate-corpus-reframe.md`, the bundled default manifest's glob was
+`tests/fixtures/*.md` — one path segment per `*`, so it matched files directly under
+`tests/fixtures/` and never descended into this subdirectory; nothing here was swept.
+**That is no longer true.** WP-1 replaced the glob with an explicit, wildcard-free path
+list (`corpus/default-manifest.json`), and it names four of these six witnesses
+individually: `defect-0-crlf-frontmatter.md`, `defect-1-2-unparseable-frontmatter.md`,
+`defect-3-nested-mapping.md` and `defect-wp14-list-item-inline-markup.md` — every witness
+that swept clean (`overflow=0 errors=0`) at the 5 default widths and both glyph tiers.
+`defect-2-success-path-overwide.md` and `defect-cjk-excerpt.md` stay out **on purpose**:
+both are witnesses of the width gate legitimately catching an over-width block, so
+`overflow=0` is not their pinned behaviour — `witness-index.json`'s notes on each explain
+why, and `tests/witnesses.test.ts`/`tests/frontmatter.test.ts` pin it. **This `README.md`
+itself must never become a manifest entry** — `tests/gate-corpus.test.ts`'s eligibility
+assertion rejects any entry ending `README.md`, independent of the exact-set pin.
+
+These fixtures are still read directly by their own tests first and foremost — the
+manifest entry does not replace `tests/witnesses.test.ts`/`tests/render.test.ts`'s
+assertions, it only adds the four clean ones to the gate corpus every sweep runs over.
+All six are, and always were, scanned by the containment guard
+(`tests/containment.test.ts`'s containment describe, which walks the whole tree outside
+`runs/`, independent of the sweep manifest), same as every other file in the repo.

@@ -1,14 +1,22 @@
 # mdview — `tests/`
 
 The publication containment guard — `tests/helpers/containment.ts` holds its rules,
-`tests/sweep.test.ts` runs them — and the width-sensitive fixture trap. **The root
+`tests/containment.test.ts` runs them — and the width-sensitive fixture trap. **The root
 `AGENTS.md` is the parent document — read it first.**
 
 ### Containment — this repo is published, and it grew up next to private ones
 
-`tests/helpers/containment.ts` holds the rules; `tests/sweep.test.ts` runs them over
-every file here, **itself included**. They are part of `bun test`, so they are covered by
-`bun run verify` and need no separate command.
+`tests/helpers/containment.ts` holds the rules; `tests/containment.test.ts` runs them
+over every file here, **itself included**. They are part of `bun test`, so they are
+covered by `bun run verify` and need no separate command. **The scan's boundary is the
+whole repository minus generated/vendor skips and the top-level `runs/` exemption —
+full stop, independent of any corpus manifest** (WP-1, `plans/gate-corpus-reframe.md`):
+`collectFiles` (`tests/helpers/containment.ts`) never reads `corpus/default-manifest.json`
+at all. The gate corpus and this guard are related only by one narrow, separately-pinned
+assertion — no gate-corpus entry may begin `runs/`, and no corpus root may be or resolve
+into `runs/` (`tests/containment.test.ts`) — which keeps the `runs/` exemption and the
+gate corpus provably disjoint; it does not make the guard's scope a function of the
+corpus, in either direction.
 
 **It used to be a denylist of five literal private strings, and that shape cannot work.**
 A denylist can only contain the leaks somebody already found: it was extended twice by

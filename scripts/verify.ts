@@ -140,92 +140,22 @@ const steps: Step[] = [
     // and compared SGR-stripped against SGR-stripped. It costs about one extra sweep of
     // wall time because the two children run in parallel.
     //
-    // **The two numbers are ratchets seeded from this instrument's own output**, not
-    // targets: they are what the bundled corpus measured when the axis landed, and what
-    // must not happen is either going up. They are also a function of the *population* —
-    // the bundled manifest globs `plans/*.md` **and `AGENTS.md` and `README.md`**, so
-    // adding a plan file, or editing any of those documents, changes both. A WP that does
-    // and trips this re-measures with the same command and re-seeds here, in the same
-    // commit, exactly as the sweep's own file count is re-quoted with its commit. See
-    // `scripts/AGENTS.md`'s colour-axis section for the seeding record.
-    //
-    // **`--max-char-diff` was 62 until WP-2 of `plans/own-the-token-walk.md` and is 65
-    // because that package rewrote `AGENTS.md`, not because it moved the renderer.**
-    // `AGENTS.md` went from differing at 2 of the 5 widths to differing at all 5. The
-    // evidence that it is population and not renderer, recorded because this is the one
-    // number a walk rewrite must never be allowed to quietly move: rendering the *base*
-    // `AGENTS.md` through the *new* renderer gives `charDiff=2` and the new one gives
-    // `charDiff=5`, and `scripts/render-diff.ts --expect a` over 440 combos in each colour
-    // mode reports `diffed=0` over the new text. `--max-sgr` did not move.
-    //
-    // **`--max-sgr` was 20 until `plans/styled-runs-and-colour-policy.md` was written and
-    // is 25 because that file joined the globbed population**, with no source change in
-    // the commit at all — and the cause is the same one the 20 already had. `sgrOnly`
-    // does **not** mean "the two modes' escape streams differ"; it means the *colourless*
-    // render still contains SGR (`classifyColourAxis`, `scripts/corpus.ts:1069-1075`), so
-    // it is a leak counter, and the leak is `styleWikiLink`'s unconditional escapes. The
-    // new plan file carries eight `[[…]]` occurrences. Isolated with a one-file manifest
-    // per the procedure in `scripts/AGENTS.md`: the file as written reports
-    // `charDiff=0 sgrAny=5`, and the same file with every wiki-link textually removed
-    // reports `charDiff=0 sgrAny=0 identical=5`. Same renderer, same widths, −5.
-    //
-    // **`--max-char-diff` moved 65 → 66 in the same commit, and the extra one is a real
-    // defect firing on the new plan file's own text.** Population again, not renderer —
-    // but this time the new population member *demonstrates* one of the defects the plan
-    // exists to remove, which is worth more than a clean number. Isolated to
-    // `(plans/styled-runs-and-colour-policy.md, width 100)`; the other four widths are
-    // character-identical. Rendered under `FORCE_COLOR=3` and `FORCE_COLOR=0` and
-    // SGR-stripped, one bullet in that file's Summary differs two ways:
-    //
-    //   off: "…the shorthand for it"      / "       **bold** contributes nothing…"
-    //   on:  "…the shorthand for it is"   / "    **bold** contributes nothing…"
-    //
-    // The wrap point moves — the coloured render packs one more word onto the line — and
-    // the continuation indent differs by three columns. Neither run overflows; `--check`
-    // passes at width 100 in both modes. Candidate sites are the three the plan
-    // enumerates: `src/wrap.ts:44-62` (an escape-only part is accumulated into the
-    // current word instead of flushing it, so the entry list differs), and
-    // `src/lists.ts:147-150` / `:425` for the indent. **Not attributed to one of them
-    // here** — that is the plan's WP-4 job, with this as its witness.
-    //
-    // **`--max-char-diff` moved 66 → 70 when rev 2 of that plan replaced rev 1's prose,
-    // and that falsified the sentence this comment carried one commit earlier.** The
-    // claim was "this is the last legitimate rise, because no package in that plan adds a
-    // file to the globbed population." Adding a file is not the only way the population
-    // changes: **editing a globbed file's content does it too.** The globs are
-    // non-recursive and resolve to exactly the 23 files the sweep counts — `README.md`,
-    // root `AGENTS.md`, `plans/*.md` (11) and `tests/fixtures/*.md` (10) — so
-    // `src/AGENTS.md` and this file's own `scripts/AGENTS.md` are **not** members and are
-    // free to edit, while **every plan revision, including a one-line Status-line edit**,
-    // is a population change. Rev 2's rise is exactly that, with zero source changes in
-    // the commit. Isolated with a one-file manifest: the plan file
-    // alone reports `charDiff=5 sgrAny=5` at rev 2 where it reported `charDiff=1
-    // sgrAny=5` at rev 1, i.e. the same defect now fires at all five widths instead of
-    // one. The other 65 are unchanged.
-    //
-    // Two symptoms are visible in rev 2's text, both reproducible by rendering it under
-    // `FORCE_COLOR=3` and `FORCE_COLOR=0` and stripping SGR from both:
-    //
-    //   width 80,  ~line 490: colourless ends "strips [ ]", coloured ends "strips [ ] "
-    //   width 80,  ~line 841: a whitespace-only line present under colour, absent without
-    //   width 100, ~line 208: the coloured render packs one more word onto the line and
-    //                         the continuation indent differs by three columns
-    //
-    // The whitespace-only line has the shape `src/lists.ts:425`'s
-    // `.filter((line) => line !== "")` would produce, and the moving wrap point the shape
-    // `src/wrap.ts:44-62`'s escape-only word entry would produce — **but neither is
-    // attributed here.** Inferring a site from a symptom is how a defect gets "fixed" by
-    // coincidence; WP-1 of that plan bisects them and, first, makes the colour axis print
-    // a per-file breakdown so the next rise is attributable by one command instead of by
-    // a hand-built manifest. That plan makes `charDiff=0` a gate at its WP-5c and
-    // `sgrAny=0` a gate at its WP-6, and requires every future move — up **or down** —
-    // to be attributed per file before anything is re-seeded.
+    // **The two numbers are ratchets, not targets**, seeded from this instrument's own
+    // output over the fixed, explicit, wildcard-free gate corpus
+    // (`corpus/default-manifest.json` — WP-1, `plans/gate-corpus-reframe.md`): 14 files,
+    // 70 combos, `charDiff=31 sgrAny=20`, identical in both glyph tiers. What must not
+    // happen is either going up. Before WP-1 this manifest was a glob over live
+    // documents (`plans/*.md`, `AGENTS.md`, `README.md`), so editing any of those files
+    // moved the population and re-seeded these numbers with no renderer change behind
+    // most of the moves (62→65→66→70→73→75) — that history, the current per-file
+    // composition, and the commit-shape attribution rule that replaces it all live in
+    // `scripts/AGENTS.md`'s colour-axis section now, not here.
     //
     // The full-corpus pass stays opt-in: it is the private manifest's job, run by hand
     // with `MDVIEW_CORPUS_MANIFEST` set, and is deliberately not wired in here.
     name: "sweep (colour axis)",
     run: () =>
-      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "70", "--max-sgr", "25"]),
+      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "31", "--max-sgr", "20"]),
   },
   { name: "security scan", run: runSecurityStep },
 ];

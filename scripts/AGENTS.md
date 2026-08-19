@@ -49,12 +49,44 @@ Manifest resolution, highest precedence first:
 2. `MDVIEW_CORPUS_MANIFEST` environment variable
 3. config key `corpusManifest` (`src/config.ts`, XDG config path)
 4. the bundled default at `corpus/default-manifest.json` — **public-safe, relative
-   roots only, covers this repo's own docs and `tests/fixtures/`**
+   root, an explicit wildcard-free path list (WP-1, `plans/gate-corpus-reframe.md`):
+   the 10 `tests/fixtures/*.md` fixtures plus 4 clean `tests/fixtures/witnesses/`
+   defect witnesses — 14 files, fixed**
 
 The sweep always prints which manifest it resolved and why, before any corpus output.
 **When the resolved manifest is the bundled default, it prints an unmissable notice on
 its own line** — a green run against the bundled default proves almost nothing (it's
-~5 files); do not mistake it for a validation run.
+14 files, the gate corpus, not the validation corpus); do not mistake it for a
+validation run.
+
+**This manifest used to be a glob over live documents** — `README.md`, `AGENTS.md`,
+`plans/*.md`, `tests/fixtures/*.md` — and that meant its own bytes moved every time any
+of those files was edited, ratcheting the colour axis with no renderer change behind
+most of the moves. WP-1 of `plans/gate-corpus-reframe.md` replaced it with the explicit
+list above, enforced by a committed eligibility assertion and exact-set pin
+(`tests/gate-corpus.test.ts`): every entry is a direct `tests/fixtures/*.md` path, or a
+fixture path named by a `witness-index.json` record whose `test_file` exists in the
+repo. A third test in the same file pins the resolver contract this relies on:
+a wildcard-free manifest entry resolves to exact-path membership, never a prefix or
+substring match (`matchSegment`, `scripts/corpus.ts:347`). See "The seeds, and what
+defines them" below for the colour-axis history this fixed.
+
+**Witness class accounting (WP-1).** Candidates are the 6 unique fixture files named by
+`tests/fixtures/witnesses/witness-index.json`'s 7 records, measured at the 5 default
+widths × both glyph tiers (identical results in both tiers):
+
+| Witness fixture | Result | Joined? | Pinned by |
+|---|---|---|---|
+| `defect-0-crlf-frontmatter.md` | overflow=0 errors=0 | yes | — |
+| `defect-1-2-unparseable-frontmatter.md` | overflow=0 errors=0 | yes | — |
+| `defect-2-success-path-overwide.md` | overflow at 80/100/116/160 | **no** | `tests/witnesses.test.ts` "witness: defect 2 -- a successfully parsed, over-width block is still caught"; `tests/frontmatter.test.ts` describe("defect 2") — the width gate catching this block *is* the pinned behaviour |
+| `defect-3-nested-mapping.md` | overflow=0 errors=0 | yes | — |
+| `defect-cjk-excerpt.md` | overflow at 80/100/116 | **no** | `tests/witnesses.test.ts` "witness: synthetic CJK excerpt -- un-exempt by design"; `tests/frontmatter.test.ts` describe("defect 1"), "a CJK excerpt can exceed the target" — deliberately left un-exempt, so overflowing is the pinned behaviour |
+| `defect-wp14-list-item-inline-markup.md` | overflow=0 errors=0 | yes | — |
+
+4 join, 2 stay out — both exclusions are witnesses *of* the width gate catching
+something on purpose, not gaps in it. 10 fixtures + 4 witnesses = the 14-file manifest
+above, matching the plan's projection exactly.
 
 ```bash
 bun run sweep                                   # unicode tier, resolved manifest
@@ -257,180 +289,112 @@ believe any number below.
 line carries all three plus `charDiff` (`charDiffOnly + both`) and `sgrAny`
 (`sgrOnly + both`). **`--max-char-diff` reads `charDiff` and `--max-sgr` reads `sgrAny`.**
 The disjoint `sgrOnly` bucket is *not* an unwanted-SGR counter: it cannot see unwanted SGR
-in a combo that also differs in characters. On the bundled corpus it says 10 where the
-honest total is 20 — it misses exactly half — which is the same shape the plan measured on
-a larger set (64 disjoint against 125). A reader who takes `sgrOnly` for "the unwanted SGR
-count" is reading the wrong number, which is why both are on the same line.
+in a combo that also differs in characters. On the bundled corpus's current 14-file
+population every `sgrOnly` combo happens to have `both=0`, so `sgrOnly` and `sgrAny`
+currently agree (20 = 20) — that is a fact about which files are in the population, not a
+guarantee of the metric. A larger population the plan measured showed the split for real:
+64 disjoint against a `sgrAny` of 125. A reader who takes `sgrOnly` for "the unwanted SGR
+count" is reading the wrong number in general, which is why both are on the same line.
 
-**The seeds, and what defines them.** Measured by this instrument over the bundled manifest
-`corpus/default-manifest.json`, corpus `repo` — **23 files × the 5 default widths = 115
-combos** — at both glyph tiers, which agree exactly:
+**The seeds, and what defines them.** Measured by this instrument over the fixed gate
+corpus `corpus/default-manifest.json` defines (WP-1, `plans/gate-corpus-reframe.md`) —
+**14 files × the 5 default widths = 70 combos** — at both glyph tiers, which agree
+exactly:
 
 | | combos | identical | charDiffOnly | sgrOnly | both | **charDiff** | **sgrAny** | errors |
 |---|---|---|---|---|---|---|---|---|
-| unicode | 115 | 35 | 55 | 14 | 11 | **66** | **25** | 0 |
-| ascii | 115 | 35 | 55 | 14 | 11 | **66** | **25** | 0 |
+| unicode | 70 | 19 | 31 | 20 | 0 | **31** | **20** | 0 |
+| ascii | 70 | 19 | 31 | 20 | 0 | **31** | **20** | 0 |
 
-`scripts/verify.ts` runs the unicode pass with `--max-char-diff 66 --max-sgr 25`. **Both
+`scripts/verify.ts` runs the unicode pass with `--max-char-diff 31 --max-sgr 20`. **Both
 are ratchets, not targets** — the corpus is what it is today, and what must not happen is
 either number going up.
 
-**Seeded at `4db427e` as 62/20; re-seeded to 65/20 by WP-2 of
-`plans/own-the-token-walk.md`, for a population change and not a renderer change.** That
-package owns the token walk, so it is exactly the change this ratchet exists to catch, and
-the re-seed is recorded with its evidence rather than asserted:
+**Per-file composition (one-file-manifest isolation, WP-1).** `charDiff=31` is
+`blockquote-list.md` (5) + `coalesced-colon-guard-continuation.md` (1) + `fenced-list.md`
+(5) + `loose-list.md` (5) + `nested-list.md` (5) + `tight-list.md` (5) +
+`defect-wp14-list-item-inline-markup.md` (5) — the same three known colour-only defects
+named below, now firing on a smaller, fixed population. `sgrAny=20` is `simple.md`'s one
+wiki-link (`styleWikiLink`, 5 combos) plus the three frontmatter-bearing witnesses —
+`defect-0-crlf-frontmatter.md`, `defect-1-2-unparseable-frontmatter.md`,
+`defect-3-nested-mapping.md` — each contributing 5 via `src/frontmatter.ts`'s
+`DIM_START`/`DIM_END` around metadata keys, which fires in the colourless render
+regardless of the colour decision (this is measured directly here, not gated on
+`supports-color` or `@colors/colors` the way the table-border styling below is). The
+other 7 of 14 files are `identical` at every width and every combo.
 
-- The package **rewrote root `AGENTS.md`**, which the bundled manifest globs alongside
-  `README.md`, `plans/*.md` and `tests/fixtures/*.md`. That file went from differing at
-  **2** of its 5 widths to differing at **all 5**; nothing else in the population moved.
-- Isolated directly: a one-file manifest holding the **base** `AGENTS.md`, rendered by the
-  **new** renderer, reports `charDiff=2 sgrAny=0`; the same manifest holding the new
-  `AGENTS.md` reports `charDiff=5 sgrAny=0`. Same renderer, same widths, +3.
-- `scripts/render-diff.ts --rev-a <base> --rev-b <worktree> --all --expect a` over **440
-  combos** reports `diffed=0 classC=0 overflowRegressions=0 detectorRegressions=0 errors=0`,
-  in the colourless mode **and** under `FORCE_COLOR=3`, on the population containing the new
-  text.
-- `sgrAny` did not move, which is the corroborating detail: the 20 are `styleWikiLink`'s
-  hard-coded escapes, and the new prose added no wiki-link.
+**History — the population used to drift, and WP-1 of `plans/gate-corpus-reframe.md`
+replaced it because of that.** Before this WP, the corpus was a **glob over live
+documents** — `README.md`, `AGENTS.md`, `plans/*.md`, `tests/fixtures/*.md` — so editing
+any of those files, including a one-line Status-line edit or a brand-new plan, moved the
+population and therefore the ratchets, with no renderer change in the commit. Five
+re-seeds chased that drift, only one of them behind an actual source change: **62 → 65**
+(WP-2, `plans/own-the-token-walk.md`, which rewrote root `AGENTS.md` as a side effect of
+owning the token walk) **→ 66** (`plans/styled-runs-and-colour-policy.md` was written,
+adding a globbed file whose own text also demonstrated one of the three colour-only
+defects below) **→ 70** (that plan's rev 2 replaced rev 1's prose — a same-file edit with
+zero source changes) **→ 73 → 75** (further revisions, measured but never landed before
+this WP; see `plans/gate-corpus-reframe.md`'s Context for the full instability record).
+The withdrawn `plans/styled-runs-and-colour-policy.md` spent a whole sub-package building
+per-file ratchet *attribution* to manage that instability instead of removing its cause.
+User direction (2026-08-18) was a fixed, explicit, wildcard-free corpus instead of
+attribution machinery, and that is what `corpus/default-manifest.json` now is.
 
-**Re-seeded again to 66/25 when `plans/styled-runs-and-colour-policy.md` was written**, a
-commit that changed no source at all. Population growth, 22 → 23 files, 110 → 115 combos;
-`charDiff` and `identical` both held, and all five new combos landed in `sgrOnly`. The
-cause is the same one the original 20 have, and it is worth naming precisely because the
-shorthand for this bucket is misleading: **`sgrOnly` does not mean "the two modes' escape
-streams differ."** It means the *colourless* render still contains SGR — `differs` is
-false and `offDigest.hasSgr` is true (`classifyColourAxis`, `scripts/corpus.ts:1069-1075`).
-It is a **leak counter**, and a file full of `**bold**` contributes nothing to it, because
-the colourless child emits no bold at all. Isolated with the one-file manifest procedure
-below: the plan file as written reports `charDiff=0 sgrAny=5`; the same file with its
-eight `[[…]]` occurrences textually removed reports `charDiff=0 sgrAny=0 identical=5`.
-Same renderer, same widths, −5. `styleWikiLink` again.
-
-**`charDiff` moved too, 65 → 66, and the extra one is a real defect firing on the new plan
-file's own text.** Population again, not renderer — but this time the new population member
-*demonstrates* a defect the plan exists to remove, which is worth more than a clean number,
-so it is recorded here as a witness rather than worded around. Isolated to
-`(plans/styled-runs-and-colour-policy.md, width 100)`; the file's other four widths are
-character-identical, and the one-file manifest reports `charDiff=1 (charDiffOnly=0 both=1)
-sgrAny=5`. Rendered under `FORCE_COLOR=3` and under `FORCE_COLOR=0`, then SGR-stripped, one
-bullet in that file's Summary differs two ways:
-
-```text
-off:  …misleading and the shorthand for it       on:  …misleading and the shorthand for it is
-      is wrong in at least one committed…             wrong in at least one committed…
-
-off:  "       **bold** contributes nothing…"     on:  "    **bold** contributes nothing…"
-```
-
-The wrap point moves — the coloured render packs one more word onto the line — and the
-continuation indent differs by three columns. Neither run overflows: `--check --width 100`
-passes in both modes, and the longest stripped line is 104 in both (inside an exempt code
-range). Candidate sites are the three `plans/styled-runs-and-colour-policy.md` enumerates:
-`src/wrap.ts:44-62`, where an escape-only part is accumulated into the current word instead
-of flushing it, so the entry list the greedy fill runs over is not the same list; and
-`src/lists.ts:147-150` (`fixNestedLists`' `\S`, which an SGR reset's trailing `m` satisfies)
-or `:425` for the indent. **Deliberately not attributed to one of them here** — that is the
-plan's WP-4 job, and this is its witness.
-
-**Re-seeded again to 70/25 when rev 2 of that plan replaced rev 1's prose — and that rise
-falsified the sentence this section carried one commit earlier.** The claim was: *"this is
-the last legitimate rise in either number, because no package in
-`plans/styled-runs-and-colour-policy.md` adds a file to the globbed population."* The premise
-is true and the conclusion does not follow. **Adding a file is not the only way the
-population changes; editing a globbed file's content does it too.** Rev 2 did exactly that:
-zero source changes in the commit, `charDiff` 66 → 70.
-
-**The globs are non-recursive, and knowing precisely which documents are exposed matters
-more than the general warning.** `README.md`, `AGENTS.md`, `plans/*.md`,
-`tests/fixtures/*.md` (`corpus/default-manifest.json:9`) resolve to **11 + 10 + 2 = 23**,
-which is exactly the `files=23` the sweep prints — so `src/AGENTS.md`, `scripts/AGENTS.md`
-and `tests/AGENTS.md` are **not** corpus members and editing them is free. The exposed set is
-therefore small and enumerable:
-
-- **`plans/*.md`** — every revision of a plan, **including a one-line Status-line edit**, and
-  every new plan file. This is the live one: it has fired twice in three commits.
-- **root `AGENTS.md`** — it fired once already (62 → 65) and the colour-policy package edits
-  it again.
-- **`tests/fixtures/*.md`** — a fixture edit moves the corpus even when the rendered output
-  is meant to stay byte-identical.
-- **`README.md`** — exposed, rarely touched.
-
-Isolated with the one-file manifest procedure below: the plan file alone reports
-`charDiff=5 (charDiffOnly=0 both=5) sgrAny=5` at rev 2, where at rev 1 it reported
-`charDiff=1 (charDiffOnly=0 both=1) sgrAny=5`. **The same defect now fires at all five widths
-instead of one**; the other 65 combos are unchanged, and `sgrAny` held at 25 because rev 2's
-prose carries wiki-links too. Rev 2's text shows two symptoms rather than rev 1's one:
-
-```text
-width 80,  ~line 490:  off ends "strips [ ]"   /  on ends "strips [ ] "
-width 80,  ~line 841:  a whitespace-only line present under colour, absent without it
-width 100, ~line 208:  the coloured render packs one more word ("rev") onto the line, and
-                       the continuation indent differs by three columns
-```
-
-The whitespace-only line has the shape `src/lists.ts:425`'s `.filter((line) => line !== "")`
-would produce — a line carrying only escapes is not `""` — and the moving wrap point the
-shape `src/wrap.ts:44-62`'s escape-only word entry would produce. **Neither is attributed
-here**, for the same reason the rev-1 witness was not: inferring a site from a symptom is how
-a defect gets "fixed" by coincidence.
-
-**The rule that replaces the falsified one**, and it is procedural rather than prohibitive
-because the prohibitive form is what failed. WP-1 of that plan first makes the colour axis
-print a **per-file, per-width breakdown**, so a move is attributable by one command instead of
-by a hand-built manifest. Then: attribute every move — **up or down** — per file before
-re-seeding anything. A move attributable entirely to documents the commit edited is a
-population change: re-seed in the same commit, with the evidence, here. A move that survives
-that subtraction is a renderer change and is a finding, not a re-seed. **A downward move gets
-the same treatment**, because a silently deleted style is what one looks like.
+**The attribution rule, revised for a fixed population (WP-1).** A fixed population does
+not freeze member *contents* — `tests/fixtures/*.md` and the four clean witnesses can
+still change — so a move is still attributed, but by **commit shape** rather than by
+isolating one document out of a glob: **member-only commit** (a population-content
+change — editing a manifest member's bytes, or changing which witnesses join) is
+re-seeded in the same commit, with the diff as evidence; **no-member-touched commit**
+(every manifest member's bytes are unchanged) means any move — **including a downward
+one** — is a renderer finding, not a re-seed; a **mixed member+renderer commit** gets no
+diff-only attribution and no re-seed at all — **commit splitting is mandatory**, so each
+side lands as one of the two decidable shapes. The one-file-manifest isolation the
+history above used is still the right *instrument* for a member-only re-seed's evidence;
+what changed is that there is no longer a glob to isolate a document out of, since every
+manifest member is already named explicitly.
 
 **What this axis structurally cannot see, recorded so `sgrAny=0` is not over-read.** The
-colourless child sets `FORCE_COLOR=0` (`colourChildEnv`, `:980-991`), which `supports-color`
-*and* `@colors/colors` both honour — so producers gated on either of them never leak into
-this measurement, whatever their rule is in the real world. In particular
-`src/table.ts`'s border and head styling reads `@colors/colors`' answer, which does **not**
-consult `isTTY`: piping `mdview` into a file with no `FORCE_COLOR` set emits `\x1b[90m`
-around every border and `\x1b[1m` around every head cell, and this axis reports that
-population as `identical`. The same is true of `src/frontmatter.ts`'s unconditional
-`\x1b[2m` on metadata keys, whenever a globbed file has frontmatter. `sgrAny` counts
-escapes that survive `FORCE_COLOR=0`; it is not a complete leak audit, and
-`plans/styled-runs-and-colour-policy.md` requires separate witnesses for those two.
+colourless child sets `FORCE_COLOR=0` (`colourChildEnv`, `:980-991`), which
+`supports-color` *and* `@colors/colors` both honour — so producers gated on either of
+them never leak into this measurement, whatever their rule is in the real world. In
+particular `src/table.ts`'s border and head styling reads `@colors/colors`' answer,
+which does **not** consult `isTTY`: piping `mdview` into a file with no `FORCE_COLOR` set
+emits `\x1b[90m` around every border and `\x1b[1m` around every head cell, and this axis
+reports that as `identical` since it is gated on a decision that itself honours
+`FORCE_COLOR=0`. `src/frontmatter.ts`'s `DIM_START`/`DIM_END` is **not** gated on either
+package — see the per-file composition above, where it is exactly what makes the three
+frontmatter witnesses land in `sgrOnly` rather than `identical`. `sgrAny` counts escapes
+that survive `FORCE_COLOR=0`; it is not a complete leak audit — see `plans/colour-policy.md`.
 
-**The lesson to carry, not just the number.** The step comment in `scripts/verify.ts` said
-"adding a plan file changes the population"; the population is wider than that, and **any
-edit to a globbed document can move `charDiff`**. When it moves, the question is never "is
-the new number acceptable" but "is it the population or the renderer", and the one-file
-isolation above is the cheap way to answer it. Re-seeding without that answer is how a real
-regression gets ratified.
-
-**The population is the manifest corpus, and nothing else.** There is no second
+**The population is the fixed gate corpus, and nothing else.** There is no second
 file-selection mechanism for the axis: the parent hands each child its own command line
-with `--colour-mode` removed, so both children resolve the same manifest, corpora,
-sampling and widths through the same parser. That also means the seeds move with the
-manifest — it globs `plans/*.md`, so **adding a plan file changes the population and can
-move both numbers**. A WP that adds one and trips a ratchet re-measures with the command
-above and re-seeds `scripts/verify.ts` in the same commit, quoting the commit here, exactly
-as this repo already re-quotes the sweep's own file count rather than adjusting it.
+with `--colour-mode` removed, so both children resolve the same manifest, corpora and
+widths through the same parser. `corpus/default-manifest.json`'s `globs` key is now an
+explicit, wildcard-free path list (WP-1, `plans/gate-corpus-reframe.md`) — no
+`plans/*.md`, no `README.md`, no root `AGENTS.md` — so nothing outside a deliberate edit
+to `corpus/default-manifest.json` itself, or to one of the fourteen files it names, can
+move these seeds again. A WP that does either and trips a ratchet re-measures with the
+command above and re-seeds `scripts/verify.ts` in the same commit, per the attribution
+rule above.
 
 **The width axis is asserted, not assumed.** `renderDocumentDetailed(source, targetWidth,
 …)` takes its width as a **positional number** (`src/render.ts:776-782`); passing an
 options object renders every width identically and produces counts about nothing. That
 mistake has invalidated this exact quantity **four times across three authors**, so
-`tests/colour-axis.test.ts` pins it directly — the same file must digest differently at 40
-and at 100 — and the per-width split is the corroborating evidence: **14 / 13 / 14 / 12 /
-12** character differences at 80 / 100 / 116 / 160 / 346, which sums to the 65 above and is
-not a multiple of anything. (It was **14 / 13 / 13 / 11 / 11**, summing to 62, before the
-re-seed recorded above; the three that moved are all `AGENTS.md`.)
+`tests/colour-axis.test.ts` pins it directly — the same file must digest differently at
+40 and at 100 — independent of which population the manifest names.
 
-**What the numbers are made of, none of it repaired here.** The `sgrAny=20` are
-`styleWikiLink` (`src/render.ts:62-65`), which hardcodes `\x1b[36m\x1b[4m` and consults
-no colour decision at all — it is the one producer that fires in a colourless render. The
-`charDiff=62` are the three known colour-only defects the plan records as deliberately out
-of scope (`src/lists.ts`' `fixNestedLists` regex whose `\S` matches an SGR reset's `m`;
-`src/lists.ts`' raw-byte empty-line filter; `src/wrap.ts`' escape-only run becoming a
-zero-width word). A worked witness: `tests/fixtures/tight-list.md` at 80 columns wraps a
-`<br />` hard return one way colourless and another under colour, and the two renders even
-differ in *line count*. **Measuring them honestly is this instrument's first job; fixing
-them is the successor plan's.**
+**What the numbers are made of, none of it repaired here.** `charDiff=31`'s mechanisms
+are unchanged from the history above, only their population is smaller: `src/lists.ts`'
+`fixNestedLists` regex whose `\S` matches an SGR reset's `m`; `src/lists.ts`' raw-byte
+empty-line filter; `src/wrap.ts`' escape-only run becoming a zero-width word. A worked
+witness: `tests/fixtures/tight-list.md` at 80 columns wraps a `<br />` hard return one
+way colourless and another under colour, and the two renders even differ in *line
+count*. `sgrAny=20`'s two mechanisms are `src/render.ts:62-65` (`styleWikiLink`,
+hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `src/frontmatter.ts`'s
+`DIM_START`/`DIM_END`, both unconditional. **Measuring them honestly is this
+instrument's first job; fixing them is `plans/colour-policy.md`'s (rev 3, WP-3).**
 
 **OSC-8 is outside what this can see.** `stripAnsi` (`src/list-lines.ts`) removes SGR only,
 and `src/inline.ts` emits hyperlinks independently of the colour decision, so no ratchet
