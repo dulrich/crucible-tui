@@ -135,6 +135,81 @@ describe("loadConfig (WP-4: highlightAs alongside WP-1's corpusManifest)", () =>
   });
 });
 
+/**
+ * The `color` key, added by WP-1 of `plans/colour-policy.md`.
+ *
+ * It is the fifth slot in the colour precedence table (`src/colour.ts`) and it obeys this
+ * module's existing read-leniently contract rather than a new one of its own: a value it
+ * cannot use costs that key alone, names the file, and never stops the document rendering.
+ */
+describe("loadConfig — the color key", () => {
+  const write = async (dir: string, value: unknown): Promise<string> => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({ corpusManifest: "/m.json", color: value }));
+    return path;
+  };
+
+  test("the three directives load as themselves", async () => {
+    await withTempDir(async (dir) => {
+      for (const value of ["auto", "always", "never"] as const) {
+        const path = await write(dir, value);
+        expect((await loadConfig(path)).color).toBe(value);
+      }
+    });
+  });
+
+  test("case and whitespace are forgiven, matching how highlightAs treats a hand-edited file", async () => {
+    await withTempDir(async (dir) => {
+      expect((await loadConfig(await write(dir, " ALWAYS "))).color).toBe("always");
+    });
+  });
+
+  test("an unrecognised value is dropped with one notice, and other keys survive", async () => {
+    await withTempDir(async (dir) => {
+      const path = await write(dir, "sometimes");
+      const capture = captureConsoleError();
+      try {
+        expect(await loadConfig(path)).toEqual({ corpusManifest: "/m.json" });
+        expect(capture.messages).toHaveLength(1);
+        expect(capture.messages[0]).toContain(path);
+        expect(capture.messages[0]).toContain("color");
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
+  test("a boolean is not a directive — the shape mistake the emoji key invites", async () => {
+    // `emoji` next door *is* a boolean, so `"color": true` is the natural wrong guess. It is
+    // rejected rather than read as "always", because guessing at a shape the user did not
+    // write is how a config silently means something other than what it says.
+    await withTempDir(async (dir) => {
+      const path = await write(dir, true);
+      const capture = captureConsoleError();
+      try {
+        expect((await loadConfig(path)).color).toBeUndefined();
+        expect(capture.messages).toHaveLength(1);
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
+  test("an absent key is absent, not 'auto', and says nothing on stderr", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "config.json");
+      await writeFile(path, JSON.stringify({ corpusManifest: "/m.json" }));
+      const capture = captureConsoleError();
+      try {
+        expect(await loadConfig(path)).toEqual({ corpusManifest: "/m.json" });
+        expect(capture.messages).toEqual([]);
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+});
+
 describe("writeHighlightAlias (WP-4)", () => {
   test("creates a config file that does not exist yet", async () => {
     await withTempDir(async (dir) => {

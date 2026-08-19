@@ -83,28 +83,38 @@ describe("main --licenses", () => {
  * fail here instead of shipping an inaccurate notice file.
  */
 describe("WP-6 — the dependency is gone, and so is what only it kept alive", () => {
-  test("package.json declares supports-color and no longer declares marked-terminal", async () => {
+  test("the detection packages are no longer declared, and neither is marked-terminal", async () => {
     const pkg = (await Bun.file(resolve(import.meta.dir, "../package.json")).json()) as {
       dependencies: Record<string, string>;
     };
     expect(pkg.dependencies["marked-terminal"]).toBeUndefined();
-    // Promoted from transitive to direct in WP-6: `src/inline.ts` imports it directly for
-    // `detectInlineColor`, and `supports-hyperlinks` already required it, so declaring it
-    // adds no package. Same rule `@colors/colors` and `cli-highlight` are declared under.
-    expect(pkg.dependencies["supports-color"]).toBe("7.2.0");
+    // **Both were direct dependencies until WP-1 of `plans/colour-policy.md`**, promoted
+    // there in WP-6 under the "a package this repo's source imports is declared" rule. That
+    // rule did not change; what changed is that nothing here imports either any more —
+    // `src/colour.ts` owns the decisions both were consulted for.
+    expect(pkg.dependencies["supports-color"]).toBeUndefined();
+    expect(pkg.dependencies["supports-hyperlinks"]).toBeUndefined();
     // Still declared, still imported directly, and still wrongly flagged as transitive by
     // dependency-graph tooling — see the dependency record in the root AGENTS.md.
     expect(pkg.dependencies["@colors/colors"]).toBeDefined();
     expect(pkg.dependencies["cli-highlight"]).toBeDefined();
   });
 
-  test("the runtime closure no longer contains marked-terminal or cli-table3", async () => {
+  test("the runtime closure lost supports-hyperlinks — and kept supports-color, on purpose", async () => {
     const notices = await Bun.file(resolve(import.meta.dir, "../THIRD-PARTY-LICENSES.txt")).text();
     expect(notices).not.toContain("marked-terminal@");
     expect(notices).not.toContain("cli-table3@");
+    expect(notices).not.toContain("supports-hyperlinks@");
+    // **Undeclaring a package and removing it from the closure are two different events,
+    // and at WP-1 they happen to two different packages.** `supports-hyperlinks` had no
+    // other requirer, so it left with the declaration. `supports-color` is still reachable
+    // as `cli-highlight → chalk@4 → supports-color`, so it stays in the closure and in this
+    // file until WP-2 removes `cli-highlight`; it never leaves `bun.lock` at all, because
+    // the devDependency `eslint` also pulls `chalk@4`. Asserting its absence here would be
+    // asserting WP-2's boundary a package early, and would fail on a correct tree.
+    expect(notices).toContain("supports-color@7.2.0");
     // Non-vacuity: the file is the generated closure, not an empty or truncated read.
     expect(notices).toContain("marked@14.1.4");
-    expect(notices).toContain("supports-color@7.2.0");
   });
 
   test("nothing under src/ imports the removed library", async () => {

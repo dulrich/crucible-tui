@@ -16,7 +16,7 @@ import {
 } from "../scripts/corpus";
 import { BUNDLED_DEFAULT_MANIFEST, resolveCorpusManifestPath, type MdviewConfig } from "../src/config";
 import { findFirstOverflow } from "../src/overflow";
-import { renderWithForcedColor } from "./helpers/color";
+import { forcedColorChildEnv, renderWithForcedColor } from "./helpers/color";
 import { renderDocumentDetailed } from "../src/render";
 import { UNICODE_GLYPHS } from "../src/glyphs";
 
@@ -269,6 +269,43 @@ describe("renderWithForcedColor", () => {
       console.warn = originalWarn;
     }
     expect(captured).toHaveLength(0);
+  });
+
+  /**
+   * The helper's own non-vacuity, asserted on **observed output** rather than on the
+   * environment it meant to set (WP-1 of `plans/colour-policy.md`).
+   *
+   * Every assertion built on `renderWithForcedColor` — the two above, and three in
+   * `tests/lists.test.ts` — is about what a *coloured* render does. If the child ever came
+   * back colourless the whole set would keep passing, silently, because a colourless render
+   * simply never reaches the branches those tests are about. That is now a live risk in a
+   * way it was not before: `MDVIEW_COLOR` and `NO_COLOR` both outrank the `FORCE_COLOR` the
+   * helper sets, so an ambient one on a developer's machine or a CI runner would flip the
+   * child. `forcedColorChildEnv` deletes both; this is the pin that the deletion works and
+   * that the two modes really are opposite.
+   */
+  test("the forced-colour child and the in-process render resolve opposite modes", async () => {
+    const saved = { mdview: process.env.MDVIEW_COLOR, no: process.env.NO_COLOR };
+    try {
+      // Both set *against* the mode the helper wants, so an inherited value would be
+      // visible as a failure rather than as a quietly weaker test.
+      process.env.MDVIEW_COLOR = "never";
+      process.env.NO_COLOR = "1";
+      const { text: forced } = await renderWithForcedColor("**loud** words\n", 60);
+      expect(forced).toContain("\u001b[1m");
+      expect(renderDocumentDetailed("**loud** words\n", 60).text).not.toContain("\u001b");
+      // And the sanitizer is what makes it so, checked directly rather than only through
+      // the child's behaviour.
+      const env = forcedColorChildEnv({ MDVIEW_COLOR: "never", NO_COLOR: "1", FORCE_COLOR: "0" });
+      expect("MDVIEW_COLOR" in env).toBe(false);
+      expect("NO_COLOR" in env).toBe(false);
+      expect(env.FORCE_COLOR).toBe("3");
+    } finally {
+      if (saved.mdview === undefined) delete process.env.MDVIEW_COLOR;
+      else process.env.MDVIEW_COLOR = saved.mdview;
+      if (saved.no === undefined) delete process.env.NO_COLOR;
+      else process.env.NO_COLOR = saved.no;
+    }
   });
 });
 

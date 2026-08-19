@@ -1,0 +1,285 @@
+/**
+ * The one colour/hyperlink decision, made once, from inputs handed in explicitly.
+ *
+ * WP-1 of `plans/colour-policy.md`. Before this module there were five independent
+ * authorities: `supports-color` (argv-sniffing at module load, no `NO_COLOR`),
+ * `supports-hyperlinks` (its own load-time answer, plus a `FORCE_HYPERLINK` variable and
+ * two argv flag families of its own), `@colors/colors`' environment-only `enabled` inside
+ * `src/table.ts`, `cli-highlight`'s bundled `chalk` level, and `src/frontmatter.ts`
+ * dimming unconditionally. They disagreed with each other and with the user's terminal.
+ *
+ * This module is the successor to the first two. It answers two questions —
+ * *does this render emit SGR at all* and *does it emit OSC-8 hyperlinks* — and it answers
+ * them from values passed in, never from a module-load read of the environment, argv or a
+ * stream. `resolveColourPolicy` is a pure function of its input; the impurity lives at the
+ * call sites that build that input, which is the same "config stays impure, render stays
+ * pure and takes explicit values" split `glyphs` and `measure` already use
+ * (`src/layout-context.ts`).
+ *
+ * **Nothing here reads `process`.** `platform` is an input for the same reason `env` and
+ * `isTTY` are: a hidden `process.platform` read makes the Windows branches of hyperlink
+ * detection untestable on this machine, and untestable branches are the ones that rot.
+ *
+ * What this module deliberately does **not** do: decide *which bytes* a style is, or emit
+ * any. That is WP-2's `src/style.ts`. This is on/off and nothing else.
+ */
+
+/** The three values every colour directive in this tool can take. */
+export type ColourDirective = "auto" | "always" | "never";
+
+/**
+ * The resolved decision for one render.
+ *
+ * Two independent axes, and their independence is the ratified spec (Decision 4):
+ * `NO_COLOR` does not turn hyperlinks off, and a forced colour on a pipe does not turn
+ * them on — a pipe has no hyperlink support to force.
+ */
+export interface ColourPolicy {
+  /** Whether this render emits SGR at all. */
+  readonly color: boolean;
+  /** Whether this render emits OSC-8 hyperlinks. */
+  readonly hyperlinks: boolean;
+}
+
+/** `process.env`-shaped, without being `process.env`. */
+export type EnvironmentLike = Readonly<Record<string, string | undefined>>;
+
+/** Everything the policy is resolved from — all of it passed in. */
+export interface ColourPolicyInput {
+  /** mdview's own `--color` flag, already parsed. **The only argv authority.** */
+  readonly flag?: ColourDirective;
+  /** The config file's `color` key (`src/config.ts`). */
+  readonly config?: ColourDirective;
+  /** The environment to read the four variables from. */
+  readonly env?: EnvironmentLike;
+  /** Whether the destination stream is a terminal. `auto`'s floor. */
+  readonly isTTY?: boolean;
+  /** `process.platform`'s value, passed rather than read. */
+  readonly platform?: string;
+  /**
+   * Where a note about an ignored malformed value goes. Defaults to swallowing it:
+   * the notes belong on the user-facing path (`src/cli.ts` passes a writer), not on
+   * every library call that happens to render a document.
+   */
+  readonly warn?: (message: string) => void;
+}
+
+/** `resolveHyperlinks`' inputs — the plan's signature, exactly. */
+export interface HyperlinkInput {
+  readonly env?: EnvironmentLike;
+  readonly isTTY?: boolean;
+  readonly platform?: string;
+  readonly warn?: (message: string) => void;
+}
+
+const NOOP = (): void => {};
+
+/**
+ * `auto`/`always`/`never`, or `undefined` for anything else.
+ *
+ * Trimmed and lowercased before matching, matching `src/config.ts`'s existing leniency
+ * about how a hand-edited value was cased. An empty string is *not* a directive — it is
+ * the malformed case, and the caller notes it.
+ */
+export function parseColourDirective(raw: string | undefined): ColourDirective | undefined {
+  if (raw === undefined) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "auto" || normalized === "always" || normalized === "never") return normalized;
+  return undefined;
+}
+
+/**
+ * `FORCE_COLOR`, as mdview policy rather than as a byte-for-byte copy of anything.
+ *
+ * The three edges are pinned in `tests/colour.test.ts` and were ratified by the user on
+ * 2026-08-18:
+ *
+ * - `"0"` and `"false"` are an explicit **no**;
+ * - `""`, `"true"` and `"1"`/`"2"`/`"3"` are an explicit **yes** — presence with no value
+ *   is the signal, which is `supports-color@7.2.0`'s own reading;
+ * - **anything else is not a directive at all** and falls through to the next slot.
+ *
+ * That last edge is where a "byte-for-byte compatible" claim would have been false.
+ * `supports-color@7.2.0` runs `FORCE_COLOR=garbage` through `parseInt`, gets `NaN`, and
+ * carries on into its `TERM`/`CI`/`COLORTERM` table — so *its* answer for a malformed
+ * value is whatever the rest of the environment says. Reproducing that would mean
+ * reproducing the whole detection table this plan exists to delete. Falling through to
+ * the next slot is the same shape of answer (the value decided nothing) without the
+ * table, and it is the behaviour every other malformed value in this tool already gets.
+ *
+ * Values are compared untrimmed: `FORCE_COLOR=" 1"` is malformed, not `1`. A variable
+ * that carries whitespace was not set on purpose.
+ */
+export function parseForceColor(raw: string | undefined): ColourDirective | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "0" || raw === "false") return "never";
+  if (raw === "" || raw === "true" || raw === "1" || raw === "2" || raw === "3") return "always";
+  return undefined;
+}
+
+/**
+ * Read one environment variable as a directive, noting a malformed value once.
+ *
+ * The note follows `src/config.ts:127`'s convention — name the source, name what was
+ * expected, keep going. A malformed directive is never fatal: colour is a preference, and
+ * refusing to render a document because a variable was misspelt would be the wrong trade.
+ */
+function directiveFromEnv(
+  env: EnvironmentLike,
+  name: string,
+  warn: (message: string) => void,
+): ColourDirective | undefined {
+  const raw = env[name];
+  if (raw === undefined) return undefined;
+  const parsed = parseColourDirective(raw);
+  if (parsed === undefined) {
+    warn(`mdview: ignoring malformed ${name}=${JSON.stringify(raw)}: expected auto, always or never`);
+  }
+  return parsed;
+}
+
+/**
+ * The colour half of the matrix, highest precedence first (Decision 2).
+ *
+ * | Slot | Decides on |
+ * |---|---|
+ * | `--color` | `always`/`never`; `auto` falls through |
+ * | `MDVIEW_COLOR` | `always`/`never`; `auto` falls through; malformed noted and ignored |
+ * | `NO_COLOR` | **presence**, even empty (no-color.org) |
+ * | `FORCE_COLOR` | well-formed values; malformed values fall through |
+ * | config `color` | `always`/`never`; `auto` falls through |
+ * | `isTTY` | `auto`'s floor |
+ *
+ * `NO_COLOR` sitting *above* `FORCE_COLOR` is deliberate and is the one ordering worth
+ * naming: a user who exported `NO_COLOR` said something about this machine, and a
+ * `FORCE_COLOR` inherited from some parent process did not.
+ */
+export function resolveColor(input: ColourPolicyInput = {}): boolean {
+  const env = input.env ?? {};
+  const warn = input.warn ?? NOOP;
+
+  if (input.flag === "always") return true;
+  if (input.flag === "never") return false;
+
+  const fromEnv = directiveFromEnv(env, "MDVIEW_COLOR", warn);
+  if (fromEnv === "always") return true;
+  if (fromEnv === "never") return false;
+
+  if (env.NO_COLOR !== undefined) return false;
+
+  const forced = parseForceColor(env.FORCE_COLOR);
+  if (forced === "always") return true;
+  if (forced === "never") return false;
+
+  if (input.config === "always") return true;
+  if (input.config === "never") return false;
+
+  return input.isTTY === true;
+}
+
+/**
+ * The compact-version parser from `supports-hyperlinks@3.2.0` (`index.js:10-27`),
+ * transcribed including the form that makes it worth transcribing: a three- or
+ * four-digit `VTE_VERSION` carries no dots, so `4601` means `46.1.0` — major **zero**,
+ * minor 46, patch 1. Getting that wrong turns every GNOME-family terminal's answer into
+ * a comparison against a four-digit major.
+ *
+ * Everything else splits on `.` and runs `parseInt` per part, `NaN` included: an absent
+ * or unparseable version yields `NaN` components, every comparison against them is
+ * false, and the branch answers "no". That is the upstream behaviour and it is the right
+ * one — an unreadable version is not evidence of support.
+ */
+function parseVersion(versionString: string | undefined): { major: number; minor: number; patch: number } {
+  const raw = versionString ?? "";
+  if (/^\d{3,4}$/.test(raw)) {
+    const match = /(\d{1,2})(\d{2})/.exec(raw) ?? [];
+    return { major: 0, minor: parseInt(match[1] ?? "", 10), patch: parseInt(match[2] ?? "", 10) };
+  }
+  const parts = raw.split(".").map((part) => parseInt(part, 10));
+  return { major: parts[0] as number, minor: parts[1] as number, patch: parts[2] as number };
+}
+
+/**
+ * Owned terminal-capability detection for OSC-8, transcribed from
+ * `supports-hyperlinks@3.2.0` (`index.js:9-126`) with the branch list and order of
+ * Decision 4, and with four things **deleted by name**:
+ *
+ * - the pre-TTY `NETLIFY` bypass — it returns *true* before the stream is ever consulted,
+ *   which directly contradicts the ratified non-TTY ceiling below;
+ * - `FORCE_HYPERLINK` — replaced by `MDVIEW_HYPERLINKS`, which is this tool's own name for
+ *   its own setting;
+ * - both argv flag families (`--no-hyperlink`, `--hyperlink=…`) — this tool's own flags are
+ *   its only argv authority, and a library scanning the whole of `process.argv` is exactly
+ *   the class of hidden input WP-1 exists to remove;
+ * - the `supportsColor(stream)` prerequisite — hyperlinks are an independent axis here, so
+ *   `NO_COLOR` and `--color=never` leave them alone.
+ *
+ * The **non-TTY ceiling is absolute** and is checked first: a pipe cannot render a
+ * hyperlink, so nothing — not `MDVIEW_HYPERLINKS=always`, not any terminal signature —
+ * turns them on off a terminal.
+ */
+export function resolveHyperlinks(input: HyperlinkInput = {}): boolean {
+  const env = input.env ?? {};
+  const warn = input.warn ?? NOOP;
+
+  // The ceiling. Everything below it only ever runs on a terminal.
+  if (input.isTTY !== true) return false;
+
+  const directive = directiveFromEnv(env, "MDVIEW_HYPERLINKS", warn);
+  if (directive === "always") return true;
+  if (directive === "never") return false;
+
+  // Windows Terminal, which supports OSC-8 on a platform whose default console does not.
+  if (env.WT_SESSION !== undefined) return true;
+  if (input.platform === "win32") return false;
+  if (env.CI) return false;
+  if (env.TEAMCITY_VERSION) return false;
+
+  const termProgram = env.TERM_PROGRAM;
+  if (termProgram) {
+    const version = parseVersion(env.TERM_PROGRAM_VERSION);
+    switch (termProgram) {
+      case "iTerm.app":
+        if (version.major === 3) return version.minor >= 1;
+        return version.major > 3;
+      case "WezTerm":
+        return version.major >= 20200620;
+      case "vscode":
+        return version.major > 1 || (version.major === 1 && version.minor >= 72);
+      case "ghostty":
+        return true;
+      // No default: an unrecognised terminal program falls through to the checks below
+      // rather than answering for them. Upstream behaviour, and load-bearing — a VTE
+      // terminal that also sets TERM_PROGRAM would otherwise lose its own branch.
+    }
+  }
+
+  const vteVersion = env.VTE_VERSION;
+  if (vteVersion) {
+    // 0.50.0 announced hyperlink support and segfaulted on it. Upstream's recorded
+    // exclusion, kept: the version that says yes and crashes is worse than the ones that
+    // say no.
+    if (vteVersion === "0.50.0") return false;
+    const version = parseVersion(vteVersion);
+    return version.major > 0 || version.minor >= 50;
+  }
+
+  if (env.TERM === "alacritty") return true;
+
+  return false;
+}
+
+/**
+ * The whole decision for one render.
+ *
+ * Every call site that renders builds one of these; nothing downstream re-derives either
+ * half. `src/cli.ts` builds it from the flag, the config and the real environment;
+ * `src/render.ts` builds a default one for callers that pass none (the sweep, the
+ * differential harness, every test that only cares about layout).
+ */
+export function resolveColourPolicy(input: ColourPolicyInput = {}): ColourPolicy {
+  return {
+    color: resolveColor(input),
+    hyperlinks: resolveHyperlinks(input),
+  };
+}

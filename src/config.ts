@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseColourDirective, type ColourDirective } from "./colour";
 
 /**
  * Generic config plumbing, shared by every mdview entry point that needs
@@ -23,6 +24,11 @@ import { dirname, join } from "node:path";
  * render stays pure and takes explicit values" split `glyphs`/`measure` already
  * use, rather than the module-level-state pattern `setHighlightAliases` uses —
  * see that function's own doc comment for why *its* case needs a global instead.
+ *
+ * WP-1 of `plans/colour-policy.md` adds `color`, on the `emoji` model rather than the
+ * `highlightAs` one: read once in `src/cli.ts`'s view path, handed to `resolveColourPolicy`
+ * as one input among five, never layered and never mutated into a global. Its value is a
+ * directive (`auto`/`always`/`never`) rather than a boolean — see `MdviewConfig.color`.
  */
 export interface MdviewConfig {
   /** Path to a corpus manifest (see `scripts/sweep.ts`'s `CorpusManifest`). */
@@ -39,6 +45,20 @@ export interface MdviewConfig {
    * Unset (the common case) means "follow the tier".
    */
   emoji?: boolean;
+  /**
+   * The user's standing colour preference: `always`, `never`, or `auto` (follow the
+   * destination). WP-1 of `plans/colour-policy.md`.
+   *
+   * **It is a directive, not a boolean, and that asymmetry with `emoji` above is the
+   * point.** `emoji` has two states and an "unset" that means *follow the glyph tier*, so
+   * `boolean | undefined` says everything there is to say. Colour has an explicit third
+   * state a user may want to write down — `"auto"`, i.e. *I know this key exists and I want
+   * the default behaviour* — which is not the same statement as omitting the key, and which
+   * a boolean cannot spell. It sits **below** both `--color` and `MDVIEW_COLOR` in the
+   * precedence table (`src/colour.ts`): a file preference loses to anything said about this
+   * invocation.
+   */
+  color?: ColourDirective;
 }
 
 const CONFIG_DEFAULTS: MdviewConfig = {};
@@ -125,6 +145,17 @@ export async function loadConfig(path = resolveConfigPath()): Promise<MdviewConf
         config.emoji = record.emoji;
       } else {
         console.error(`mdview: ignoring malformed "emoji" at ${path}: expected a boolean`);
+      }
+    }
+    if (record.color !== undefined) {
+      // Same read-leniently policy as every other key here: name the file and the
+      // expectation, drop this entry alone, render the document anyway. A misspelt colour
+      // preference is not a reason to refuse to show someone their file.
+      const color = typeof record.color === "string" ? parseColourDirective(record.color) : undefined;
+      if (color !== undefined) {
+        config.color = color;
+      } else {
+        console.error(`mdview: ignoring malformed "color" at ${path}: expected auto, always or never`);
       }
     }
     return config;

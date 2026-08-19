@@ -46,6 +46,35 @@ import { resolve } from "node:path";
  * use inside a shared test run.
  */
 
+/**
+ * The child environment for a forced-colour render, sanitized then pinned.
+ *
+ * **Inheriting `process.env` and setting only `FORCE_COLOR` stopped being safe at WP-1 of
+ * `plans/colour-policy.md`, and the failure it now prevents is silent.** `FORCE_COLOR` is
+ * the *fourth* slot in the ratified precedence table; `MDVIEW_COLOR` and `NO_COLOR` both
+ * outrank it. A developer or CI runner with either exported would hand every helper below
+ * a child that renders **colourless while claiming to be the forced-colour side** — and the
+ * assertions built on it (parity against the `colorOn` golden, the highlighter's stderr
+ * diagnostic) would pass vacuously rather than fail, because a colourless render simply
+ * never reaches the branches under test.
+ *
+ * Exported so a test can assert directly on what it produces, rather than only through the
+ * behaviour of a subprocess it spawned.
+ */
+export function forcedColorChildEnv(
+  base: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined) env[key] = value;
+  }
+  delete env.MDVIEW_COLOR;
+  delete env.NO_COLOR;
+  // `FORCE_COLOR` needs no delete: the next line overwrites it unconditionally.
+  env.FORCE_COLOR = "3";
+  return env;
+}
+
 export interface ForcedColorRenderResult {
   text: string;
   /** Every message passed to a patched console method during the render. */
@@ -94,7 +123,7 @@ export async function renderWithForcedColor(
   const proc = Bun.spawn(
     ["bun", "-e", CHILD_SCRIPT, "--", String(targetWidth), RENDER_MODULE_PATH],
     {
-      env: { ...process.env, FORCE_COLOR: "3" },
+      env: forcedColorChildEnv(process.env),
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",

@@ -45,7 +45,7 @@ A roff man page ships at `man/crucible-tui.1`; `bun run install:man` symlinks it
 ## Usage
 
 ```bash
-mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--help] [--licenses]
+mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--help] [--licenses]
 mdview view <file.md> [options...]        # spelled-out form of the bare invocation above
 mdview highlight-as <fence> <language>    # map a fence's declared language to a highlighter language
 mdview probe [--refresh]                  # how does this terminal draw ambiguous-width characters?
@@ -62,6 +62,8 @@ straight through to it.
   target width. This is the tool's own self-smoke gate.
 - `--ascii` / `--unicode` — force the glyph tier (below), overriding auto-detection.
   Mutually exclusive.
+- `--color[=auto|always|never]` — when to emit colour (below). Bare `--color` means
+  `--color=always`; repeated, the last one wins; an unrecognized value is an error.
 - `--probe` — run the ambiguous-width diagnostic (below) and exit; the flag spelling of
   `mdview probe`. Takes no file argument.
 - `--help`, `-h` — print usage (top-level, or a subcommand's own) and exit.
@@ -78,15 +80,19 @@ producing an unhighlighted fence later. `dataviewjs` → `javascript` and `datav
 ### Config
 
 JSON at `$XDG_CONFIG_HOME/mdview/config.json` (or `~/.config/mdview/config.json` if
-`XDG_CONFIG_HOME` is unset). Currently one key of interest to normal use:
+`XDG_CONFIG_HOME` is unset). Two keys of interest to normal use:
 
 ```json
 {
   "highlightAs": {
     "dataviewjs": "javascript"
-  }
+  },
+  "color": "auto"
 }
 ```
+
+`color` is `"auto"`, `"always"` or `"never"` — a standing preference that loses to both
+`--color` and `MDVIEW_COLOR` (see "Colour" below).
 
 Reading is lenient — a missing file is normal, and a malformed one degrades to
 defaults with a one-line notice on stderr rather than a stack trace, still rendering
@@ -95,6 +101,31 @@ it cannot parse, since merging into one it can't understand risks silently clobb
 or dropping content it can't see. A write only ever touches the one `highlightAs` entry
 named on the command line; every other key, and every other mapping already recorded,
 is left exactly as it was.
+
+### Colour
+
+**Piped output is colourless by default.** `mdview file.md | less`, `> out.txt` or
+`$(mdview file.md)` gets plain text unless you ask for colour explicitly — so redirected
+output is something you can diff, grep and paste without stripping escape sequences first.
+A terminal gets colour, as it always did.
+
+Resolution order, highest precedence first:
+
+1. `--color=auto|always|never` (bare `--color` = `always`).
+2. `MDVIEW_COLOR=auto|always|never`. An unrecognized value is ignored with one line on
+   stderr, never an error — the same contract as `MDVIEW_GLYPHS`.
+3. `NO_COLOR` — **present at all, even empty, means never** ([no-color.org][no-color]).
+4. `FORCE_COLOR` — `0` and `false` mean never; empty, `true` and `1`–`3` mean always;
+   any other value decides nothing and the next rule applies.
+5. The config file's `color` key.
+6. Whether stdout is a terminal.
+
+[no-color]: https://no-color.org
+
+**OSC-8 hyperlinks are a separate axis.** They are never emitted off a terminal, whatever
+the colour setting says — a pipe cannot render one. On a terminal,
+`MDVIEW_HYPERLINKS=auto|always|never` decides, and `auto` (the default) asks what the
+terminal advertises. `NO_COLOR` does not turn hyperlinks off.
 
 ### Glyph tier
 

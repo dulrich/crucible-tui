@@ -18,7 +18,7 @@ Run/verify contract, Conventions and the dependency record live there.
 | The task-state pre-pass | the 84 lines it still corrupts, why the "indented code" follow-up is retired, and the re-tokenisation that blocks its removal |
 | Colourless gates cannot see colour-only defects | three measurements, one mechanism, and the rule it earns |
 | Glyph tier · Ambiguous width | the tier, the probe, and why `wide` forces ASCII |
-| Command-line surface · Colour | the CLI shape, config asymmetry, and `supports-color` |
+| Command-line surface · Colour | the CLI shape, config asymmetry, and the one owned colour/hyperlink policy |
 | Rendering policy · The `emoji` re-decision | the unqualified rules, and the tier-follows decision |
 
 ### How to read this file
@@ -1137,7 +1137,7 @@ put an author's own bare `*` at the start of a continuation line.
 ### Command-line surface (WP-4)
 
 ```
-mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--probe] [--help]
+mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--probe] [--help]
 mdview view <file.md> [options ...]
 mdview highlight-as <fence> <language>
 mdview probe [--refresh] [--no-cache] [--timeout MS]
@@ -1168,7 +1168,11 @@ add a second one.**
 **Config** is JSON at `$XDG_CONFIG_HOME/mdview/config.json` (falling back to `~/.config/...`).
 `highlightAs` maps a fence info-string to a highlighter language, layered *over* `src/lang.ts`'s
 built-ins (`dataviewjs`→`javascript`, `dataview`→`sql`); a user entry for a key with a built-in
-default wins.
+default wins. `color` is `auto`/`always`/`never` and is **a directive rather than a boolean**,
+unlike the `emoji` key beside it: colour has an explicit third state a user may want to write
+down (*I know this key exists and I want the default*), which is not the same statement as
+omitting the key. It is the fifth slot in the precedence table under "Colour" below, so it
+loses to anything said about this invocation.
 
 **The resolver is a value, built once, and there is no process state behind it.**
 `src/cli.ts`'s `runView` calls `makeFenceLanguageResolver(config.highlightAs)` after
@@ -1213,37 +1217,58 @@ source, because the tool answers to two names and a reader who knows the project
 settled — see "Two names, on purpose" at the top of the root `AGENTS.md`. Do not reconcile the
 two names.
 
-### Colour: `supports-color`'s answer, measured equal to the one it replaced
+### Colour: one owned decision, resolved from inputs handed in
 
-Whether inline styling emits SGR codes at all is `LayoutContext.color`, resolved once per render
-by `detectInlineColor()` (`src/inline.ts`) and carried as a value like everything else.
+Whether inline styling emits SGR codes at all is `LayoutContext.color`; whether the renderer
+emits OSC-8 hyperlinks is `LayoutContext.hyperlinks`. Both are resolved **once per render**, by
+`resolveColourPolicy` (`src/colour.ts`), and threaded as `renderDocumentDetailed`'s last
+parameter — WP-1 of `plans/colour-policy.md`.
 
-**The rule that has always governed this tool's output is `chalk`'s, and `chalk`'s rule is not
-"is stdout a TTY".** It is ~150 lines of stream, flag and environment inspection, and a tool
-that reproduced only the TTY half would answer differently the first time it met `--color`,
-`FORCE_COLOR=false`, `TERM=dumb` or a CI runner — silently, with every local gate still green.
-Until WP-6 this asked the library directly: a throwaway extension was built, its `strong` was
-handed a probe string, and the answer was whether anything came back around it.
+**Nothing in `src/colour.ts` reads `process`.** The environment, the destination's TTY-ness, the
+platform, the parsed `--color` flag and the config file's `color` key are all arguments. That is
+the same rule `glyphs` and `measure` already follow, extended to the last decision that was still
+being made behind the renderer's back, and it is what makes every environment case testable in
+one process — `tests/colour.test.ts` runs the whole matrix, including the Windows branches, with
+no subprocess anywhere.
 
-The owned answer is **`supports-color`, promoted from transitive to direct** — a promotion in
-exactly the sense `@colors/colors` and `cli-highlight` already are, since
-`supports-hyperlinks@3.2.0` already requires `supports-color@^7.0.0`, so declaring it adds
-**zero** packages and zero install size. It is also the same module `chalk` wraps: `chalk`
-vendors a copy of this exact library and its `level` is that copy's answer. **Two builds is not
-one build, so the equality was measured, not assumed**: both spellings were run against a
-**36-cell environment matrix** — bare non-TTY, a real pty, `FORCE_COLOR` at
-`0/1/2/3/true/false/empty`, `NO_COLOR`, `TERM` at `dumb/vt100/linux/screen/xterm-256color`,
-`COLORTERM`, `CI` alone and with `GITHUB_ACTIONS`/`TRAVIS`, `TEAMCITY_VERSION`, `TERM_PROGRAM`,
-and the `--color`/`--no-color`/`--color=256/always/never` argv flags — and **agreed on all 36**.
-One cell is worth naming because this repo used to assert the opposite: under
-`CI=1 GITHUB_ACTIONS=1` with a non-TTY stdout **both answer false**, because the non-TTY early
-return runs before the CI table is consulted.
+The ratified precedence, highest first, is `--color` → `MDVIEW_COLOR` → `NO_COLOR` (presence
+counts, even empty) → `FORCE_COLOR` → config `color` → `isTTY`. Two edges are worth naming here
+because they are policy rather than transcription: **`NO_COLOR` outranks `FORCE_COLOR`** (a user
+who exported the first said something about this machine; a `FORCE_COLOR` inherited from some
+parent process did not), and **a malformed `FORCE_COLOR` decides nothing and falls through** —
+`"0"`/`"false"` are no, `""`/`"true"`/`"1"`-`"3"` are yes, and anything else is not a directive.
+Hyperlinks are an independent axis with an absolute non-TTY ceiling; `NO_COLOR` does not touch
+them.
+
+*History, because the conclusion inverted.* Until WP-6 this asked `marked-terminal` directly: a
+throwaway extension was built, its `strong` was handed a probe string, and the answer was
+whether anything came back around it. WP-6 replaced that with **`supports-color`, promoted from
+transitive to direct**, on the argument that `chalk`'s rule — ~150 lines of stream, flag and
+environment inspection — was the rule that had always governed this tool's output, and that a
+tool reproducing only the TTY half would answer differently the first time it met `--color`,
+`FORCE_COLOR=false`, `TERM=dumb` or a CI runner. The equality was measured rather than assumed:
+both spellings ran against a **36-cell environment matrix** and **agreed on all 36**.
+
+**That measurement still stands and is no longer the argument, because the goal changed.** The
+question WP-6 answered was *what does `chalk` decide here*; the question the ratified policy asks
+is *what should this tool decide*, and the two have different answers. `supports-color@7.2.0`
+scans the whole of `process.argv` for `--color` through `has-flag`, so a flag aimed at the `bun`
+wrapper — or at nothing at all — turned styling on inside the renderer; and it has **no reference
+to `NO_COLOR` at all**, so the one environment variable with an actual cross-tool convention
+behind it was ignored for the tool's entire life. Neither is a bug in that library. Both are
+disqualifying for a policy this tool is supposed to own, which is why the dependency went.
 
 **`chalk` itself is not a dependency of this repo and is not read anywhere.** A copy survives in
 the tree at `4.1.2` only as `cli-highlight`'s and eslint's transitive; the nested `5.6.2` left
-with the library. `src/table.ts` keeps `@colors/colors`' own `enabled` flag for itself: two
-enablement rules in one binary is the existing, deliberate state, and unifying them would change
-table output.
+with the library. **Two authorities still disagree with the policy above, and naming them is the
+point of this paragraph rather than an aside.** `src/table.ts` styles through `@colors/colors`'
+own environment-only `enabled` flag, and `cli-highlight` gates syntax colour on that `chalk@4`'s
+module-load level. So `MDVIEW_COLOR=always` on a pipe currently colours everything the renderer
+emits and **nothing** either of those two emits — measured on `tight-list.md` at width 80, where
+the forced-colour render carries the highlighter's `31m`/`36m` token colours and the
+`MDVIEW_COLOR=always` render does not, with identical visible text. `--color=always` happens to
+agree with `FORCE_COLOR=3` only because `@colors` sniffs argv for `--color` too, which is the
+same accident in a second package. WP-2 of `plans/colour-policy.md` owns both.
 
 ### Ambiguous width (WP-3)
 
@@ -1542,10 +1567,13 @@ this repo may claim those pass.
 
   **The highlighting path is dead under every test and gate, and that is a property of the
   colour decision rather than of a library.** `highlightCode` (`src/blocks.ts`) returns the raw,
-  unstyled code whenever `ctx.color` is false — i.e. whenever `supports-color` says stdout
-  cannot take SGR codes, which is every non-TTY run: `bun test`, `--check`, both sweeps, CI. It
-  is the same gate the library's `highlight()` applied at `index.js:591` (`chalk.level === 0`),
-  not an approximation of one. The `try`/`catch` around `cli-highlight` never fires either,
+  unstyled code whenever `ctx.color` is false — i.e. whenever the resolved policy
+  (`src/colour.ts`) says so, which is every non-TTY run with nothing forced: `bun test`,
+  `--check`, both sweeps, CI. It **used** to be the same gate the library's `highlight()`
+  applied at `index.js:591` (`chalk.level === 0`), and since WP-1 of `plans/colour-policy.md`
+  it is not: the two can now disagree, because `cli-highlight` still reads its own `chalk`'s
+  module-load level while this reads the policy. `--color=always` on a pipe takes this branch
+  *and* gets an unstyled highlighter — see "Colour" above. The `try`/`catch` never fires either,
   because highlight.js *logs* rather than throws. **Exercising this behaviour requires
   `FORCE_COLOR=3` and capturing `console.error`** — the same shape of trap as the fence
   exemption: a gate that passes because the code under it never ran.

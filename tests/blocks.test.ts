@@ -12,6 +12,7 @@ import { UNICODE_GLYPHS } from "../src/glyphs";
 import { createLayoutContext, type LayoutContext } from "../src/layout-context";
 import { NARROW_MEASURE, WIDE_MEASURE } from "../src/width";
 import { blockParityFailures, type BlockParityCase } from "./helpers/block-parity";
+import { forcedColorChildEnv } from "./helpers/color";
 
 const ESC = "";
 
@@ -60,23 +61,34 @@ describe("code, hr and html — byte parity with the marked-terminal methods the
   // the highlighter: `highlight()` returns the fence unstyled at level 0 and never calls
   // `cli-highlight` at all. The subprocess test below is the one that exercises it.
   test("every case matches, colour off", () => {
-    expect(blockParityFailures()).toEqual([]);
+    expect(blockParityFailures(false)).toEqual([]);
   });
 
-  test("every case matches with colour forced on, in a fresh subprocess", async () => {
+  // **This one is still a subprocess after WP-1 of `plans/colour-policy.md`, and `code` is
+  // why.** The colour *decision* is a parameter now, so `blockParityCases(true)` could be
+  // built in this process — but `renderCode`'s colour-on branch calls `cli-highlight`,
+  // whose styling is gated on its own bundled `chalk`'s module-load level. In this process
+  // that level is 0, so an in-process colour-on run would compare unstyled output against a
+  // golden captured under `FORCE_COLOR=3` and fail for a reason that has nothing to do with
+  // the transcription. The child therefore sets the environment *and* passes the decision.
+  // WP-2's owned colorizer is what lets this come back in-process.
+  test("every case matches with colour on, in a subprocess where the highlighter is live", async () => {
     const helper = resolve(import.meta.dir, "helpers/block-parity.ts");
-    const inlineModule = resolve(import.meta.dir, "../src/inline.ts");
     const child = `
       const argv = process.argv;
       // cli-highlight logs an unresolvable language through console.error and carries on;
       // captured rather than left to pollute the test run's stderr.
       console.error = () => {};
-      const { blockParityFailures } = await import(argv[argv.length - 2]);
-      const { detectInlineColor } = await import(argv[argv.length - 1]);
-      process.stdout.write(JSON.stringify({ color: detectInlineColor(), failures: blockParityFailures() }));
+      const { blockParityCases } = await import(argv[argv.length - 1]);
+      const cases = blockParityCases(true);
+      process.stdout.write(JSON.stringify({
+        sawEscapes: cases.some((entry) => entry.ours.includes("\\u001b")),
+        goldenSawEscapes: cases.some((entry) => entry.theirs.includes("\\u001b")),
+        failures: cases.filter((entry) => entry.ours !== entry.theirs),
+      }));
     `;
-    const proc = Bun.spawn(["bun", "-e", child, "--", helper, inlineModule], {
-      env: { ...process.env, FORCE_COLOR: "3" },
+    const proc = Bun.spawn(["bun", "-e", child, "--", helper], {
+      env: forcedColorChildEnv(),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -87,10 +99,17 @@ describe("code, hr and html — byte parity with the marked-terminal methods the
     const exitCode = await proc.exited;
     expect(exitCode, `subprocess stderr: ${stderr}`).toBe(0);
 
-    const parsed = JSON.parse(stdout) as { color: boolean; failures: BlockParityCase[] };
-    // If this is false the whole test is vacuous — and for `code` it is worse than vacuous,
-    // because level 0 short-circuits the branch under test.
-    expect(parsed.color).toBe(true);
+    const parsed = JSON.parse(stdout) as {
+      sawEscapes: boolean;
+      goldenSawEscapes: boolean;
+      failures: BlockParityCase[];
+    };
+    // Non-vacuity, asserted on the bytes rather than on a detector's opinion of the
+    // environment: if neither side carries an escape, the comparison proves nothing — and
+    // for `code` it is worse than nothing, because an unstyled highlighter short-circuits
+    // the branch under test.
+    expect(parsed.sawEscapes).toBe(true);
+    expect(parsed.goldenSawEscapes).toBe(true);
     expect(parsed.failures).toEqual([]);
   });
 });

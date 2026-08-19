@@ -4,7 +4,22 @@ import { NARROW_MEASURE, type Measure } from "./width";
 const DIM_START = "\x1b[2m";
 const DIM_END = "\x1b[22m";
 
-const dim = (text: string): string => `${DIM_START}${text}${DIM_END}`;
+/**
+ * Dim a metadata key, or leave it alone — **now a decision this module is told rather than
+ * one it makes** (WP-1 of `plans/colour-policy.md`).
+ *
+ * Until that package this function had no `color` argument and no caller could give it one:
+ * every key, every diagnostic and every raw echo in this file went out wrapped in `2m`/`22m`
+ * **at every colour level**, including a plain `mdview file.md > out.txt`. That made
+ * frontmatter one of the five independent colour authorities the plan enumerates, and it is
+ * the one that contradicted the ratified Decision 1 — *default non-TTY stdout emits zero
+ * tool-generated escape bytes* — on any document that has frontmatter at all.
+ *
+ * The bytes are unchanged and are still spelled out here rather than emitted through
+ * anything: WP-2 moves them onto the owned style table. This package changes only whether
+ * they are emitted.
+ */
+const dim = (text: string, color: boolean): string => (color ? `${DIM_START}${text}${DIM_END}` : text);
 
 // A line must look like a plausible top-level YAML key ("key:" or "key: value")
 // before a `---`...`---` pair is trusted as frontmatter. Without this guard, a
@@ -175,9 +190,10 @@ function formatMapping(
   targetWidth: number,
   depth: number,
   measure: Measure,
+  color: boolean,
 ): string {
   const keys = Object.keys(record);
-  if (keys.length === 0) return dim("—");
+  if (keys.length === 0) return dim("—", color);
 
   const indent = "  ".repeat(depth);
   const indentWidth = measure(indent);
@@ -193,8 +209,8 @@ function formatMapping(
     const paddedKey = key.padEnd(maxKeyWidth, " ");
 
     if (isPlainRecord(value) && depth < 1) {
-      lines.push(`${indent}${dim(paddedKey)}:`);
-      lines.push(formatMapping(value, targetWidth, depth + 1, measure));
+      lines.push(`${indent}${dim(paddedKey, color)}:`);
+      lines.push(formatMapping(value, targetWidth, depth + 1, measure, color));
       continue;
     }
 
@@ -210,7 +226,7 @@ function formatMapping(
     const wrapped = wrapValue(formatted, valueWidth, measure);
     wrapped.forEach((line, index) => {
       if (index === 0) {
-        lines.push(`${indent}${dim(paddedKey)}: ${line}`);
+        lines.push(`${indent}${dim(paddedKey, color)}: ${line}`);
       } else {
         lines.push(`${indent}${" ".repeat(maxKeyWidth)}  ${line}`);
       }
@@ -250,11 +266,20 @@ const lineSpan = (block: string, offset: number): [number, number] => [
  * Returns the raw block's line span alongside the text so the caller can exempt it
  * from the width check; see `MetaBlockResult.verbatimRanges`. `formatMetaBlock` is the
  * text-only wrapper for callers (and tests) that do not need the spans.
+ *
+ * **`color` defaults to `false`, and the direction of that default is deliberate** (WP-1 of
+ * `plans/colour-policy.md`). This module used to dim unconditionally, so the historical
+ * behaviour is the `true` branch — defaulting to it would have preserved more bytes and
+ * would have been the wrong choice: a caller that has not thought about colour is a caller
+ * that has not established the destination can take escape sequences, and the ratified
+ * floor for an unestablished destination is no escapes at all. `src/render.ts` is the one
+ * production caller and it always passes the resolved policy.
  */
 export function formatMetaBlockDetailed(
   meta: string,
   targetWidth: number,
   measure: Measure = NARROW_MEASURE,
+  color = false,
 ): MetaBlockResult {
   let data: unknown;
   try {
@@ -310,8 +335,9 @@ export function formatMetaBlockDetailed(
     const detail = breakAt === -1 ? "" : reason.slice(breakAt);
     const diagnostic = dim(
       wrapValue(`! could not parse frontmatter: ${summary}`, targetWidth, measure).join("\n") + detail,
+      color,
     );
-    const echo = dim(meta.trimEnd());
+    const echo = dim(meta.trimEnd(), color);
     return {
       text: `${diagnostic}\n${echo}`,
       verbatimRanges: [lineSpan(echo, diagnostic.split("\n").length)],
@@ -319,13 +345,18 @@ export function formatMetaBlockDetailed(
   }
 
   if (!isPlainRecord(data)) {
-    const echo = dim(meta.trimEnd());
+    const echo = dim(meta.trimEnd(), color);
     return { text: echo, verbatimRanges: [lineSpan(echo, 0)] };
   }
 
-  return { text: formatMapping(data, targetWidth, 0, measure), verbatimRanges: [] };
+  return { text: formatMapping(data, targetWidth, 0, measure, color), verbatimRanges: [] };
 }
 
-export function formatMetaBlock(meta: string, targetWidth: number, measure: Measure = NARROW_MEASURE): string {
-  return formatMetaBlockDetailed(meta, targetWidth, measure).text;
+export function formatMetaBlock(
+  meta: string,
+  targetWidth: number,
+  measure: Measure = NARROW_MEASURE,
+  color = false,
+): string {
+  return formatMetaBlockDetailed(meta, targetWidth, measure, color).text;
 }

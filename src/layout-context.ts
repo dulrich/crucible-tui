@@ -53,19 +53,32 @@ export interface LayoutContext {
   /**
    * Whether inline styling emits SGR codes at all.
    *
-   * This is a *decision*, carried as a value, precisely because the two styling
-   * libraries in this binary disagree about how to make it and that disagreement is
-   * deliberate. `src/table.ts` styles through `@colors/colors`' own gate, which was
-   * chosen there so the table emitter reproduces what `cli-table3` used to decide —
-   * environment only, no `isTTY`. Everything the renderer emits has always been gated by
-   * `chalk`'s rule instead, which does consult stream TTY-ness. Two rules in one binary
-   * is the existing, deliberate state; unifying them would silently change table output,
-   * so this field carries the renderer's rule and leaves the table's alone.
+   * This is a *decision*, carried as a value. Since WP-1 of `plans/colour-policy.md` it is
+   * **the tool's one colour decision**, resolved by `resolveColourPolicy` (`src/colour.ts`)
+   * from inputs handed in explicitly and threaded here through `renderDocumentDetailed`'s
+   * policy parameter. It used to be `detectInlineColor()`'s answer, re-derived inside every
+   * render from a `supports-color` module global that had already resolved — argv sniff and
+   * all — before the first document was ever read.
    *
-   * Populated by `detectInlineColor()` in `src/inline.ts`, which asks the library rather
-   * than re-deriving the answer.
+   * **Two authorities still disagree with this one, and both are WP-2's to retire, not
+   * this field's to paper over.** `src/table.ts` styles through `@colors/colors`' own
+   * environment-only `enabled` flag, chosen there so the emitter reproduces what
+   * `cli-table3` used to decide; `cli-highlight` gates syntax colour on its bundled
+   * `chalk`'s module-load level. Until the owned emitter and colorizer land, a forced
+   * colour decision cannot reach either of them.
    */
   readonly color: boolean;
+  /**
+   * Whether the renderer emits OSC-8 hyperlinks.
+   *
+   * **A separate axis from `color`, ratified as one** (Decision 4 of
+   * `plans/colour-policy.md`): `NO_COLOR` does not turn hyperlinks off, `--color=always`
+   * does not turn them on, and a non-TTY destination turns them off whatever else is set.
+   * `src/inline.ts`'s `renderLink` reads this where it used to read
+   * `supportsHyperlinks.stdout` — a second module global, resolved at that library's own
+   * load, that no caller could influence and no test could vary without a subprocess.
+   */
+  readonly hyperlinks: boolean;
 }
 
 /** One block renderer's contribution to the pending prefix. */
@@ -144,6 +157,13 @@ export interface LayoutContextInit {
   resolveFenceLanguage: (rawLang: string | undefined) => string | undefined;
   emoji: boolean;
   color: boolean;
+  /**
+   * Defaulted to `false` rather than required, deliberately: OSC-8 is off on every
+   * non-terminal destination, which is every gate, every sweep and every test, so the
+   * default is the answer the overwhelming majority of construction sites want and the
+   * one a forgotten argument should produce.
+   */
+  hyperlinks?: boolean;
 }
 
 /**
@@ -162,5 +182,6 @@ export function createLayoutContext(init: LayoutContextInit): LayoutContext {
     resolveFenceLanguage: init.resolveFenceLanguage,
     emoji: init.emoji,
     color: init.color,
+    hyperlinks: init.hyperlinks ?? false,
   });
 }

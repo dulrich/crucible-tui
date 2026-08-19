@@ -120,9 +120,12 @@ const RESET = createStyler("reset"); // chalk.reset, used by `hr` and `paragraph
  * `highlight()` — `index.js:590-602`, and **three branches that all matter**.
  *
  * 1. `:591` short-circuits to the raw, unstyled code whenever `chalk.level === 0`. That is
- *    exactly the decision `LayoutContext.color` carries (`detectInlineColor()` asks the
- *    library rather than re-deriving chalk's rule), so it is the same gate and not an
- *    approximation of one.
+ *    the decision `LayoutContext.color` carries — since WP-1 of `plans/colour-policy.md`,
+ *    `resolveColourPolicy`'s (`src/colour.ts`), threaded in rather than re-derived here.
+ *    **The two are no longer the same gate**, and the gap is real rather than theoretical:
+ *    `cli-highlight` consults its own bundled `chalk`'s module-load level, so under
+ *    `--color=always` on a pipe this branch is taken and the highlighter still emits
+ *    nothing. WP-2's owned colorizer is what closes it.
  * 2. `:598`, the success path, returns **`cli-highlight`'s own colours**. `opts.code`
  *    (`chalk.yellow`) is *not* applied here. An owned `code` that wraps its output in
  *    yellow would change content inside a `codeRange` — parity class C.
