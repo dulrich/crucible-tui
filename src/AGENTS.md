@@ -1134,7 +1134,11 @@ colour-off render byte-identical in 140 of 140 combos.** Read the second half of
 sentence as the binding one — the direction of repair was pinned before the work started
 (cycle-3 f6): the colourless render is the frozen baseline, and every repair makes the
 *stripped colour-on* render equal it. Not one of them was allowed to move the colourless
-side.
+side. **`charDiff` itself is history**: WP-5 of the same plan replaced that ratchet, and
+its `sgrAny` counterpart, with three exact per-combo gates over a three-child axis —
+`scripts/AGENTS.md`'s colour-axis section carries the live definitions; `charDiff`'s
+closure to 0 is what this section's own repairs are evidence for, not a number any gate
+still reads.
 
 The mechanism was always one sentence — **a layout decision made on bytes rather than on
 columns** — and it had five instances, three recorded in the plan and two exposed by

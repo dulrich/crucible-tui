@@ -287,6 +287,36 @@ The premise this WP started from — "trim dependency fat to shrink the binary" 
 inverted once it was measured. Record that inversion here so nobody re-derives it and
 re-opens a removal pass that costs review time for zero benefit.
 
+**The dependency classification rule (`plans/colour-policy.md`, "Decisions locked",
+written here at that plan's WP-5).** Every runtime dependency this repo has ever carried
+falls into exactly one of three classes, and only one of them is allowed to stay:
+
+- **Domain data / algorithm dependencies stay.** `marked` (the lexer), `highlight.js`,
+  `string-width`, `yaml`, `node-emoji` — each one is a grammar, a corpus, or an algorithm
+  this repo does not want to re-derive, and none of them decides anything from
+  environment/argv/TTY at module load or writes an escape byte on this repo's behalf.
+- **Policy dependencies — anything reading env/argv/TTY at module load to decide — are
+  owned here, not imported.** `supports-color` and `supports-hyperlinks` (removed WP-1 of
+  `plans/colour-policy.md`), `@colors/colors` and `cli-highlight`'s bundled `chalk` theme
+  (removed WP-2) were each exactly this: a decision this renderer needs, made by a
+  package reading the process rather than by a value handed in. `src/colour.ts` is what
+  replaced all of them — the one place that decision is made, from inputs threaded in
+  explicitly.
+- **Emission dependencies — anything writing terminal escape bytes — are owned here,
+  not imported.** `ansi-escapes` (removed WP-3) was the last one: this repo's own
+  `src/style.ts` (SGR) and `src/ansi.ts` (OSC-8, DCS) are the only places an escape byte
+  is spelled now.
+
+Applying that rule to this plan's own closure took runtime dependencies to **five, all
+domain-data, zero load-time globals, zero third-party escape emission** — `marked`,
+`highlight.js`, `string-width`, `yaml`, `node-emoji`, exactly the list above. **One
+caveat, recorded rather than resolved:** `marked`'s lexer is the one keeper whose
+interface is a real constraint rather than a preference — it has no source-offset API,
+which is the interface gap `docs/adr/0001-editor-path.md`'s `{text, style, sourceStart,
+sourceEnd}` return type is blocked behind, exactly as `src/walk.ts`'s header records for
+the walk it replaced. Owning the lexer is not this plan's scope; the classification rule
+above is what a future plan that does own it will still have to satisfy.
+
 **Binary size is not a dependency problem.** The compiled binary (`bun build
 --compile`, see "Conventions" above) is ~102 MB, almost entirely Bun's own embedded
 runtime — present in every Bun-compiled binary regardless of what a project imports.

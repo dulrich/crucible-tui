@@ -41,6 +41,12 @@ import {
   readBlockEnds,
 } from "../src/detectors";
 import { stripAnsi } from "../src/list-lines";
+// The colour axis's own grammar reader (WP-5, `plans/colour-policy.md`): `scan` is what
+// classifies each render's terminal sequences into the wire record, and `STYLE_TABLE` is
+// what G3's SGR arm checks membership against. Neither is a second implementation — both
+// are the same objects `src/inline.ts`/`src/table.ts`/etc. read to decide what to emit.
+import { scan } from "../src/ansi";
+import { STYLE_TABLE } from "../src/style";
 import { type GlyphSet } from "../src/glyphs";
 import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "../src/config";
 import { NARROW_MEASURE, type Measure } from "../src/width";
@@ -131,27 +137,16 @@ export interface SweepOptions {
    */
   colourMode?: ColourMode;
   /**
-   * `--colour-child on|off` — the internal re-exec marker. Set only by
+   * `--colour-child on|off|default` — the internal re-exec marker. Set only by
    * `collectColourDigests` on the child command line it builds; a human never passes it.
    * When present, the sweep emits a digest stream (see `emitColourDigests`) instead of
    * running a sweep, and every other flag is honoured exactly as the parent honoured it.
-   */
-  colourChild?: ColourAxisMode;
-  /**
-   * `--max-char-diff N` — with the axis on, exit non-zero when the **character**
-   * difference count exceeds N. A ratchet, not a target: the count is what it is today,
-   * and what must not happen is it going up.
    *
-   * It reads `charDiff` (`charDiffOnly + both`), the total, not the disjoint bucket.
+   * **`default` is the third child (WP-5, cycle-2 f9)**: no colour variable is set at all,
+   * so the render resolves whatever a real piped invocation resolves. G1 reads this
+   * child's stream alone — see `scripts/corpus.ts`'s colour-axis header.
    */
-  maxCharDiff?: number;
-  /**
-   * `--max-sgr N` — same, for **any** SGR in a colourless render: `sgrAny`
-   * (`sgrOnly + both`). The disjoint `sgrOnly` bucket is not the counter — it cannot see
-   * unwanted SGR in a combo that also differs in characters, which is roughly half of
-   * them.
-   */
-  maxSgr?: number;
+  colourChild?: ColourAxisChildMode;
 }
 
 export interface OverflowEntry {
@@ -749,87 +744,104 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
 }
 
 // ---------------------------------------------------------------------------
-// The colour axis (WP-1, `plans/own-the-token-walk.md`)
+// The colour axis - three exact gates over three children (WP-5,
+// `plans/colour-policy.md`; two children and two ratchets before it, WP-1 of
+// `plans/own-the-token-walk.md`)
 // ---------------------------------------------------------------------------
 //
-// The invariant this instrument exists to measure: **a colour decision may change which
-// bytes a render emits; it must never change which characters it emits.** Everything
-// below is measurement only — no renderer source is touched and no rendered byte moves.
+// The invariant this instrument exists to measure: a colour decision may change which
+// bytes a render emits; it must never change which characters it emits - and an
+// undirected, piped render must emit no terminal sequence at all. Everything below is
+// measurement only - no renderer source is touched and no rendered byte moves.
 //
-// ## Why this is two processes — the reason it *had* to be, and the reason it stays
+// WP-5 replaced two ratchet counters (`charDiff`/`sgrAny`, `--max-char-diff`/
+// `--max-sgr`) with three exact, per-combo gates. A ratchet only fails when its number
+// goes up; both were already measured at 0 (WP-3/WP-4 closed the producers behind them),
+// which made them counters that could only ever pass - re-verified every run, but never
+// re-specified. G1/G2/G3 below are pass/fail per `(file, width)` combo against a fixed
+// definition, not a threshold compared to a seed.
 //
-// This module statically imports `renderDocumentDetailed` (the import at the top of this
-// file). **No colour decision in this renderer resolves at module load any more.** WP-1 of
-// `plans/colour-policy.md` made the renderer's own decision a per-call resolution over
-// inputs handed in explicitly (`src/colour.ts`), and WP-2 retired the last two module-load
-// globals with the packages that owned them — `cli-highlight`'s bundled `chalk` theme and
-// `@colors/colors`' `enabled`, both of which put styling into rendered output that no
-// argument could reach, so a second render in one process genuinely could not be in a
-// different colour mode overall and mutating `FORCE_COLOR` between renders did nothing for
-// them (Bun's module cache hands back the module that already resolved;
-// `tests/helpers/color.ts` records the same finding from the test side). One process could
-// now render the same file both ways, correctly.
+// ## Why this is three processes
 //
-// **The two children stay, and the reason is what the instrument has to prove rather than
-// what the renderer can do.** A colour-axis number is only evidence if the two populations
-// really were rendered in opposite modes, and a child whose environment is fixed *before*
-// its own module graph loads makes that observable from the child's own output —
-// `tests/colour-axis.test.ts` asserts exactly that, against a hostile ambient
-// `FORCE_COLOR`/`NO_COLOR`. Collapsing this into one process changes what the gate proves
-// and owes its own evidence (WP-5 of `plans/colour-policy.md`); it is not a tidy-up that
-// falls out of removing two dependencies.
+// This module statically imports `renderDocumentDetailed`. No colour decision in this
+// renderer resolves at module load any more (WP-1/WP-2 of `plans/colour-policy.md`), so
+// one process genuinely could render the same file in every mode correctly. The
+// multi-child design stays anyway, and the reason is what the instrument has to prove
+// rather than what the renderer can do. A colour-axis number is only evidence if the
+// populations really were rendered under the modes it claims, and a child whose
+// environment is fixed before its own module graph loads makes that observable from the
+// child's own output - `tests/colour-axis.test.ts` asserts exactly that, against a
+// hostile ambient `FORCE_COLOR`/`NO_COLOR`/`MDVIEW_COLOR`.
 //
-// So the parent re-execs the sweep CLI twice, once per mode, with the colour decision
-// pinned in the child's environment before any import happens. Each child renders the
-// same population and emits a **digest** per `(file, width)` — never body text, so this
-// stays affordable over a ~44.5k-file private corpus — and the parent joins the two
-// streams by key.
+// The third child is `default` (WP-5, cycle-2 f9): the colour decision an ordinary user
+// gets from `mdview file.md | somewhere`, with nothing forced either way. `on` and `off`
+// each decide something (`FORCE_COLOR=3`/`FORCE_COLOR=0`); `default` decides nothing -
+// every colour-related variable is absent, so `src/colour.ts`'s resolver falls all the way
+// to its `isTTY` floor, which is `false` on a pipe. G1 reads this child alone: the
+// default child must emit zero terminal sequences of any kind, because that piped
+// default is what every consumer of this tool's stdout - a file redirect, `less`, another
+// program's argument - actually receives.
 //
-// ## Why the child's environment is set explicitly, both variables, every time
+// So the parent re-execs the sweep CLI three times, once per child, with the colour
+// decision pinned (or, for `default`, deliberately left undecided) before any import
+// happens. Each child renders the same population and emits a v2 digest per
+// `(file, width)` - never body text, so this stays affordable over a ~44.5k-file private
+// corpus - and the parent joins the three streams by key.
+//
+// ## Why each child's environment is built explicitly, never inherited
 //
 // A child that merely inherited the parent's environment would measure the machine, not
-// the renderer: a developer with `FORCE_COLOR` exported would silently run both children
-// in the same mode, and a colour axis that runs twice in one mode is a gate that cannot
-// fail — the shape root `AGENTS.md`'s "Flag order matters" paragraph forbids. Both
-// variables are therefore set (or deleted) on both children unconditionally, and
-// `tests/colour-axis.test.ts` asserts the two children resolve *opposite* modes from
-// their observed output rather than from the environment we intended to set.
-//
-// **`NO_COLOR` and `MDVIEW_COLOR` are deleted, and `NO_COLOR`'s reason changed sign at
-// WP-1 of `plans/colour-policy.md`.** It used to be deleted because it was honoured
-// *nowhere* in this stack, so setting it would have invented a meaning this instrument does
-// not own. It is now honoured — it sits above `FORCE_COLOR` in the ratified precedence
-// table — which is exactly why an ambient one has to be cleared: inherited, it would
-// override the `FORCE_COLOR` this function sets and run the forced-colour child colourless.
-// `MDVIEW_COLOR` is deleted for the same reason and joined the list in the same package;
-// it outranks `NO_COLOR` in turn, so an ambient `MDVIEW_COLOR=never` would silently
-// flatten the whole axis.
+// the renderer: a developer with `FORCE_COLOR` exported would silently run every child in
+// the same mode, and an axis that cannot diverge is a gate that cannot fail - the shape
+// root `AGENTS.md`'s "Flag order matters" paragraph forbids. `colourChildEnv` therefore
+// decides `NO_COLOR`, `MDVIEW_COLOR` and `FORCE_COLOR` for every child unconditionally
+// (deleting all three for `default`, so nothing decides), and also sanitizes `TMUX` and
+// `TERM` - the two inputs `resolveTmux` reads - so a harness invoked from inside a real
+// tmux session, or under an unusual `TERM`, cannot leak into what G1/G3 measure.
+// `tests/colour-axis.test.ts` asserts the children resolve from their observed output
+// rather than from the environment the parent intended to set.
 
-/** One end of the axis. `on` is the forced-colour child; `off` is the colourless one. */
-export type ColourAxisMode = "on" | "off";
+/** Which of the axis's three children a process is - the domain of `--colour-child`. */
+export type ColourAxisChildMode = "on" | "off" | "default";
 
-/** The `--colour-mode` flag's domain: measure one mode, or compare the two. */
-export type ColourMode = ColourAxisMode | "both";
+/** The `--colour-mode` flag's domain: run the ordinary sweep in one mode, or the axis. */
+export type ColourMode = "on" | "off" | "both";
 
-/** The digest of one `(file, width)` render, in one colour mode. */
+/** One recognised terminal sequence, exactly as `src/ansi.ts`'s scanner classifies it. */
+export interface WireSequence {
+  readonly kind: "sgr" | "osc8" | "dcs";
+  readonly raw: string;
+}
+
+/**
+ * The v2 digest of one `(file, width)` render, in one colour-axis child. Wire schema
+ * (`plans/colour-policy.md`, WP-5): `{corpus, file, width, visibleSha, sequences,
+ * malformed}` - `corpus` is this stream's own grouping key (the JSONL stream is already
+ * split into per-corpus sections by the `{corpus, begin: true}` marker below; it is
+ * repeated on every record so a consumer never has to carry the marker's state).
+ *
+ * `sequences` lists every span `scan()` classified as `sgr`, `osc8` or `dcs` - the three
+ * kinds this renderer may legitimately emit - with its raw bytes, which is what lets a G1
+ * or G3 failure name the offending sequence rather than only its count. A `malformed` span
+ * (rule 3 of `src/ansi.ts`'s scanner: an introducer this renderer never emits, or one that
+ * never terminated) is not one of the three kinds and is therefore not enumerated in
+ * `sequences`; its presence is carried by the `malformed` flag instead, which every gate
+ * that reads `sequences` also reads.
+ */
 export interface ColourDigestRecord {
   corpus: string;
-  path: string;
+  file: string;
   width: number;
-  /** sha256 of the SGR-stripped text — the *character* channel. */
-  strippedSha: string;
-  /**
-   * Whether the raw text carried any SGR escape. `stripAnsi` removes SGR and nothing
-   * else, which is exactly right here and is why OSC-8 hyperlinks are explicitly out of
-   * this instrument's scope (`src/inline.ts` emits them independently of colour).
-   */
-  hasSgr: boolean;
+  /** sha256 of `scan(text).visible` - the character channel G2 compares. */
+  visibleSha: string;
+  sequences: WireSequence[];
+  malformed: boolean;
 }
 
 /** A render that threw in a child, carried through rather than swallowed. */
-export interface ColourErrorRecord {
+export interface ColourChildErrorRecord {
   corpus: string;
-  path: string;
+  file: string;
   width: number;
   message: string;
 }
@@ -838,87 +850,128 @@ export interface ColourErrorRecord {
 export interface ColourDigestStream {
   corpus: string;
   digests: ColourDigestRecord[];
-  errors: ColourErrorRecord[];
+  errors: ColourChildErrorRecord[];
+}
+
+/** G1: the `default` child emitted at least one sequence it should not have. */
+export interface G1Failure {
+  corpus: string;
+  file: string;
+  width: number;
+  sequences: WireSequence[];
+  malformed: boolean;
+}
+
+/** G2: the `on` and `off` children's visible text diverged for this combo. */
+export interface G2Failure {
+  corpus: string;
+  file: string;
+  width: number;
+  onVisibleSha: string;
+  offVisibleSha: string;
 }
 
 /**
- * The three buckets, plus the two totals the ratchets actually read.
- *
- * The buckets are disjoint; the totals are not, and that is the point. **The unwanted-SGR
- * ratchet reads `sgrAny` (`sgrOnly + both`), never `sgrOnly`** — unwanted SGR sitting in a
- * combo that *also* differs in characters is invisible to the disjoint bucket, and that is
- * roughly half of them (measured 64 disjoint against 125 total on a 36-file set). Same
- * shape for characters: `charDiff` is `charDiffOnly + both`.
+ * G3: one sequence in the `on` child's render did not parse as committed-table SGR, a
+ * well-formed OSC-8 hyperlink, or a strictly-parsed tmux DCS wrapper around one.
+ * `sequence` is omitted when the failure is the record's bare `malformed` flag, which
+ * carries no raw bytes in the v2 schema (see `ColourDigestRecord`'s doc comment).
+ */
+export interface G3Failure {
+  corpus: string;
+  file: string;
+  width: number;
+  sequence?: WireSequence;
+  reason: string;
+}
+
+/**
+ * One `(file, width)` key present in one child's stream and missing or errored in
+ * another. The join iterates the union of keys across all three children (WP-5,
+ * cycle-3 f8) - the two-child join this replaced mapped over one stream only, so a combo
+ * present in one mode and absent from another was silently excluded from the denominator
+ * rather than surfaced. `reason: "missing"` is a key absent from that child's stream
+ * entirely; `"child-error"` is a key present but recorded as a per-render failure
+ * (`message` carries the child's own error text).
+ */
+export interface ColourAxisErrorEntry {
+  mode: ColourAxisChildMode;
+  corpus: string;
+  file: string;
+  width: number;
+  reason: "missing" | "child-error";
+  message?: string;
+}
+
+/**
+ * One corpus's result: three exact gates, each with its own failure list and count, plus
+ * every join-level error. `combos` counts only `(file, width)` keys present as a
+ * successful digest in all three children - a key incomplete in any of them contributes
+ * to `errors` instead and is excluded from every gate's denominator, since none of
+ * G1/G2/G3 can be evaluated without all three renders.
  */
 export interface ColourAxisResult {
   corpus: string;
-  /** `(file, width)` keys present in both streams. */
   combos: number;
-  /** Same characters, no SGR in the colourless render — the invariant holding. */
-  identical: number;
-  /** `strippedSha` differs, and the colourless render carried no SGR. */
-  charDiffOnly: number;
-  /** `strippedSha` matches, but the colourless render carried SGR. */
-  sgrOnly: number;
-  /** `strippedSha` differs **and** the colourless render carried SGR. */
-  both: number;
-  /** `charDiffOnly + both` — what `--max-char-diff` ratchets. */
-  charDiff: number;
-  /** `sgrOnly + both` — what `--max-sgr` ratchets. */
-  sgrAny: number;
-  /** Child render failures, plus any key that appeared in only one of the two streams. */
-  errors: ColourErrorRecord[];
+  g1: number;
+  g2: number;
+  g3: number;
+  g1Failures: G1Failure[];
+  g2Failures: G2Failure[];
+  g3Failures: G3Failure[];
+  errors: ColourAxisErrorEntry[];
   elapsedSeconds: number;
 }
 
 /**
- * The digest of one rendered document.
- *
- * `hasSgr` compares lengths rather than strings because `stripAnsi` only ever removes:
- * a shorter result means at least one sequence was present.
- *
- * **What it removes widened at WP-3 of `plans/colour-policy.md`, and the field name did
- * not.** `stripAnsi` (`src/list-lines.ts`) is a derivation of `src/ansi.ts`'s scanner now,
- * so it takes out OSC-8 hyperlinks and tmux DCS envelopes as well as SGR — which means
- * this flag reads "carries any terminal sequence", and the character channel no longer
- * counts a hyperlink's destination URL as visible text. Both changes are in the direction
- * this instrument always claimed to measure; the old strip was simply blind to two of the
- * three sequence kinds the renderer can emit. Neither seed moved with it: the colourless
- * child emits no hyperlink (they are off on every non-TTY destination, whatever the colour
- * decision), so nothing this counter samples changed shape.
- *
- * The name stays `hasSgr` because WP-5 of the same plan **deletes** it, along with
- * `--max-sgr`, `classifyColourAxis`'s buckets and the printed bucket line, replacing all
- * of it with the three exact gates over a `sequences[]` wire record. Renaming a field on
- * its way out would cost a diff in every consumer to buy one package of accuracy.
+ * The v2 digest of one rendered document: the visible-text hash G2 compares, and the
+ * ordered sequence list G1 and G3 read. Replaces `digestText` (WP-5, deleted along with
+ * the `strippedSha`/`hasSgr` fields it fed and the two ratchets that read them) - `scan()`
+ * already returns exactly the vocabulary the wire record needs, so it is consumed
+ * directly rather than re-derived through a second pass.
  */
-export function digestText(text: string): { strippedSha: string; hasSgr: boolean } {
-  const stripped = stripAnsi(text);
-  return { strippedSha: sha256Hex(stripped), hasSgr: stripped.length !== text.length };
+export function digestSequences(text: string): {
+  visibleSha: string;
+  sequences: WireSequence[];
+  malformed: boolean;
+} {
+  const { visible, spans, malformed } = scan(text);
+  const sequences: WireSequence[] = [];
+  for (const span of spans) {
+    if (span.kind === "sgr" || span.kind === "osc8" || span.kind === "dcs") {
+      sequences.push({ kind: span.kind, raw: span.raw });
+    }
+  }
+  return { visibleSha: sha256Hex(visible), sequences, malformed };
 }
 
 /**
  * The join key for one `(file, width)`.
  *
- * The separator is written as the escape `\u0000`, not as a raw byte, so — unlike
- * `scripts/render-diff.ts`, whose three raw NULs make it binary to `grep` and `rg` (see
- * `scripts/AGENTS.md`'s note on that trap) — this file stays plain text to both tools. A
- * NUL cannot occur in a path, so the key is unambiguous.
+ * The separator is a literal space, not a raw byte, so - unlike `scripts/render-diff.ts`,
+ * whose three raw NULs make it binary to `grep` and `rg` (see `scripts/AGENTS.md`'s note
+ * on that trap) - this file stays plain text to both tools. A width is always numeric, so
+ * the first space unambiguously ends it.
  */
 function comboKey(path: string, width: number): string {
-  return `${width}\u0000${path}`;
+  return `${width} ${path}`;
+}
+
+/** The inverse of `comboKey`, for reporting a failure that was found by key alone. */
+function splitComboKey(key: string): { width: number; file: string } {
+  const sep = key.indexOf(" ");
+  return { width: Number(key.slice(0, sep)), file: key.slice(sep + 1) };
 }
 
 /**
  * The child body: render every `(file, width)` of every requested corpus and write one
  * JSON record per line to `write`.
  *
- * The render call is **byte-identical to `sweepCorpus`'s** — same positional argument
- * order, same ruler default. `renderDocumentDetailed(source, targetWidth, glyphs,
- * measure)` takes its width as a **positional number** (`src/render.ts:776-782`); passing
- * an options object instead renders every width identically, which has invalidated four
- * separate measurements of this exact quantity across three authors. Do not "tidy" this
- * call into an object.
+ * The render call is byte-identical to `sweepCorpus`'s - same positional argument order,
+ * same ruler default. `renderDocumentDetailed(source, targetWidth, glyphs, measure)`
+ * takes its width as a positional number; passing an options object instead renders every
+ * width identically, which has invalidated four separate measurements of this exact
+ * quantity across three authors. Do not "tidy" this call into an object.
  */
 export async function emitColourDigests(
   specs: CorpusSpec[],
@@ -940,7 +993,7 @@ export async function emitColourDigests(
         // the read failed once, for the whole file, before any width was involved.
         const message = error instanceof Error ? error.message : String(error);
         for (const width of options.widths) {
-          write(JSON.stringify({ corpus: spec.name, path, width, error: message }));
+          write(JSON.stringify({ corpus: spec.name, file: path, width, error: message }));
         }
         continue;
       }
@@ -948,13 +1001,13 @@ export async function emitColourDigests(
         try {
           const measure = options.measure ?? NARROW_MEASURE;
           const { text } = renderDocumentDetailed(source, width, options.glyphs, measure);
-          const { strippedSha, hasSgr } = digestText(text);
-          write(JSON.stringify({ corpus: spec.name, path, width, strippedSha, hasSgr }));
+          const { visibleSha, sequences, malformed } = digestSequences(text);
+          write(JSON.stringify({ corpus: spec.name, file: path, width, visibleSha, sequences, malformed }));
         } catch (error) {
           write(
             JSON.stringify({
               corpus: spec.name,
-              path,
+              file: path,
               width,
               error: `width ${width}: ${error instanceof Error ? error.message : String(error)}`,
             }),
@@ -985,7 +1038,7 @@ export function parseColourDigestStreams(stdout: string): ColourDigestStream[] {
     if (typeof record.error === "string") {
       stream.errors.push({
         corpus,
-        path: String(record.path),
+        file: String(record.file),
         width: Number(record.width),
         message: record.error,
       });
@@ -993,10 +1046,11 @@ export function parseColourDigestStreams(stdout: string): ColourDigestStream[] {
     }
     stream.digests.push({
       corpus,
-      path: String(record.path),
+      file: String(record.file),
       width: Number(record.width),
-      strippedSha: String(record.strippedSha),
-      hasSgr: record.hasSgr === true,
+      visibleSha: String(record.visibleSha),
+      sequences: Array.isArray(record.sequences) ? (record.sequences as WireSequence[]) : [],
+      malformed: record.malformed === true,
     });
   }
   return [...streams.values()];
@@ -1008,17 +1062,21 @@ const SWEEP_CLI_PATH = join(import.meta.dir, "sweep.ts");
 /**
  * The child environment, built explicitly rather than inherited.
  *
- * Every variable the colour resolver reads is decided here for both modes — never left to
- * whatever the developer or CI happens to export — because the whole axis is worthless if
- * the two children can resolve the same mode. `FORCE_COLOR=3` is the level
- * `tests/helpers/color.ts` already uses for the forced-colour side; `FORCE_COLOR=0` is an
- * explicit "no" under `src/colour.ts`'s ratified reading of the variable as much as it was
- * under `supports-color`'s. The child's stdout is a pipe, so it is not a TTY either way —
- * which is also why hyperlinks are off in both children and this axis says nothing about
- * them.
+ * Every variable the colour resolver reads is decided here for every child - never left to
+ * whatever the developer or CI happens to export - because the whole axis is worthless if
+ * two children can resolve the same mode, or if `default` resolves anything at all.
+ * `FORCE_COLOR=3` is the level `tests/helpers/color.ts` already uses for the forced-colour
+ * side; `FORCE_COLOR=0` is an explicit "no" under `src/colour.ts`'s ratified reading of the
+ * variable; `default` deletes `FORCE_COLOR` too, so nothing overrides the `isTTY` floor.
+ * `TMUX` and `TERM` are sanitized on every child for the same reason - both feed
+ * `resolveTmux` (`src/colour.ts`), so a harness invoked from inside a real tmux session, or
+ * under an unusual `TERM`, must not leak into what G1/G3 measure. The child's stdout is a
+ * pipe regardless of mode, so it is never a TTY - which is also why hyperlinks are off in
+ * every child and G3's OSC-8/DCS arms are exercised by direct unit test rather than by this
+ * corpus (see `tests/colour-axis.test.ts`'s injected-TTY-policy cases).
  */
 export function colourChildEnv(
-  mode: ColourAxisMode,
+  mode: ColourAxisChildMode,
   base: Record<string, string | undefined>,
 ): Record<string, string> {
   const env: Record<string, string> = {};
@@ -1027,23 +1085,24 @@ export function colourChildEnv(
   }
   delete env.NO_COLOR;
   delete env.MDVIEW_COLOR;
-  // `FORCE_COLOR` needs no `delete` of its own: the assignment below overwrites whatever
-  // was inherited, unconditionally, on both children. All three variables the resolver
-  // reads are therefore decided here and none is left to the machine.
-  env.FORCE_COLOR = mode === "on" ? "3" : "0";
+  delete env.TMUX;
+  delete env.TERM;
+  if (mode === "on") env.FORCE_COLOR = "3";
+  else if (mode === "off") env.FORCE_COLOR = "0";
+  else delete env.FORCE_COLOR;
   return env;
 }
 
 /**
- * Spawn one child in one colour mode and collect its digest streams.
+ * Spawn one child in one colour-axis mode and collect its digest streams.
  *
  * `childArgs` is the parent's own command line with `--colour-mode` removed, so the child
  * resolves the same manifest, the same corpora, the same sampling and the same widths by
- * running the same parser over the same flags — there is no second file-selection
+ * running the same parser over the same flags - there is no second file-selection
  * mechanism to drift. The population is the manifest corpus, and nothing else.
  */
 export async function collectColourDigests(
-  mode: ColourAxisMode,
+  mode: ColourAxisChildMode,
   childArgs: string[],
 ): Promise<ColourDigestStream[]> {
   const proc = Bun.spawn([process.execPath, "run", SWEEP_CLI_PATH, "--colour-child", mode, ...childArgs], {
@@ -1070,93 +1129,258 @@ export async function collectColourDigests(
   }
 }
 
+// --- G3: is one `on`-child sequence one this renderer is authorized to emit? ----------
+
 /**
- * Join two digest streams for one corpus and sort every `(file, width)` into exactly one
- * of the three buckets.
+ * Every SGR byte pair this renderer's committed style table (`src/style.ts`) is
+ * authorized to emit, `open` and `close` both - G3's SGR arm is exact membership in this
+ * set, never a pattern. `STYLE_TABLE` itself already bans `38`/`48` introducers by an
+ * independent assertion (`tests/style.test.ts`), so nothing here re-derives that ban.
+ */
+const COMMITTED_SGR: ReadonlySet<string> = new Set(
+  Object.values(STYLE_TABLE).flatMap((code) => [code.open, code.close]),
+);
+
+const DCS_ESC = String.fromCharCode(0x1b);
+const DCS_TMUX_PREFIX = `${DCS_ESC}Ptmux;`;
+const DCS_TERMINATOR = `${DCS_ESC}\\`;
+
+/**
+ * Undouble a tmux DCS payload's ESC bytes, strictly. `wrapOsc` (`src/ansi.ts`) doubles
+ * every ESC in the sequence it wraps before framing it, so a lone, undoubled ESC inside
+ * the payload is not a byte this renderer's own `link()` can produce. Returns `null` for
+ * that case rather than a best-effort decode, so a hostile or corrupted payload fails
+ * strictly instead of silently losing a byte.
+ */
+function undoubleEsc(payload: string): string | null {
+  let out = "";
+  let index = 0;
+  while (index < payload.length) {
+    if (payload[index] === DCS_ESC) {
+      if (payload[index + 1] === DCS_ESC) {
+        out += DCS_ESC;
+        index += 2;
+        continue;
+      }
+      return null;
+    }
+    out += payload[index];
+    index += 1;
+  }
+  return out;
+}
+
+/**
+ * G3's DCS arm (cycle-3 f7): a tmux wrapper is valid only when its payload, once
+ * undoubled, is exactly one OSC-8 open or close and nothing else - re-scanned rather than
+ * pattern-matched, so it is held to the same grammar `src/ansi.ts` uses everywhere else.
+ * `scan`'s own `dcs` classification only checks the outer frame (`ESC P` ... `ESC \`);
+ * this is the payload check that classification deliberately leaves to the caller,
+ * because a generic scanner cannot know a payload is supposed to be an OSC-8 sequence
+ * without being told what emitted it.
+ */
+function isValidTmuxDcs(raw: string): boolean {
+  if (!raw.startsWith(DCS_TMUX_PREFIX) || !raw.endsWith(DCS_TERMINATOR)) return false;
+  const payload = raw.slice(DCS_TMUX_PREFIX.length, raw.length - DCS_TERMINATOR.length);
+  const decoded = undoubleEsc(payload);
+  if (decoded === null) return false;
+  const inner = scan(decoded);
+  return inner.spans.length === 1 && inner.spans[0]?.kind === "osc8" && inner.spans[0]?.raw === decoded;
+}
+
+/**
+ * G3's per-sequence classifier. SGR against `COMMITTED_SGR`; OSC-8 accepted on `scan`'s
+ * own grammar alone - its `osc8` kind is only ever assigned to a well-formed hyperlink
+ * (`src/ansi.ts`'s `readSequence`), so there is nothing further to check; DCS against
+ * `isValidTmuxDcs`. Returns `undefined` for a valid sequence, a failure reason otherwise.
+ */
+function classifySequence(sequence: WireSequence): string | undefined {
+  if (sequence.kind === "sgr") {
+    return COMMITTED_SGR.has(sequence.raw) ? undefined : "sgr not in the committed style table";
+  }
+  if (sequence.kind === "osc8") return undefined;
+  return isValidTmuxDcs(sequence.raw) ? undefined : "dcs payload is not a valid doubled-ESC OSC-8 open or close";
+}
+
+/** One key's status in one child's stream: a successful digest, a render error, or absent. */
+type ComboStatus =
+  | { status: "ok"; record: ColourDigestRecord }
+  | { status: "error"; message: string }
+  | { status: "missing" };
+
+function comboLookup(stream: ColourDigestStream | undefined): Map<string, ComboStatus> {
+  const map = new Map<string, ComboStatus>();
+  for (const record of stream?.digests ?? []) {
+    map.set(comboKey(record.file, record.width), { status: "ok", record });
+  }
+  for (const entry of stream?.errors ?? []) {
+    map.set(comboKey(entry.file, entry.width), { status: "error", message: entry.message });
+  }
+  return map;
+}
+
+/**
+ * Join the three children's streams for one corpus and run G1/G2/G3 over every
+ * `(file, width)` combo present as a successful digest in all three.
  *
- * A key present in one stream and not the other is an **error**, not a silent drop: the
- * two children resolve their populations independently, so a divergence there is a fact
- * about the instrument that must be visible rather than a combo quietly missing from the
- * denominator.
+ * The union of keys is taken across all three maps (WP-5, cycle-3 f8) - the previous
+ * two-child join mapped over one stream only, so a key present in one mode and absent (or
+ * errored) in another was silently excluded from the denominator. Here every such key
+ * becomes one `ColourAxisErrorEntry` per incomplete mode, tagged with which mode and why,
+ * and the combo is excluded from every gate rather than partially evaluated.
  */
 export function classifyColourAxis(
   corpus: string,
-  colour: ColourDigestStream | undefined,
-  colourless: ColourDigestStream | undefined,
+  on: ColourDigestStream | undefined,
+  off: ColourDigestStream | undefined,
+  defaultStream: ColourDigestStream | undefined,
   elapsedSeconds: number,
 ): ColourAxisResult {
-  const on = new Map((colour?.digests ?? []).map((digest) => [comboKey(digest.path, digest.width), digest]));
-  const off = new Map((colourless?.digests ?? []).map((digest) => [comboKey(digest.path, digest.width), digest]));
-  const errors: ColourErrorRecord[] = [
-    ...(colour?.errors ?? []).map((entry) => ({ ...entry, message: `colour-on ${entry.message}` })),
-    ...(colourless?.errors ?? []).map((entry) => ({ ...entry, message: `colour-off ${entry.message}` })),
-  ];
+  const onMap = comboLookup(on);
+  const offMap = comboLookup(off);
+  const defaultMap = comboLookup(defaultStream);
 
-  let identical = 0;
-  let charDiffOnly = 0;
-  let sgrOnly = 0;
-  let both = 0;
+  const keys = new Set<string>([...onMap.keys(), ...offMap.keys(), ...defaultMap.keys()]);
+
+  const g1Failures: G1Failure[] = [];
+  const g2Failures: G2Failure[] = [];
+  const g3Failures: G3Failure[] = [];
+  const errors: ColourAxisErrorEntry[] = [];
   let combos = 0;
 
-  for (const [key, offDigest] of off) {
-    const onDigest = on.get(key);
-    if (!onDigest) {
-      errors.push({
-        corpus,
-        path: offDigest.path,
-        width: offDigest.width,
-        message: "present in the colourless stream but missing from the colour stream",
-      });
-      continue;
+  for (const key of keys) {
+    const { width, file } = splitComboKey(key);
+    const perMode: [ColourAxisChildMode, ComboStatus][] = [
+      ["on", onMap.get(key) ?? { status: "missing" }],
+      ["off", offMap.get(key) ?? { status: "missing" }],
+      ["default", defaultMap.get(key) ?? { status: "missing" }],
+    ];
+
+    let incomplete = false;
+    for (const [mode, entry] of perMode) {
+      if (entry.status === "missing") {
+        errors.push({ mode, corpus, file, width, reason: "missing" });
+        incomplete = true;
+      } else if (entry.status === "error") {
+        errors.push({ mode, corpus, file, width, reason: "child-error", message: entry.message });
+        incomplete = true;
+      }
     }
+    if (incomplete) continue;
+
+    const onRecord = (onMap.get(key) as { status: "ok"; record: ColourDigestRecord }).record;
+    const offRecord = (offMap.get(key) as { status: "ok"; record: ColourDigestRecord }).record;
+    const defaultRecord = (defaultMap.get(key) as { status: "ok"; record: ColourDigestRecord }).record;
     combos += 1;
-    const differs = onDigest.strippedSha !== offDigest.strippedSha;
-    // The colourless side is the one whose SGR is unwanted: colour in a colour render is
-    // the point, colour in a render that asked for none is the defect.
-    if (differs && offDigest.hasSgr) both += 1;
-    else if (differs) charDiffOnly += 1;
-    else if (offDigest.hasSgr) sgrOnly += 1;
-    else identical += 1;
-  }
-  for (const [key, onDigest] of on) {
-    if (off.has(key)) continue;
-    errors.push({
-      corpus,
-      path: onDigest.path,
-      width: onDigest.width,
-      message: "present in the colour stream but missing from the colourless stream",
-    });
+
+    // G1: the `default` child is env-sanitized and piped, so nothing should have decided
+    // to emit anything. Any sequence at all is a failure - even one this renderer is
+    // otherwise authorized to emit under G3, and even a malformed one - because G1's claim
+    // is about the piped default a real user gets, not about which producer is at fault.
+    // An authored escape in the source passes through verbatim here too (Decision 1), so a
+    // G1 failure on such a file is correct output, incorrectly shaped for this gate's
+    // "zero bytes" claim - which is exactly why the failure record carries the sequence's
+    // raw bytes rather than only a count (`tests/colour-axis.test.ts` pins the authored
+    // case as a deliberate, legible G1 failure, not a defect).
+    if (defaultRecord.sequences.length > 0 || defaultRecord.malformed) {
+      g1Failures.push({
+        corpus,
+        file,
+        width,
+        sequences: defaultRecord.sequences,
+        malformed: defaultRecord.malformed,
+      });
+    }
+
+    // G2: the character channel. Colour may change bytes; it must never change which
+    // characters a reader sees.
+    if (onRecord.visibleSha !== offRecord.visibleSha) {
+      g2Failures.push({
+        corpus,
+        file,
+        width,
+        onVisibleSha: onRecord.visibleSha,
+        offVisibleSha: offRecord.visibleSha,
+      });
+    }
+
+    // G3: every sequence the coloured render actually emitted must parse as this
+    // renderer's own committed SGR, a well-formed OSC-8 hyperlink, or a strictly-parsed
+    // tmux DCS wrapper around one. A malformed span fails outright: nothing this renderer
+    // emits is ever malformed by construction, so one in the `on` child's render is
+    // either an authored escape (legitimate, per Decision 1, but still not one G3 can
+    // vouch for) or a real defect - either way, worth a name in the failure list.
+    for (const sequence of onRecord.sequences) {
+      const reason = classifySequence(sequence);
+      if (reason !== undefined) g3Failures.push({ corpus, file, width, sequence, reason });
+    }
+    if (onRecord.malformed) {
+      g3Failures.push({ corpus, file, width, reason: "malformed sequence in the colour-on render" });
+    }
   }
 
   return {
     corpus,
     combos,
-    identical,
-    charDiffOnly,
-    sgrOnly,
-    both,
-    charDiff: charDiffOnly + both,
-    sgrAny: sgrOnly + both,
+    g1: g1Failures.length,
+    g2: g2Failures.length,
+    g3: g3Failures.length,
+    g1Failures,
+    g2Failures,
+    g3Failures,
     errors,
     elapsedSeconds,
   };
 }
 
 /**
- * Run the whole axis: both children, in parallel, then the join.
- *
- * The corpus order follows the colourless child's, which is the manifest's, which is the
- * order the sweep itself printed a moment earlier.
+ * Run the whole axis: all three children, in parallel, then the join, one corpus at a
+ * time over the union of corpus names any child reported (WP-5, cycle-3 f8) - a corpus
+ * resolved by one child and not another is exactly the failure mode a single-stream
+ * iteration order would hide.
  */
 export async function runColourAxis(childArgs: string[]): Promise<ColourAxisResult[]> {
   const started = performance.now();
-  const [colour, colourless] = await Promise.all([
+  const [on, off, defaultStreams] = await Promise.all([
     collectColourDigests("on", childArgs),
     collectColourDigests("off", childArgs),
+    collectColourDigests("default", childArgs),
   ]);
   const elapsedSeconds = (performance.now() - started) / 1000;
-  const byCorpus = new Map(colour.map((stream) => [stream.corpus, stream]));
-  return colourless.map((stream) =>
-    classifyColourAxis(stream.corpus, byCorpus.get(stream.corpus), stream, elapsedSeconds),
+
+  const byCorpus = (streams: ColourDigestStream[]) => new Map(streams.map((stream) => [stream.corpus, stream]));
+  const onByCorpus = byCorpus(on);
+  const offByCorpus = byCorpus(off);
+  const defaultByCorpus = byCorpus(defaultStreams);
+
+  return unionCorpusNames(on, off, defaultStreams).map((corpus) =>
+    classifyColourAxis(
+      corpus,
+      onByCorpus.get(corpus),
+      offByCorpus.get(corpus),
+      defaultByCorpus.get(corpus),
+      elapsedSeconds,
+    ),
   );
+}
+
+/**
+ * The union of corpus names across the axis's three children, in first-seen order over
+ * `[on, off, default]`. Exported so the corpus-only-in-one-mode case — a corpus resolved
+ * by one child's stream and absent from another's — can be pinned directly against
+ * synthetic streams, rather than depending on a real three-process race to reproduce it.
+ */
+export function unionCorpusNames(
+  on: ColourDigestStream[],
+  off: ColourDigestStream[],
+  defaultStreams: ColourDigestStream[],
+): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const stream of [...on, ...off, ...defaultStreams]) {
+    if (seen.has(stream.corpus)) continue;
+    seen.add(stream.corpus);
+    names.push(stream.corpus);
+  }
+  return names;
 }

@@ -247,18 +247,19 @@ Two traps, each recorded because it already cost a package real time:
   editing; this script did not get the same treatment.
 
 
-#### The colour axis — the instrument for "colour must not change characters"
+#### The colour axis — three exact gates over three children
 
-WP-1 of `plans/own-the-token-walk.md`. The invariant it measures: **a colour decision may
-change which bytes a render emits; it must never change which *characters* it emits.** It
-is a measurement only — it changes no rendered byte, and it repairs none of the producers
-it makes visible.
+WP-1 of `plans/own-the-token-walk.md`; **three exact gates over three children since WP-5
+of `plans/colour-policy.md`, replacing the two ratchet counters this section used to
+describe.** The invariant it measures: **a colour decision may change which bytes a
+render emits; it must never change which *characters* it emits — and an undirected,
+piped render must emit no terminal sequence at all.** It is a measurement only — it
+changes no rendered byte, and it repairs none of the producers it makes visible.
 
 ```bash
-bun run sweep -- --colour-mode both                       # the three buckets, no ratchet
-bun run sweep -- --colour-mode both --max-char-diff 66 --max-sgr 25   # what verify runs
-bun run sweep -- --colour-mode on                         # the ordinary sweep, in colour
+bun run sweep -- --colour-mode both                       # the three exact gates, no thresholds
 MDVIEW_CORPUS_MANIFEST=<private manifest> bun run sweep -- --colour-mode both   # opt-in
+bun run sweep -- --colour-mode on                         # the ordinary sweep, in colour
 ```
 
 **`--colour-mode`, never `--color` or `--no-color`.** `has-flag` — which `supports-color`
@@ -272,95 +273,124 @@ by that name would now be read by the *renderer* rather than by a library — th
 with a different owner. The spelling is a contract, pinned in `tests/sweep.test.ts`; do not
 "correct" it to the American spelling or to the conventional flag name.
 
-**Each colour mode is a whole fresh process, and the reason it *had* to be is gone.**
-`scripts/corpus.ts` statically imports `renderDocumentDetailed`, and `supports-color`,
-`cli-highlight`'s own `chalk` theme and `@colors/colors` each resolved their colour decision
-**at module load**, once, for the life of the process — so a second render in one process
-could not be in a different colour mode, and mutating `FORCE_COLOR` between renders did
-nothing, because Bun's module cache hands back the module that already resolved (the same
-finding `tests/helpers/color.ts:15-46` records from the test side). WP-1 of
-`plans/colour-policy.md` retired the first of those three and WP-2 the other two, so **no
-module-load global decides colour in this renderer any more** and one process could now vary
-the mode per render. **The two-child design stays regardless**, and deliberately: it is what
-makes each child's mode observable from its own output rather than from an environment the
-parent believes it set, and collapsing it is a gate change with its own evidence to bring
-(`plans/colour-policy.md`'s WP-5), not a side effect of the packages leaving. So the parent
-re-execs
-`scripts/sweep.ts --colour-child on|off`, one child per mode, with `FORCE_COLOR` set and
-`NO_COLOR` deleted **explicitly, on both children, always** — never inherited, because a
-developer or runner with `FORCE_COLOR` exported would otherwise run both children in the
-same mode and produce a gate that cannot fail. Each child emits one `{strippedSha,
-hasSgr}` digest per `(file, width)` as JSONL — never body text, so the axis stays
-affordable over the private corpus — and the parent joins the two streams by key.
+**Each colour-axis child is a whole fresh process, and the reason it *had* to be is gone —
+the reason it *stays* is a different one.** `scripts/corpus.ts` statically imports
+`renderDocumentDetailed`, and `supports-color`, `cli-highlight`'s own `chalk` theme and
+`@colors/colors` each resolved their colour decision **at module load**, once, for the life
+of the process — so a second render in one process could not be in a different colour mode,
+and mutating `FORCE_COLOR` between renders did nothing, because Bun's module cache hands
+back the module that already resolved (the same finding `tests/helpers/color.ts:15-46`
+records from the test side). WP-1/WP-2 of `plans/colour-policy.md` retired every module-load
+global, so one process could now vary the mode per render. **The multi-child design stays
+regardless**, and deliberately: it is what makes each child's mode observable from its own
+output rather than from an environment the parent believes it set — collapsing it would be a
+gate change with its own evidence to bring, not a side effect of the packages leaving.
 
-**`tests/colour-axis.test.ts` asserts the two children resolve *opposite* modes from
-observed output**, not from the environment the parent intended to set, and asserts it
-again with a hostile ambient `FORCE_COLOR`/`NO_COLOR` in place. That test is the reason to
-believe any number below.
+**WP-5 added a third child, `default`, and it is what G1 reads.** `on` and `off` each
+*decide* something (`FORCE_COLOR=3`/`FORCE_COLOR=0`); `default` decides nothing at all — no
+colour variable is set, so `src/colour.ts`'s resolver falls to its `isTTY` floor, which is
+`false` on the child's piped stdout. That is the colour decision an ordinary
+`mdview file.md | somewhere` actually gets, and it is the one G1 holds to "zero sequences,
+full stop". So the parent re-execs `scripts/sweep.ts --colour-child on|off|default`, one
+child per mode, with `FORCE_COLOR` set (or, for `default`, deleted) and `NO_COLOR`/
+`MDVIEW_COLOR`/`TMUX`/`TERM` all deleted **explicitly, on every child, always** — never
+inherited, because a developer or runner with any of these exported would otherwise run
+every child in the same mode (or leak a real tmux session into what G1/G3 measure) and
+produce a gate that cannot fail. Each child emits one **v2 wire record** —
+`{corpus, file, width, visibleSha, sequences, malformed}`, where `sequences` is every
+`sgr`/`osc8`/`dcs` span `src/ansi.ts`'s `scan()` found, each with its raw bytes — per
+`(file, width)` as JSONL, never body text, so the axis stays affordable over the private
+corpus; the parent joins the three streams by key.
 
-**Three buckets, and the ratchets read the totals, not the disjoint buckets.** Every
-`(file, width)` lands in exactly one of `charDiffOnly`, `sgrOnly` and `both`; the printed
-line carries all three plus `charDiff` (`charDiffOnly + both`) and `sgrAny`
-(`sgrOnly + both`). **`--max-char-diff` reads `charDiff` and `--max-sgr` reads `sgrAny`.**
-The disjoint `sgrOnly` bucket is *not* an unwanted-SGR counter: it cannot see unwanted SGR
-in a combo that also differs in characters. On the bundled corpus's current 14-file
-population every `sgrOnly` combo happens to have `both=0`, so `sgrOnly` and `sgrAny`
-currently agree (20 = 20) — that is a fact about which files are in the population, not a
-guarantee of the metric. A larger population the plan measured showed the split for real:
-64 disjoint against a `sgrAny` of 125. A reader who takes `sgrOnly` for "the unwanted SGR
-count" is reading the wrong number in general, which is why both are on the same line.
+**`tests/colour-axis.test.ts` asserts the children resolve distinct modes from observed
+output**, not from the environment the parent intended to set, and asserts it again with a
+hostile ambient `FORCE_COLOR`/`NO_COLOR`/`MDVIEW_COLOR`/`TMUX`/`TERM` in place. That test is
+the reason to believe any number below.
 
-**The seeds, and what defines them.** Measured by this instrument over the fixed gate
-corpus `corpus/default-manifest.json` defines (WP-1, `plans/gate-corpus-reframe.md`) —
-**14 files × the 5 default widths = 70 combos** — at both glyph tiers, which agree
-exactly:
+**Three exact gates, no thresholds, over the union of every `(file, width)` key any of the
+three children reported.** The two-child join this replaced mapped over one stream only, so
+a key present in one mode and absent from another was silently dropped from the denominator;
+the join now iterates the union and turns every incomplete key into a mode-tagged error
+(`{mode, corpus, file, width, reason: "missing" | "child-error"}`) instead. The printed
+line is `[<corpus>] colour-axis combos=N g1=N g2=N g3=N errors=N elapsed=X.Xs`, and
+`scripts/verify.ts`'s step fails iff any of the four is non-zero:
+
+- **G1** — the `default` child's record for a combo carries at least one recognised
+  sequence, or its `malformed` flag is set. Reads `default` alone.
+- **G2** — the `on` and `off` children's `visibleSha` differ for a combo. The character
+  channel: colour may change bytes, never characters.
+- **G3** — a sequence in the `on` child's record does not parse as membership in
+  `src/style.ts`'s committed SGR table, a well-formed OSC-8 hyperlink (`scan`'s own `osc8`
+  classification, which is only ever assigned to a well-formed one), or a strictly-parsed
+  tmux DCS wrapper whose payload, undoubled, is exactly one such OSC-8 sequence and nothing
+  else (cycle-3 f7 — `src/ansi.ts`'s `link()` emits exactly that wrapper under tmux, so a
+  gate language without a DCS arm would reject a sequence the plan itself introduces). A
+  `malformed` on-child record also fails G3: nothing this renderer emits is ever malformed
+  by construction.
+
+**Why G1 can fire on correct output, and what that means for reading a non-zero G1.** An
+authored escape in a document's own source passes through every render verbatim, at every
+colour level (Decision 1 of `plans/colour-policy.md`) — including `default`. G1 cannot tell
+"the renderer leaked a sequence" from "the author's own bytes survived correctly", because
+it reads finished text; that is why a G1 failure record carries the sequence's raw bytes
+rather than only a count, and why `tests/colour-axis.test.ts`'s `authored.md` fixture pins
+this deliberately (`g1Failures` names it at every width) rather than expecting the gate
+corpus's own zero to generalise to every possible document. **The fixed gate corpus itself
+is asserted ESC-free** (`tests/wikilink.test.ts`), which is the fact that makes today's
+`g1=0` mean "no leak", not merely "no authored escape happened to be in the sample".
+
+**The seed history below is kept for provenance — the ratchets it describes are gone.**
+Measured by this instrument over the fixed gate corpus `corpus/default-manifest.json`
+defines (WP-1, `plans/gate-corpus-reframe.md`) — **14 files × the 5 default widths = 70
+combos** — at both glyph tiers, which agree exactly, the two-bucket predecessor of today's
+gates read:
 
 | | combos | identical | charDiffOnly | sgrOnly | both | **charDiff** | **sgrAny** | errors |
 |---|---|---|---|---|---|---|---|---|
-| unicode | 70 | 19 | 31 | 20 | 0 | **31** | **20** | 0 |
-| ascii | 70 | 19 | 31 | 20 | 0 | **31** | **20** | 0 |
+| unicode (seed, WP-1) | 70 | 19 | 31 | 20 | 0 | **31** | **20** | 0 |
+| ascii (seed, WP-1) | 70 | 19 | 31 | 20 | 0 | **31** | **20** | 0 |
 
-`scripts/verify.ts` runs the unicode pass with `--max-char-diff 31 --max-sgr 20`. **Both
-are ratchets, not targets** — the corpus is what it is today, and what must not happen is
-either number going up.
+`scripts/verify.ts` used to run the unicode pass with `--max-char-diff 31 --max-sgr 20`.
+**Both flags, `digestText`'s `hasSgr`/`strippedSha` fields, and `classifyColourAxis`'s
+buckets are deleted, not renamed** — WP-5's replacement is the three gates above, and
+`bun run sweep -- --colour-mode both` today reads:
 
-**Per-file composition (one-file-manifest isolation, WP-1).** `charDiff=31` is
-`blockquote-list.md` (5) + `coalesced-colon-guard-continuation.md` (1) + `fenced-list.md`
-(5) + `loose-list.md` (5) + `nested-list.md` (5) + `tight-list.md` (5) +
-`defect-wp14-list-item-inline-markup.md` (5) — the same three known colour-only defects
-named below, now firing on a smaller, fixed population. `sgrAny=20` is `simple.md`'s one
-wiki-link (`styleWikiLink`, 5 combos) plus the three frontmatter-bearing witnesses —
-`defect-0-crlf-frontmatter.md`, `defect-1-2-unparseable-frontmatter.md`,
-`defect-3-nested-mapping.md` — each contributing 5 via `src/frontmatter.ts`'s
-`DIM_START`/`DIM_END` around metadata keys, which fires in the colourless render
-regardless of the colour decision (this is measured directly here, where the table-border
-styling below was gated on `@colors/colors`' own answer and so could not appear at all). The
-other 7 of 14 files are `identical` at every width and every combo.
+| | combos | g1 | g2 | g3 | errors |
+|---|---|---|---|---|---|
+| unicode | 70 | 0 | 0 | 0 | 0 |
+| ascii | 70 | 0 | 0 | 0 | 0 |
 
-**That composition is the seed's, and the *measured* number has since fallen to zero.**
-WP-1 of `plans/colour-policy.md` put `src/frontmatter.ts`'s dim behind the resolved policy,
-so the three frontmatter witnesses stopped contributing and `sgrAny` measured **5** —
-`simple.md`'s wiki-link alone. **WP-4 removed that last five**: `styleWikiLink` is gone,
-the label rides through the lexer on carrier control characters instead
-(`src/wikilink.ts`), and the styling happens after the walk under the resolved policy. The
-measured `sgrAny` is **0** against a seed of 20, with `charDiff` still 0 and the
-forced-colour render byte-identical across the change. Both seeds are ratchets and are left
-where they are until the plan's WP-5 replaces them with exact gates; what must not happen
-is either measured number going *up*.
+**Per-file composition (one-file-manifest isolation, WP-1) — historical, both mechanisms
+closed.** `charDiff=31` was `blockquote-list.md` (5) + `coalesced-colon-guard-continuation.md`
+(1) + `fenced-list.md` (5) + `loose-list.md` (5) + `nested-list.md` (5) + `tight-list.md`
+(5) + `defect-wp14-list-item-inline-markup.md` (5) — the layout-reasons-about-bytes class
+WP-3 of `plans/colour-policy.md` closed (see "The closure" in `src/AGENTS.md`). `sgrAny=20`
+was `simple.md`'s one wiki-link (`styleWikiLink`, 5 combos, closed at WP-4) plus the three
+frontmatter-bearing witnesses — `defect-0-crlf-frontmatter.md`,
+`defect-1-2-unparseable-frontmatter.md`, `defect-3-nested-mapping.md` — each contributing 5
+via `src/frontmatter.ts`'s `DIM_START`/`DIM_END`, closed at WP-1 when the dim went behind
+the resolved policy. The other 7 of 14 files were `identical` at every width and every combo
+throughout. **Both measured numbers reached zero before WP-5 ran** — WP-5 changed the
+instrument, not the renderer, and re-verified zero repairs were needed to pass the new exact
+gates (see `runs/dispatch/colour-policy-wp5-report.md`).
 
 **A zero here is worth one sentence of care, because a counter at zero is a counter that
-can pass vacuously.** What keeps this one honest is that the axis's classifier is still
-exercised non-vacuously elsewhere: `tests/colour-axis.test.ts` renders a temp-dir corpus
-carrying an **authored** escape — correct output, per Decision 1's fidelity rule — and
-asserts it lands in `sgrOnly`. The gate corpus deliberately contains no such file, which is
-asserted directly in `tests/wikilink.test.ts` rather than assumed, since this zero's reading
-depends on it.
+can pass vacuously — and G1/G2/G3 are each kept honest by a direct, non-vacuous test rather
+than by the gate corpus's own zero.** `tests/colour-axis.test.ts` exercises: G1 against the
+`authored.md` fixture (a real sequence that must be reported); G2 against a synthetic
+divergent pair; G3's SGR arm against both a committed and an uncommitted byte pair, its
+OSC-8 arm against a real (non-tmux) hyperlink from `src/ansi.ts`'s own `link()`, and its DCS
+arm against both a real **tmux-wrapped** hyperlink from the same function (the injected-tmux
+non-vacuity case cycle-3 f7 asks for) and a hostile DCS frame whose payload is not a valid
+OSC-8 sequence. The gate corpus deliberately contains no authored-escape file, which is
+asserted directly in `tests/wikilink.test.ts` rather than assumed, since a `g1=0` reading
+over that corpus depends on it.
 
 **History — the population used to drift, and WP-1 of `plans/gate-corpus-reframe.md`
-replaced it because of that.** Before this WP, the corpus was a **glob over live
+replaced it because of that.** Before that WP, the corpus was a **glob over live
 documents** — `README.md`, `AGENTS.md`, `plans/*.md`, `tests/fixtures/*.md` — so editing
 any of those files, including a one-line Status-line edit or a brand-new plan, moved the
-population and therefore the ratchets, with no renderer change in the commit. Five
+population and therefore the old ratchets, with no renderer change in the commit. Five
 re-seeds chased that drift, only one of them behind an actual source change: **62 → 65**
 (WP-2, `plans/own-the-token-walk.md`, which rewrote root `AGENTS.md` as a side effect of
 owning the token walk) **→ 66** (`plans/styled-runs-and-colour-policy.md` was written,
@@ -371,21 +401,10 @@ this WP; see `plans/gate-corpus-reframe.md`'s Context for the full instability r
 The withdrawn `plans/styled-runs-and-colour-policy.md` spent a whole sub-package building
 per-file ratchet *attribution* to manage that instability instead of removing its cause.
 User direction (2026-08-18) was a fixed, explicit, wildcard-free corpus instead of
-attribution machinery, and that is what `corpus/default-manifest.json` now is.
-
-**The attribution rule, revised for a fixed population (WP-1).** A fixed population does
-not freeze member *contents* — `tests/fixtures/*.md` and the four clean witnesses can
-still change — so a move is still attributed, but by **commit shape** rather than by
-isolating one document out of a glob: **member-only commit** (a population-content
-change — editing a manifest member's bytes, or changing which witnesses join) is
-re-seeded in the same commit, with the diff as evidence; **no-member-touched commit**
-(every manifest member's bytes are unchanged) means any move — **including a downward
-one** — is a renderer finding, not a re-seed; a **mixed member+renderer commit** gets no
-diff-only attribution and no re-seed at all — **commit splitting is mandatory**, so each
-side lands as one of the two decidable shapes. The one-file-manifest isolation the
-history above used is still the right *instrument* for a member-only re-seed's evidence;
-what changed is that there is no longer a glob to isolate a document out of, since every
-manifest member is already named explicitly.
+attribution machinery, and that is what `corpus/default-manifest.json` now is. **The exact
+gates WP-5 introduced inherit that stability directly**: a gate is pass/fail per combo, so
+there is no ratchet number left for a member-content edit to move at all — only `combos`
+can change, and only when the manifest's own membership changes.
 
 **What this axis structurally could not see, and what closed it.** The colourless child sets
 `FORCE_COLOR=0` (`colourChildEnv`), which `supports-color` *and* `@colors/colors` both
@@ -394,40 +413,39 @@ rule was in the real world. `src/table.ts`'s border and head styling was exactly
 it read `@colors/colors`' answer, which does **not** consult `isTTY`, so piping `mdview` into
 a file with no `FORCE_COLOR` set emitted `\x1b[90m` around every border and `\x1b[1m` around
 every head cell — **205 grey pairs and 12 bold pairs on `wide-table.md` alone, measured** —
-while this axis reported the same combo as `identical`, because the leak was gated on a
-decision that itself honours `FORCE_COLOR=0`.
-
-WP-2 of `plans/colour-policy.md` removed that gate with the package: the table styles through
+while this axis reported the same combo as `identical` (the old classifier's clean bucket),
+because the leak was gated on a decision that itself honours `FORCE_COLOR=0`. WP-2 of
+`plans/colour-policy.md` removed that gate with the package: the table styles through
 `src/style.ts` under the resolved policy, so the piped default emits nothing and there is no
-longer a producer this instrument is blind to *by construction*. The seed did not move
-(`sgrAny=5` before and after), which is the expected result and not an accident — the escapes
-that disappeared were only ever emitted in the mode this axis does not sample.
+longer a producer this instrument is blind to *by construction*. **G1 since WP-5 is exactly
+the check that would have caught this class directly** — a `default`-child render styled by
+an environment-only decision, with no `FORCE_COLOR` set at all, would have shown up as a G1
+failure rather than as an `identical` bucket entry that never asked the right question.
 
 `src/frontmatter.ts`'s dim was **never** gated on either package; it is what made three
-frontmatter witnesses land in `sgrOnly` rather than `identical` until WP-1 put it behind the
-policy. `sgrAny` counts escapes that survive `FORCE_COLOR=0`; it is still not a complete leak
-audit — a producer that consulted something other than `FORCE_COLOR` would be invisible again
-— see `plans/colour-policy.md`.
+frontmatter witnesses land in the old `sgrOnly` bucket rather than `identical` until WP-1 put
+it behind the policy. The old `sgrAny` counted escapes that survived `FORCE_COLOR=0`; it was
+still not a complete leak audit — a producer that consulted something other than
+`FORCE_COLOR` would have been invisible again, which is exactly the gap `default`'s
+env-sanitized, nothing-decided environment closes: it has no single variable to be blind to.
 
 **The population is the fixed gate corpus, and nothing else.** There is no second
 file-selection mechanism for the axis: the parent hands each child its own command line
-with `--colour-mode` removed, so both children resolve the same manifest, corpora and
-widths through the same parser. `corpus/default-manifest.json`'s `globs` key is now an
+with `--colour-mode` removed, so every child resolves the same manifest, corpora and
+widths through the same parser. `corpus/default-manifest.json`'s `globs` key is an
 explicit, wildcard-free path list (WP-1, `plans/gate-corpus-reframe.md`) — no
 `plans/*.md`, no `README.md`, no root `AGENTS.md` — so nothing outside a deliberate edit
 to `corpus/default-manifest.json` itself, or to one of the fourteen files it names, can
-move these seeds again. A WP that does either and trips a ratchet re-measures with the
-command above and re-seeds `scripts/verify.ts` in the same commit, per the attribution
-rule above.
+move `combos`. A WP that does either and trips a gate re-measures with the command above.
 
 **The width axis is asserted, not assumed.** `renderDocumentDetailed(source, targetWidth,
-…)` takes its width as a **positional number** (`src/render.ts:776-782`); passing an
-options object renders every width identically and produces counts about nothing. That
-mistake has invalidated this exact quantity **four times across three authors**, so
-`tests/colour-axis.test.ts` pins it directly — the same file must digest differently at
-40 and at 100 — independent of which population the manifest names.
+…)` takes its width as a **positional number**; passing an options object renders every
+width identically and produces counts about nothing. That mistake has invalidated this
+exact quantity **four times across three authors**, so `tests/colour-axis.test.ts` pins it
+directly — the same file must digest differently at 40 and at 100 — independent of which
+population the manifest names.
 
-**What the numbers were made of, and what closed them.** `charDiff=31`'s mechanisms were
+**What `charDiff=31` was made of, and what closed it — WP-3 of `plans/colour-policy.md`.**
 `src/lists.ts`' `fixNestedLists` regex whose `\S` matches an SGR reset's `m`;
 `src/lists.ts`' raw-byte empty-line filter; `src/wrap.ts`' escape-only run becoming a
 zero-width word — plus two more the first repair exposed, `src/render.ts`'s hard-break
@@ -435,34 +453,36 @@ seam and its three marker-shape guards (with `substituteBullets`), all of them t
 defect: a layout decision made on bytes rather than on columns. A worked witness:
 `tests/fixtures/tight-list.md` at 80 columns wrapped a `<br />` hard return one
 way colourless and another under colour, and the two renders differed in *line
-count*. **WP-3 of `plans/colour-policy.md` repaired all five: the measured `charDiff` is
-0 over the fixed corpus at both tiers, with the colourless render byte-identical in 140
-of 140 combos** (the direction was pinned before the work — the colourless side is the
-frozen baseline and only the coloured side moves). The seed stays at 31 until WP-5
-replaces both counters with the three exact gates; what must not happen is the measured
-number going up.
+count*. WP-3 repaired all five: the measured `charDiff` fell to **0** over the fixed corpus
+at both tiers, with the colourless render byte-identical in 140 of 140 combos (the
+direction was pinned before the work — the colourless side is the frozen baseline and only
+the coloured side moves). **G2 since WP-5 is the same check, restated exactly**: it is
+`visible(on) === visible(off)` per combo, with no threshold to leave at a stale seed.
 
-`sgrAny=20`'s two mechanisms were `src/render.ts:62-65` (`styleWikiLink`,
-hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `src/frontmatter.ts`'s
+**What `sgrAny=20` was made of, and what closed it — WP-1 and WP-4 of
+`plans/colour-policy.md`.** Its two mechanisms were `src/render.ts`'s old `styleWikiLink`
+(hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `src/frontmatter.ts`'s
 `DIM_START`/`DIM_END`, both unconditional. The second went behind the policy at WP-1,
-taking the measured number to **5** — `simple.md`'s wiki-link alone — and **WP-4 took the
-first, so the measured number is 0.** The wiki-link's label is marked through the lexer by
+taking the measured number to **5** — `simple.md`'s wiki-link alone — and WP-4 took the
+first, closing the mechanism entirely. The wiki-link's label is marked through the lexer by
 carrier control characters (`src/wikilink.ts`) and styled after the walk through
 `src/style.ts` under the resolved policy; the colourless render of `simple.md` lost exactly
-those four escape codes and not one visible character, at every width and both tiers. The
-seed stays at 20 until WP-5.
+those four escape codes and not one visible character, at every width and both tiers. **G1
+since WP-5 is what would have caught either mechanism directly**, on the `default` child,
+without needing a colourless-render side-channel to notice.
 
-**OSC-8 used to be outside what this can see, and WP-3 brought it inside.** `stripAnsi`
-(`src/list-lines.ts`) removed SGR only, so a hyperlink — and the tmux DCS envelope around
-it — passed through the strip intact: counted as visible text by the character channel,
-invisible to `hasSgr`. It is a derivation of `src/ansi.ts`'s scanner now, so `hasSgr`
-means "carries any terminal sequence" and the character channel measures the columns a
-reader sees. **Neither seed moved with that change**, and the reason is structural rather
-than lucky: hyperlinks are off on every non-TTY destination, so neither child of this axis
-emits one. The paragraph this replaces said the widening would "silently change what
-`hasSgr` means" — it did change it, deliberately and in one recorded package, and the pin
-in `tests/colour-axis.test.ts` was inverted in the same commit rather than left to be
-discovered.
+**OSC-8 used to be outside what this can see, and WP-3 brought it inside; WP-5's wire
+record is what makes it a first-class gate input.** `stripAnsi` (`src/list-lines.ts`)
+removed SGR only before WP-3, so a hyperlink — and the tmux DCS envelope around it — passed
+through the strip intact: counted as visible text by the character channel, invisible to
+the old `hasSgr` flag. It is a derivation of `src/ansi.ts`'s scanner now, and the v2 wire
+record enumerates every `osc8`/`dcs` span by kind and raw bytes rather than folding them
+into one boolean — which is what lets G3 hold each kind to its own grammar instead of
+treating "any sequence" as one undifferentiated fact. **Neither the old seed nor today's
+gate is exercised by the gate corpus for this class**, and the reason is structural rather
+than lucky: hyperlinks are off on every non-TTY destination, so no child of this axis ever
+emits one over real corpus content. `tests/colour-axis.test.ts` covers the OSC-8/DCS arms
+directly instead, against sequences `src/ansi.ts`'s own `link()` produced (see above).
 
 **The axis flag is on the sweep and deliberately not on `scripts/render-diff.ts`.** That
 harness imports **both revisions into one process** (`loadRevision`; when this was written the
