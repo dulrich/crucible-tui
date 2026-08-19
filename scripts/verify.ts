@@ -135,27 +135,28 @@ const steps: Step[] = [
   { name: "sweep (unicode)", run: () => sh(["bun", "run", "sweep"]) },
   { name: "sweep (ascii)", run: () => sh(["bun", "run", "sweep", "--", "--glyphs", "ascii"]) },
   {
-    // The colour axis (WP-1, `plans/own-the-token-walk.md`): the same bundled corpus,
-    // rendered twice more — once in a forced-colour child, once in a colourless one —
-    // and compared SGR-stripped against SGR-stripped. It costs about one extra sweep of
-    // wall time because the two children run in parallel.
+    // The colour axis (WP-1, `plans/own-the-token-walk.md`; three exact gates since
+    // WP-5, `plans/colour-policy.md`): the same bundled corpus, rendered three times
+    // more — a forced-colour child, a colourless one, and an env-sanitized `default`
+    // child with no colour variable set at all — and joined on the union of every
+    // `(file, width)` key any of the three reported. It costs about one extra sweep of
+    // wall time because the three children run in parallel.
     //
-    // **The two numbers are ratchets, not targets**, seeded from this instrument's own
-    // output over the fixed, explicit, wildcard-free gate corpus
-    // (`corpus/default-manifest.json` — WP-1, `plans/gate-corpus-reframe.md`): 14 files,
-    // 70 combos, `charDiff=31 sgrAny=20`, identical in both glyph tiers. What must not
-    // happen is either going up. Before WP-1 this manifest was a glob over live
-    // documents (`plans/*.md`, `AGENTS.md`, `README.md`), so editing any of those files
-    // moved the population and re-seeded these numbers with no renderer change behind
-    // most of the moves (62→65→66→70→73→75) — that history, the current per-file
-    // composition, and the commit-shape attribution rule that replaces it all live in
-    // `scripts/AGENTS.md`'s colour-axis section now, not here.
+    // **No thresholds — three exact, per-combo gates, over the fixed, explicit,
+    // wildcard-free gate corpus** (`corpus/default-manifest.json` — WP-1,
+    // `plans/gate-corpus-reframe.md`): G1 the `default` child emits zero terminal
+    // sequences; G2 the `on`/`off` children's visible text is identical; G3 every `on`
+    // sequence parses as committed-table SGR, a well-formed OSC-8 hyperlink, or a
+    // strictly-parsed tmux DCS wrapper around one. The step exits non-zero iff any of
+    // `g1`/`g2`/`g3`/`errors` is non-zero — the two ratchet counters this replaced
+    // (`--max-char-diff 31 --max-sgr 20`) were already measured at 0 and are deleted with
+    // their flags; `scripts/AGENTS.md`'s colour-axis section carries the gate definitions
+    // and the history of what used to move these numbers.
     //
     // The full-corpus pass stays opt-in: it is the private manifest's job, run by hand
     // with `MDVIEW_CORPUS_MANIFEST` set, and is deliberately not wired in here.
     name: "sweep (colour axis)",
-    run: () =>
-      sh(["bun", "run", "sweep", "--", "--colour-mode", "both", "--max-char-diff", "31", "--max-sgr", "20"]),
+    run: () => sh(["bun", "run", "sweep", "--", "--colour-mode", "both"]),
   },
   { name: "security scan", run: runSecurityStep },
 ];

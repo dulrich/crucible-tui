@@ -966,17 +966,16 @@ describe("the missing-root state reports a hardcoded elapsedSeconds of 0 (WP-4)"
   });
 });
 
-// The colour axis's CLI half (WP-1, `plans/own-the-token-walk.md`). The axis itself —
-// the two children, the digests and the join — is `tests/colour-axis.test.ts`; what is
-// pinned here is the flag surface, the passthrough that keeps both children looking at
-// the same population, and the printed line's three buckets.
-describe("parseArgs: the colour axis flags (WP-1)", () => {
+// The colour axis's CLI half (WP-1, `plans/own-the-token-walk.md`; three exact gates
+// since WP-5, `plans/colour-policy.md`). The axis itself — the three children, the
+// digests and the join — is `tests/colour-axis.test.ts`; what is pinned here is the flag
+// surface, the passthrough that keeps every child looking at the same population, and the
+// printed line's four counters.
+describe("parseArgs: the colour axis flags (WP-1/WP-5)", () => {
   test("the default is off, and every existing invocation is therefore unchanged", () => {
     const { options } = parseArgs([]);
     expect(options.colourMode).toBe("off");
     expect(options.colourChild).toBeUndefined();
-    expect(options.maxCharDiff).toBeUndefined();
-    expect(options.maxSgr).toBeUndefined();
   });
 
   test("--colour-mode takes on, off or both and rejects anything else", () => {
@@ -1004,31 +1003,25 @@ describe("parseArgs: the colour axis flags (WP-1)", () => {
     expect(parseArgs(["--no-color"]).options.colourMode).toBe("off");
   });
 
-  test("--max-char-diff and --max-sgr set a threshold and turn the axis on", () => {
-    // The `--max-orphans` precedent: a threshold for a measurement that is not being
-    // taken is a gate that cannot fail.
-    const charDiff = parseArgs(["--max-char-diff", "62"]).options;
-    expect(charDiff.maxCharDiff).toBe(62);
-    expect(charDiff.colourMode).toBe("both");
-    const sgr = parseArgs(["--max-sgr", "20"]).options;
-    expect(sgr.maxSgr).toBe(20);
-    expect(sgr.colourMode).toBe("both");
+  test("--max-char-diff and --max-sgr are gone: no such flag, no such option (WP-5)", () => {
+    // Deleted, not renamed — their replacement is the three exact gates. An unknown flag
+    // is silently ignored by this parser (documented behaviour, `parseArgs`'s own header),
+    // so both spellings now fall straight through without turning the axis on or setting
+    // anything: `colourMode` stays at its default and neither field exists on the type any
+    // more (a compile-time check as much as a runtime one — see the deletion inventory in
+    // `runs/dispatch/colour-policy-wp5-report.md`).
+    const options = parseArgs(["--max-char-diff", "62", "--max-sgr", "20"]).options;
+    expect(options.colourMode).toBe("off");
+    expect("maxCharDiff" in options).toBe(false);
+    expect("maxSgr" in options).toBe(false);
   });
 
-  test("a ratchet of 0 is legal, and a negative or missing one throws", () => {
-    expect(parseArgs(["--max-char-diff", "0"]).options.maxCharDiff).toBe(0);
-    expect(parseArgs(["--max-sgr", "0"]).options.maxSgr).toBe(0);
-    expect(() => parseArgs(["--max-char-diff", "-1"])).toThrow(
-      "--max-char-diff must be a non-negative number, got: -1",
-    );
-    expect(() => parseArgs(["--max-sgr"])).toThrow("--max-sgr must be a non-negative number, got: undefined");
-  });
-
-  test("--colour-child is internal, validated, and never set by any other flag", () => {
+  test("--colour-child is internal, validated, and accepts the third child (WP-5)", () => {
     expect(parseArgs(["--colour-child", "on"]).options.colourChild).toBe("on");
     expect(parseArgs(["--colour-child", "off"]).options.colourChild).toBe("off");
+    expect(parseArgs(["--colour-child", "default"]).options.colourChild).toBe("default");
     expect(() => parseArgs(["--colour-child", "both"])).toThrow(
-      '--colour-child must be "on" or "off", got: both',
+      '--colour-child must be "on", "off" or "default", got: both',
     );
     expect(parseArgs(["--colour-mode", "both"]).options.colourChild).toBeUndefined();
   });
@@ -1069,21 +1062,21 @@ describe("stripColourModeArgs: what each child is handed (WP-1)", () => {
   });
 });
 
-describe("printColourAxis prints all three buckets and both totals (WP-1)", () => {
+describe("printColourAxis prints the three exact gates and the join-error count (WP-5)", () => {
   const axis = {
     corpus: "repo",
     combos: 110,
-    identical: 38,
-    charDiffOnly: 52,
-    sgrOnly: 10,
-    both: 10,
-    charDiff: 62,
-    sgrAny: 20,
+    g1: 0,
+    g2: 0,
+    g3: 0,
+    g1Failures: [],
+    g2Failures: [],
+    g3Failures: [],
     errors: [],
     elapsedSeconds: 2.84,
   };
 
-  test("the line carries the disjoint buckets and the overlapping totals side by side", () => {
+  test("the summary line carries combos and all four counters", () => {
     const originalLog = console.log;
     const captured: string[] = [];
     console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
@@ -1092,17 +1085,93 @@ describe("printColourAxis prints all three buckets and both totals (WP-1)", () =
     } finally {
       console.log = originalLog;
     }
-    expect(captured[0]).toBe(
-      "[repo] colour-axis combos=110 charDiff=62 (charDiffOnly=52 both=10) " +
-        "sgrAny=20 (sgrOnly=10 both=10) identical=38 errors=0 elapsed=2.8s",
-    );
-    // The reason both are printed: `sgrOnly` is not the unwanted-SGR count and must not
-    // be readable as one. `sgrAny` is, and it is on the same line.
-    expect(captured[0]).toContain("sgrAny=20");
-    expect(captured[0]).toContain("sgrOnly=10");
+    expect(captured[0]).toBe("[repo] colour-axis combos=110 g1=0 g2=0 g3=0 errors=0 elapsed=2.8s");
   });
 
-  test("an instrument fault is printed under the line, not folded into a bucket", () => {
+  test("a G1 failure names the file, width and offending sequence", () => {
+    // Written via `String.fromCharCode` and `JSON.stringify`, not typed literally, per
+    // this repo's own sentinel convention — see `tests/colour-axis.test.ts`'s `ESC`.
+    const esc = String.fromCharCode(27);
+    const raw = `${esc}[31m`;
+    const originalLog = console.log;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printColourAxis({
+        ...axis,
+        g1: 1,
+        g1Failures: [{ corpus: "repo", file: "/example/a.md", width: 80, sequences: [{ kind: "sgr", raw }], malformed: false }],
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured[0]).toContain("g1=1");
+    expect(captured[1]).toBe(`  colour-axis g1 width=80 /example/a.md: sequences=[sgr:${JSON.stringify(raw)}]`);
+  });
+
+  test("a G2 failure names the file, width and the two visible-text hashes", () => {
+    const originalLog = console.log;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printColourAxis({
+        ...axis,
+        g2: 1,
+        g2Failures: [{ corpus: "repo", file: "/example/a.md", width: 80, onVisibleSha: "aaa", offVisibleSha: "bbb" }],
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured[0]).toContain("g2=1");
+    expect(captured[1]).toBe("  colour-axis g2 width=80 /example/a.md: on=aaa off=bbb");
+  });
+
+  test("a G3 failure names the file, width, sequence and reason", () => {
+    const originalLog = console.log;
+    const esc = String.fromCharCode(27);
+    const raw = `${esc}[92m`;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printColourAxis({
+        ...axis,
+        g3: 1,
+        g3Failures: [
+          {
+            corpus: "repo",
+            file: "/example/a.md",
+            width: 80,
+            sequence: { kind: "sgr", raw },
+            reason: "sgr not in the committed style table",
+          },
+        ],
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured[0]).toContain("g3=1");
+    expect(captured[1]).toBe(
+      `  colour-axis g3 width=80 /example/a.md: sgr:${JSON.stringify(raw)} — sgr not in the committed style table`,
+    );
+  });
+
+  test("a join-level error is printed under the line, mode-tagged, not folded into a gate", () => {
+    const originalLog = console.log;
+    const captured: string[] = [];
+    console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
+    try {
+      printColourAxis({
+        ...axis,
+        errors: [{ mode: "default", corpus: "repo", file: "/example/a.md", width: 80, reason: "missing" }],
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    expect(captured[0]).toContain("errors=1");
+    expect(captured[1]).toBe("  colour-axis error mode=default width=80 /example/a.md: missing");
+  });
+
+  test("a child-error carries its own message alongside the reason", () => {
     const originalLog = console.log;
     const captured: string[] = [];
     console.log = (...args: unknown[]) => captured.push(args.map(String).join(" "));
@@ -1111,20 +1180,18 @@ describe("printColourAxis prints all three buckets and both totals (WP-1)", () =
         ...axis,
         errors: [
           {
+            mode: "off",
             corpus: "repo",
-            path: "/example/a.md",
+            file: "/example/a.md",
             width: 80,
-            message: "present in the colourless stream but missing from the colour stream",
+            reason: "child-error",
+            message: "width 80: boom",
           },
         ],
       });
     } finally {
       console.log = originalLog;
     }
-    expect(captured[0]).toContain("errors=1");
-    expect(captured[1]).toBe(
-      "  colour-axis error width=80 /example/a.md: " +
-        "present in the colourless stream but missing from the colour stream",
-    );
+    expect(captured[1]).toBe("  colour-axis error mode=off width=80 /example/a.md: child-error (width 80: boom)");
   });
 });

@@ -5,12 +5,11 @@
  * (~83ms each). Rendering in-process against `renderDocumentDetailed` directly
  * measured ~13x faster (600 vault files x 3 widths in 23.8s).
  *
- * **This file is the CLI half only** (WP-4): argument parsing, the printed summary, the
- * ratchet thresholds and the exit-code contract. Corpus discovery and evaluation — the
- * manifest, the walk, the sampling policy, and `sweepCorpus` itself — live in
- * `scripts/corpus.ts`, which `scripts/emoji-audit.ts` imports too. That split exists
- * because the sampling policy had already been copied into the audit and had drifted;
- * see that module's header.
+ * **This file is the CLI half only** (WP-4): argument parsing, the printed summary, and
+ * the exit-code contract. Corpus discovery and evaluation — the manifest, the walk, the
+ * sampling policy, and `sweepCorpus` itself — live in `scripts/corpus.ts`, which
+ * `scripts/emoji-audit.ts` imports too. That split exists because the sampling policy had
+ * already been copied into the audit and had drifted; see that module's header.
  *
  * Corpus roots are not hardcoded here (WP-1) — they are loaded from a versioned JSON
  * manifest, resolved with this precedence, highest first:
@@ -25,19 +24,17 @@
  * recorded runs. Point `MDVIEW_CORPUS_MANIFEST` at your own manifest to reproduce.
  *
  * **The parser below is deliberately written flag-by-flag rather than driven by a
- * declarative specification.** Its fourteen flags reduce to five validation shapes, three
- * of which need per-flag behaviour anyway (`--widths` delegates to `parseWidths`, the two
- * detector `--max-*` flags also turn detection on and the two colour ones also turn the
- * axis on), so a spec plus a dispatcher costs the same and makes the one thing this parser
- * has to support harder: reading it line by line against an archived command line to
- * establish what a recorded run measured.
+ * declarative specification.** Its flags reduce to a handful of validation shapes, and
+ * some need per-flag behaviour anyway (`--widths` delegates to `parseWidths`, the two
+ * detector `--max-*` flags also turn detection on), so a spec plus a dispatcher costs the
+ * same and makes the one thing this parser has to support harder: reading it line by line
+ * against an archived command line to establish what a recorded run measured.
  *
  * Usage: bun run sweep [--corpus <name|all>] [--all]
  *                                    [--widths 80,100,160] [--limit N]
  *                                    [--glyphs unicode|ascii] [--manifest <path>]
  *                                    [--ambiguous narrow|wide]
  *                                    [--colour-mode on|off|both]
- *                                    [--max-char-diff N] [--max-sgr N]
  *
  * **`--colour-mode` is not spelled `--color`, and never may be** (WP-1,
  * `plans/own-the-token-walk.md`). `has-flag` — which `supports-color` consulted, and
@@ -46,9 +43,10 @@
  * `--color` or `--no-color` silently flipped the colour decision of the very renderer this
  * instrument measures. The rule outlived both packages: `--color` is now `mdview`'s own
  * flag and the highest slot of the ratified precedence matrix, so that spelling would be
- * read by the renderer directly. The axis itself lives in `scripts/corpus.ts`
- * with the rest of the render seam; this file owns its flags, its printed line and its
- * two ratchets.
+ * read by the renderer directly. The axis itself — now three exact gates over three
+ * children (WP-5, `plans/colour-policy.md`), replacing the two ratchet ceilings this file
+ * used to carry as `--max-char-diff`/`--max-sgr` — lives in `scripts/corpus.ts` with the
+ * rest of the render seam; this file owns its flags, its printed line and its exit code.
  */
 import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
 import { NARROW_MEASURE, measureFor, type Measure } from "../src/width";
@@ -59,7 +57,7 @@ import {
   resolveManifestSource,
   runColourAxis,
   sweepCorpus,
-  type ColourAxisMode,
+  type ColourAxisChildMode,
   type ColourAxisResult,
   type ColourMode,
   type CorpusManifest,
@@ -129,9 +127,7 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
   let maxOrphans: number | undefined;
   let maxOverIndent: number | undefined;
   let colourMode: ColourMode = "off";
-  let colourChild: ColourAxisMode | undefined;
-  let maxCharDiff: number | undefined;
-  let maxSgr: number | undefined;
+  let colourChild: ColourAxisChildMode | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -193,35 +189,13 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
     if (arg === "--colour-child") {
       // Internal: set by `collectColourDigests` on the command line it builds for each
       // child. A human never passes it, and it is not documented in the usage line.
+      // `default` is the third child WP-5 added — the piped, env-sanitized render with no
+      // colour variable set at all, which is what G1 reads.
       const value = argv[index + 1];
-      if (value !== "on" && value !== "off") {
-        throw new Error(`--colour-child must be "on" or "off", got: ${value}`);
+      if (value !== "on" && value !== "off" && value !== "default") {
+        throw new Error(`--colour-child must be "on", "off" or "default", got: ${value}`);
       }
       colourChild = value;
-      index += 1;
-      continue;
-    }
-    if (arg === "--max-char-diff") {
-      const value = argv[index + 1];
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed) || parsed < 0) {
-        throw new Error(`--max-char-diff must be a non-negative number, got: ${value}`);
-      }
-      maxCharDiff = parsed;
-      // Same precedent as `--max-orphans` turning `--detect` on: a threshold for a
-      // measurement that is not being taken is a gate that cannot fail.
-      colourMode = "both";
-      index += 1;
-      continue;
-    }
-    if (arg === "--max-sgr") {
-      const value = argv[index + 1];
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed) || parsed < 0) {
-        throw new Error(`--max-sgr must be a non-negative number, got: ${value}`);
-      }
-      maxSgr = parsed;
-      colourMode = "both";
       index += 1;
       continue;
     }
@@ -277,8 +251,6 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
       maxOverIndent,
       colourMode,
       colourChild,
-      maxCharDiff,
-      maxSgr,
     },
   };
 }
@@ -327,26 +299,42 @@ export function printResult(result: CorpusResult, detect: boolean): void {
 }
 
 /**
- * The colour axis's printed line: **all three buckets, plus both totals**, on one line
- * per corpus.
+ * The colour axis's printed line: **the three exact gates and the join-error count**, on
+ * one line per corpus (WP-5, `plans/colour-policy.md`). Replaces the old three-bucket,
+ * two-ratchet line — `combos=N g1=N g2=N g3=N errors=N` is the plan's own wire spec, and
+ * `bun run verify`'s colour-axis step fails iff any of the four is non-zero, no thresholds
+ * anywhere.
  *
- * The disjoint buckets are printed because they are what a reader assumes a two-way
- * comparison produced, and the totals are printed beside them because the totals are what
- * the ratchets read. `sgrOnly` alone misses every combo that carries unwanted SGR *and* a
- * character difference — measured at roughly half of them — so a reader who takes
- * `sgrOnly` for "the unwanted SGR count" is reading the wrong number. Both are here so
- * neither can be mistaken for the other.
+ * Up to ten failures of each kind are printed beneath the summary line, each naming the
+ * file and width so a failure is legible without re-running the axis by hand.
  */
 export function printColourAxis(axis: ColourAxisResult): void {
   console.log(
-    `[${axis.corpus}] colour-axis combos=${axis.combos} ` +
-      `charDiff=${axis.charDiff} (charDiffOnly=${axis.charDiffOnly} both=${axis.both}) ` +
-      `sgrAny=${axis.sgrAny} (sgrOnly=${axis.sgrOnly} both=${axis.both}) ` +
-      `identical=${axis.identical} errors=${axis.errors.length} ` +
-      `elapsed=${axis.elapsedSeconds.toFixed(1)}s`,
+    `[${axis.corpus}] colour-axis combos=${axis.combos} g1=${axis.g1} g2=${axis.g2} g3=${axis.g3} ` +
+      `errors=${axis.errors.length} elapsed=${axis.elapsedSeconds.toFixed(1)}s`,
   );
+  for (const entry of axis.g1Failures.slice(0, 10)) {
+    const sequences = entry.sequences.map((sequence) => `${sequence.kind}:${JSON.stringify(sequence.raw)}`);
+    console.log(
+      `  colour-axis g1 width=${entry.width} ${entry.file}: sequences=[${sequences.join(", ")}]` +
+        (entry.malformed ? " malformed=true" : ""),
+    );
+  }
+  for (const entry of axis.g2Failures.slice(0, 10)) {
+    console.log(
+      `  colour-axis g2 width=${entry.width} ${entry.file}: ` +
+        `on=${entry.onVisibleSha} off=${entry.offVisibleSha}`,
+    );
+  }
+  for (const entry of axis.g3Failures.slice(0, 10)) {
+    const sequence = entry.sequence ? `${entry.sequence.kind}:${JSON.stringify(entry.sequence.raw)}` : "(none)";
+    console.log(`  colour-axis g3 width=${entry.width} ${entry.file}: ${sequence} — ${entry.reason}`);
+  }
   for (const entry of axis.errors.slice(0, 10)) {
-    console.log(`  colour-axis error width=${entry.width} ${entry.path}: ${entry.message}`);
+    console.log(
+      `  colour-axis error mode=${entry.mode} width=${entry.width} ${entry.file}: ` +
+        `${entry.reason}${entry.message ? ` (${entry.message})` : ""}`,
+    );
   }
 }
 
@@ -501,22 +489,16 @@ async function runCli(): Promise<void> {
   }
 
   if (options.colourMode === "both") {
-    // Two fresh processes, one per mode — see `scripts/corpus.ts`'s colour-axis section
-    // for why a second mode cannot be reached from inside this one.
+    // Three fresh processes, one per child — see `scripts/corpus.ts`'s colour-axis
+    // section for why a mode cannot be reached from inside another one.
     for (const axis of await runColourAxis(stripColourModeArgs(argv))) {
       printColourAxis(axis);
-      // An unpaired combo or a child render failure is an instrument fault, and an
-      // instrument that fails quietly is the failure mode this whole package exists to
-      // avoid. It fails the run exactly like a sweep error does.
-      if (axis.errors.length > 0) anyFailure = true;
-      if (options.maxCharDiff !== undefined && axis.charDiff > options.maxCharDiff) {
-        console.error(`[${axis.corpus}] charDiff=${axis.charDiff} exceeds --max-char-diff ${options.maxCharDiff}`);
-        anyFailure = true;
-      }
-      if (options.maxSgr !== undefined && axis.sgrAny > options.maxSgr) {
-        console.error(`[${axis.corpus}] sgrAny=${axis.sgrAny} exceeds --max-sgr ${options.maxSgr}`);
-        anyFailure = true;
-      }
+      // Exact gates, no thresholds (WP-5, `plans/colour-policy.md`): the step fails iff
+      // any of the four counters is non-zero. A join-level error — an unpaired combo or a
+      // child render failure — is an instrument fault and fails the run exactly like a
+      // gate failure does, because an instrument that fails quietly is the failure mode
+      // this whole package exists to avoid.
+      if (axis.g1 > 0 || axis.g2 > 0 || axis.g3 > 0 || axis.errors.length > 0) anyFailure = true;
     }
   }
 
