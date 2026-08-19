@@ -83,75 +83,88 @@ describe("parseForceColor — the three ratified edges", () => {
 });
 
 describe("resolveColor — the precedence table, slot by slot", () => {
+  /**
+   * **The precedence order is untouched by WP-2 of `plans/colour-modes.md`; only what a
+   * slot's "no" *means* moved** (Decisions 4-5). Each case below keeps the exact input it
+   * had when it was a boolean assertion, so the ladder itself is still under test at the
+   * same points — what changed is the expected value, from `true`/`false` to one of the
+   * three `SgrMode`s, and the change is only ever `false` -> `"formats"` on the three
+   * explicit `never`-directive routes (`--color=never`, `MDVIEW_COLOR=never`, config
+   * `never`). Every kill-switch case (`NO_COLOR` presence, `FORCE_COLOR=0`) and the TTY
+   * floor still read `"none"`, which is the boolean `false` these cases used to assert.
+   */
   test("the floor: isTTY decides when nothing else says anything", () => {
-    expect(resolveColor({ isTTY: true })).toBe(true);
-    expect(resolveColor({ isTTY: false })).toBe(false);
+    expect(resolveColor({ isTTY: true })).toBe("full");
+    expect(resolveColor({ isTTY: false })).toBe("none");
     // An omitted `isTTY` is the safe direction, not an unknown one.
-    expect(resolveColor({})).toBe(false);
+    expect(resolveColor({})).toBe("none");
   });
 
   test("slot 1 — the flag decides, and beats everything below it", () => {
-    expect(resolveColor({ flag: "always", isTTY: false, env: { NO_COLOR: "1" } })).toBe(true);
-    expect(resolveColor({ flag: "never", isTTY: true, env: { FORCE_COLOR: "3" } })).toBe(false);
+    expect(resolveColor({ flag: "always", isTTY: false, env: { NO_COLOR: "1" } })).toBe("full");
+    // **A byte-moving route** (Decision 5): an explicit `never` directive is format-preserving.
+    expect(resolveColor({ flag: "never", isTTY: true, env: { FORCE_COLOR: "3" } })).toBe("formats");
   });
 
   test("slot 1 — the flag's 'auto' decides nothing and falls through", () => {
-    expect(resolveColor({ flag: "auto", isTTY: true })).toBe(true);
-    expect(resolveColor({ flag: "auto", isTTY: false })).toBe(false);
-    expect(resolveColor({ flag: "auto", isTTY: false, env: { MDVIEW_COLOR: "always" } })).toBe(true);
+    expect(resolveColor({ flag: "auto", isTTY: true })).toBe("full");
+    expect(resolveColor({ flag: "auto", isTTY: false })).toBe("none");
+    expect(resolveColor({ flag: "auto", isTTY: false, env: { MDVIEW_COLOR: "always" } })).toBe("full");
   });
 
   test("slot 2 — MDVIEW_COLOR decides, and beats NO_COLOR below it", () => {
-    expect(resolveColor({ env: { MDVIEW_COLOR: "always" }, isTTY: false })).toBe(true);
-    expect(resolveColor({ env: { MDVIEW_COLOR: "never" }, isTTY: true })).toBe(false);
-    expect(resolveColor({ env: { MDVIEW_COLOR: "always", NO_COLOR: "1" }, isTTY: false })).toBe(true);
+    expect(resolveColor({ env: { MDVIEW_COLOR: "always" }, isTTY: false })).toBe("full");
+    // The second byte-moving route.
+    expect(resolveColor({ env: { MDVIEW_COLOR: "never" }, isTTY: true })).toBe("formats");
+    expect(resolveColor({ env: { MDVIEW_COLOR: "always", NO_COLOR: "1" }, isTTY: false })).toBe("full");
   });
 
   test("slot 2 — MDVIEW_COLOR=auto falls through; malformed is noted and ignored", () => {
-    expect(resolveColor({ env: { MDVIEW_COLOR: "auto", FORCE_COLOR: "3" }, isTTY: false })).toBe(true);
+    expect(resolveColor({ env: { MDVIEW_COLOR: "auto", FORCE_COLOR: "3" }, isTTY: false })).toBe("full");
     const notes: string[] = [];
-    expect(resolveColor({ env: { MDVIEW_COLOR: "sometimes" }, isTTY: true, warn: (m) => notes.push(m) })).toBe(true);
+    expect(resolveColor({ env: { MDVIEW_COLOR: "sometimes" }, isTTY: true, warn: (m) => notes.push(m) })).toBe("full");
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("MDVIEW_COLOR");
   });
 
   test("slot 2 — an empty MDVIEW_COLOR is malformed, not a directive", () => {
     const notes: string[] = [];
-    expect(resolveColor({ env: { MDVIEW_COLOR: "" }, isTTY: true, warn: (m) => notes.push(m) })).toBe(true);
+    expect(resolveColor({ env: { MDVIEW_COLOR: "" }, isTTY: true, warn: (m) => notes.push(m) })).toBe("full");
     expect(notes).toHaveLength(1);
   });
 
   test("slot 3 — NO_COLOR counts by presence, even empty", () => {
     // no-color.org's rule verbatim, and honoured here for the first time: the tool shipped
     // for its whole life with a `NO_COLOR` nothing in the stack read.
-    expect(resolveColor({ env: { NO_COLOR: "" }, isTTY: true })).toBe(false);
-    expect(resolveColor({ env: { NO_COLOR: "0" }, isTTY: true })).toBe(false);
-    expect(resolveColor({ env: { NO_COLOR: "false" }, isTTY: true })).toBe(false);
+    expect(resolveColor({ env: { NO_COLOR: "" }, isTTY: true })).toBe("none");
+    expect(resolveColor({ env: { NO_COLOR: "0" }, isTTY: true })).toBe("none");
+    expect(resolveColor({ env: { NO_COLOR: "false" }, isTTY: true })).toBe("none");
   });
 
   test("slot 3 — NO_COLOR beats FORCE_COLOR, which is the one ordering worth naming", () => {
     // A user who exported NO_COLOR said something about this machine; a FORCE_COLOR
     // inherited from some parent process did not.
-    expect(resolveColor({ env: { NO_COLOR: "1", FORCE_COLOR: "3" }, isTTY: false })).toBe(false);
+    expect(resolveColor({ env: { NO_COLOR: "1", FORCE_COLOR: "3" }, isTTY: false })).toBe("none");
   });
 
   test("slot 4 — FORCE_COLOR decides when well-formed, falls through when not", () => {
-    expect(resolveColor({ env: { FORCE_COLOR: "3" }, isTTY: false })).toBe(true);
-    expect(resolveColor({ env: { FORCE_COLOR: "0" }, isTTY: true })).toBe(false);
+    expect(resolveColor({ env: { FORCE_COLOR: "3" }, isTTY: false })).toBe("full");
+    expect(resolveColor({ env: { FORCE_COLOR: "0" }, isTTY: true })).toBe("none");
     // Malformed: the config slot below gets its turn, and then the TTY floor.
-    expect(resolveColor({ env: { FORCE_COLOR: "garbage" }, config: "always", isTTY: false })).toBe(true);
-    expect(resolveColor({ env: { FORCE_COLOR: "garbage" }, isTTY: true })).toBe(true);
-    expect(resolveColor({ env: { FORCE_COLOR: "garbage" }, isTTY: false })).toBe(false);
+    expect(resolveColor({ env: { FORCE_COLOR: "garbage" }, config: "always", isTTY: false })).toBe("full");
+    expect(resolveColor({ env: { FORCE_COLOR: "garbage" }, isTTY: true })).toBe("full");
+    expect(resolveColor({ env: { FORCE_COLOR: "garbage" }, isTTY: false })).toBe("none");
   });
 
   test("slot 5 — the config file decides only when nothing above it did", () => {
-    expect(resolveColor({ config: "always", isTTY: false })).toBe(true);
-    expect(resolveColor({ config: "never", isTTY: true })).toBe(false);
-    expect(resolveColor({ config: "auto", isTTY: true })).toBe(true);
-    expect(resolveColor({ config: "auto", isTTY: false })).toBe(false);
+    expect(resolveColor({ config: "always", isTTY: false })).toBe("full");
+    // The third and last byte-moving route.
+    expect(resolveColor({ config: "never", isTTY: true })).toBe("formats");
+    expect(resolveColor({ config: "auto", isTTY: true })).toBe("full");
+    expect(resolveColor({ config: "auto", isTTY: false })).toBe("none");
     // Everything above it wins.
-    expect(resolveColor({ config: "never", flag: "always", isTTY: false })).toBe(true);
-    expect(resolveColor({ config: "never", env: { FORCE_COLOR: "1" }, isTTY: false })).toBe(true);
+    expect(resolveColor({ config: "never", flag: "always", isTTY: false })).toBe("full");
+    expect(resolveColor({ config: "never", env: { FORCE_COLOR: "1" }, isTTY: false })).toBe("full");
   });
 
   test("the whole ladder in one case: every slot present, the top one wins", () => {
@@ -162,13 +175,54 @@ describe("resolveColor — the precedence table, slot by slot", () => {
         env: { MDVIEW_COLOR: "always", NO_COLOR: "", FORCE_COLOR: "3" },
         isTTY: true,
       }),
-    ).toBe(false);
+    ).toBe("formats");
   });
 
-  test("nothing is read from the real process — an empty input answers false", () => {
+  test("nothing is read from the real process — an empty input answers none", () => {
     // The regression pin for the whole package: this test process has an environment and a
     // command line, and neither may reach the resolver except through its argument.
-    expect(resolveColor()).toBe(false);
+    expect(resolveColor()).toBe("none");
+  });
+});
+
+/**
+ * **Decision 5, stated as a test rather than only as prose**: the format-preserving mode is
+ * reachable by the three explicit `never` directives and by nothing else, and every
+ * kill-switch keeps today's `"none"`.
+ *
+ * This is the non-vacuity guard for the whole byte-movement claim of WP-2. If a future edit
+ * makes `NO_COLOR` resolve to `"formats"`, the ratified kill-switch contract is broken and
+ * bytes move on an input no plan authorized — and the per-slot cases above would each still
+ * pass individually, because each one asserts one slot. This asserts the *partition*.
+ */
+describe("resolveColor — the exhaustive list of routes that reach `formats` (Decision 5)", () => {
+  test("the three explicit `never` directives, and only those three", () => {
+    expect(resolveColor({ flag: "never" })).toBe("formats");
+    expect(resolveColor({ env: { MDVIEW_COLOR: "never" } })).toBe("formats");
+    expect(resolveColor({ config: "never" })).toBe("formats");
+  });
+
+  test("every kill-switch and every unrequested route stays `none`, exactly as today", () => {
+    // Kill-switches: an established cross-tool convention with an installed base.
+    expect(resolveColor({ env: { NO_COLOR: "" }, isTTY: true })).toBe("none");
+    expect(resolveColor({ env: { FORCE_COLOR: "0" }, isTTY: true })).toBe("none");
+    expect(resolveColor({ env: { FORCE_COLOR: "false" }, isTTY: true })).toBe("none");
+    // Nothing requested at all, off a terminal — the landed G1 gate's input (Decision 4).
+    expect(resolveColor({ isTTY: false })).toBe("none");
+    expect(resolveColor({ flag: "auto", isTTY: false })).toBe("none");
+    expect(resolveColor({ env: { MDVIEW_COLOR: "auto" }, isTTY: false })).toBe("none");
+    expect(resolveColor({ config: "auto", isTTY: false })).toBe("none");
+    // A malformed value decides nothing, so it cannot reach `formats` either.
+    expect(resolveColor({ env: { MDVIEW_COLOR: "sometimes" }, isTTY: false })).toBe("none");
+    expect(resolveColor({ env: { FORCE_COLOR: "garbage" }, isTTY: false })).toBe("none");
+  });
+
+  test("`always` at every slot is `full`, so the top of the ladder did not move either", () => {
+    expect(resolveColor({ flag: "always" })).toBe("full");
+    expect(resolveColor({ env: { MDVIEW_COLOR: "always" } })).toBe("full");
+    expect(resolveColor({ env: { FORCE_COLOR: "3" } })).toBe("full");
+    expect(resolveColor({ config: "always" })).toBe("full");
+    expect(resolveColor({ isTTY: true })).toBe("full");
   });
 });
 
@@ -316,7 +370,7 @@ describe("resolveHyperlinks — every retained branch, positive and negative", (
 describe("resolveColourPolicy — the two axes together", () => {
   test("a pipe with nothing set: no colour, no hyperlinks", () => {
     expect(resolveColourPolicy({ env: {}, isTTY: false })).toEqual({
-      color: false,
+      sgr: "none",
       hyperlinks: false,
       tmux: false,
     });
@@ -324,7 +378,7 @@ describe("resolveColourPolicy — the two axes together", () => {
 
   test("a forced colour on a pipe does not invent hyperlink support", () => {
     expect(resolveColourPolicy({ flag: "always", env: {}, isTTY: false })).toEqual({
-      color: true,
+      sgr: "full",
       hyperlinks: false,
       tmux: false,
     });
@@ -332,14 +386,14 @@ describe("resolveColourPolicy — the two axes together", () => {
 
   test("a capable terminal with NO_COLOR keeps its hyperlinks", () => {
     expect(resolveColourPolicy({ env: { NO_COLOR: "1", TERM: "alacritty" }, isTTY: true })).toEqual({
-      color: false,
+      sgr: "none",
       hyperlinks: true,
       tmux: false,
     });
   });
 
   test("called with no argument at all it answers the safe way, reading nothing", () => {
-    expect(resolveColourPolicy()).toEqual({ color: false, hyperlinks: false, tmux: false });
+    expect(resolveColourPolicy()).toEqual({ sgr: "none", hyperlinks: false, tmux: false });
   });
 });
 

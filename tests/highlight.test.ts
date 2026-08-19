@@ -5,8 +5,12 @@ const ESC = "\u001b";
 // eslint-disable-next-line no-control-regex
 const ANSI = /\u001b\[[0-9;]*m/g;
 const strip = (text: string): string => text.replace(ANSI, "");
-const on = { color: true };
-const off = { color: false };
+// The colorizer's two production gates. Since WP-2 of `plans/colour-modes.md` the gate is
+// a `SgrMode`, and this module only ever sees `"full"` from production: `highlightCode`
+// (`src/blocks.ts`) keys the whole path on it, which is Decision 3's named producer
+// exception. `off` stays `"none"` — the branch that returns highlight.js's plain text.
+const on = { sgr: "full" } as const;
+const off = { sgr: "none" } as const;
 
 /**
  * The owned syntax colorizer — WP-2 of `plans/colour-policy.md`.

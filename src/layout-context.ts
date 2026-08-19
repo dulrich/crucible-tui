@@ -1,3 +1,4 @@
+import { type SgrMode } from "./colour";
 import { type GlyphSet } from "./glyphs";
 import { type Measure } from "./width";
 
@@ -51,7 +52,42 @@ export interface LayoutContext {
    */
   readonly emoji: boolean;
   /**
-   * Whether inline styling emits SGR codes at all.
+   * **How much SGR this render emits — the one canonical colour value** (WP-2 of
+   * `plans/colour-modes.md`).
+   *
+   * `resolveColourPolicy`'s (`src/colour.ts`), threaded through
+   * `renderDocumentDetailed`'s policy parameter and carried here unchanged. Every producer
+   * that styles reads *this* — `src/style.ts`'s `ColourGate` is satisfied structurally by
+   * a `LayoutContext`, so `applyStyle(ctx, …)` is unchanged at all sixteen call sites —
+   * and the hue/format filter is applied there, once, by name.
+   *
+   * **`sgr` is accepted; `color` below is derived from it.** Accepting both would make
+   * `color: false, sgr: "full"` constructible, and a context is the one value in this
+   * renderer that every visitor trusts without re-checking.
+   */
+  readonly sgr: SgrMode;
+  /**
+   * Whether inline styling emits SGR codes at all — **derived, never accepted**.
+   *
+   * The invariant, stated so it can be tested rather than assumed (and it is, for all
+   * three modes, in `tests/layout-context.test.ts`):
+   *
+   * ```text
+   * ctx.color === (ctx.sgr !== "none")
+   * ```
+   *
+   * `LayoutContextInit` has no `color` field at all — `createLayoutContext` computes it —
+   * so there is no construction site that can disagree with `sgr`, which is what
+   * "constructor-derived" means here and why the field is safe to keep.
+   *
+   * **It has no production reader left**, and that is a real consequence of this package
+   * rather than an oversight: the last two (`highlightCode` in `src/blocks.ts`, and the
+   * `renderTable` feed in `src/render.ts`) both needed to distinguish `formats` from
+   * `full`, which a boolean cannot do, so both moved to `sgr`. It is retained because the
+   * `sgr !== "none"` threshold is the one every *other* reader would want if it needed one
+   * — the plan's reader inventory assigns it by default — and because deleting a field to
+   * re-add it one work package later is churn. If a future package finds it still has no
+   * reader, deleting it is that package's call to make, with this note as the record.
    *
    * This is a *decision*, carried as a value. Since WP-1 of `plans/colour-policy.md` it is
    * **the tool's one colour decision**, resolved by `resolveColourPolicy` (`src/colour.ts`)
@@ -173,7 +209,12 @@ export interface LayoutContextInit {
   measure: Measure;
   resolveFenceLanguage: (rawLang: string | undefined) => string | undefined;
   emoji: boolean;
-  color: boolean;
+  /**
+   * The resolved colour mode. **`color` is deliberately absent from this interface** —
+   * `createLayoutContext` derives it, so the invariant on `LayoutContext.color` cannot be
+   * violated by a construction site.
+   */
+  sgr: SgrMode;
   /**
    * Defaulted to `false` rather than required, deliberately: OSC-8 is off on every
    * non-terminal destination, which is every gate, every sweep and every test, so the
@@ -200,7 +241,9 @@ export function createLayoutContext(init: LayoutContextInit): LayoutContext {
     prefix: createPrefixColumns(),
     resolveFenceLanguage: init.resolveFenceLanguage,
     emoji: init.emoji,
-    color: init.color,
+    sgr: init.sgr,
+    // The derived field, and the only place it is ever computed.
+    color: init.sgr !== "none",
     hyperlinks: init.hyperlinks ?? false,
     tmux: init.tmux ?? false,
   });

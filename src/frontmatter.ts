@@ -1,4 +1,5 @@
 import { parse } from "yaml";
+import { type SgrMode } from "./colour";
 import { createStyler, styleSpan } from "./style";
 import { NARROW_MEASURE, type Measure } from "./width";
 
@@ -32,7 +33,7 @@ const DIM = createStyler("dim");
  * forced-colour bytes on the two frontmatter witnesses in the gate corpus. Same table,
  * same gate, different application rule — see `src/style.ts`.
  */
-const dim = (text: string, color: boolean): string => styleSpan(color, DIM, text);
+const dim = (text: string, sgr: SgrMode): string => styleSpan({ sgr }, DIM, text);
 
 // A line must look like a plausible top-level YAML key ("key:" or "key: value")
 // before a `---`...`---` pair is trusted as frontmatter. Without this guard, a
@@ -203,10 +204,10 @@ function formatMapping(
   targetWidth: number,
   depth: number,
   measure: Measure,
-  color: boolean,
+  sgr: SgrMode,
 ): string {
   const keys = Object.keys(record);
-  if (keys.length === 0) return dim("—", color);
+  if (keys.length === 0) return dim("—", sgr);
 
   const indent = "  ".repeat(depth);
   const indentWidth = measure(indent);
@@ -222,8 +223,8 @@ function formatMapping(
     const paddedKey = key.padEnd(maxKeyWidth, " ");
 
     if (isPlainRecord(value) && depth < 1) {
-      lines.push(`${indent}${dim(paddedKey, color)}:`);
-      lines.push(formatMapping(value, targetWidth, depth + 1, measure, color));
+      lines.push(`${indent}${dim(paddedKey, sgr)}:`);
+      lines.push(formatMapping(value, targetWidth, depth + 1, measure, sgr));
       continue;
     }
 
@@ -239,7 +240,7 @@ function formatMapping(
     const wrapped = wrapValue(formatted, valueWidth, measure);
     wrapped.forEach((line, index) => {
       if (index === 0) {
-        lines.push(`${indent}${dim(paddedKey, color)}: ${line}`);
+        lines.push(`${indent}${dim(paddedKey, sgr)}: ${line}`);
       } else {
         lines.push(`${indent}${" ".repeat(maxKeyWidth)}  ${line}`);
       }
@@ -280,9 +281,10 @@ const lineSpan = (block: string, offset: number): [number, number] => [
  * from the width check; see `MetaBlockResult.verbatimRanges`. `formatMetaBlock` is the
  * text-only wrapper for callers (and tests) that do not need the spans.
  *
- * **`color` defaults to `false`, and the direction of that default is deliberate** (WP-1 of
- * `plans/colour-policy.md`). This module used to dim unconditionally, so the historical
- * behaviour is the `true` branch — defaulting to it would have preserved more bytes and
+ * **`sgr` defaults to `"none"`, and the direction of that default is deliberate** (WP-1 of
+ * `plans/colour-policy.md`; the parameter was `color = false` until WP-2 of
+ * `plans/colour-modes.md` widened it to the mode). This module used to dim
+ * unconditionally, so the historical behaviour is the styled branch — defaulting to it would have preserved more bytes and
  * would have been the wrong choice: a caller that has not thought about colour is a caller
  * that has not established the destination can take escape sequences, and the ratified
  * floor for an unestablished destination is no escapes at all. `src/render.ts` is the one
@@ -292,7 +294,7 @@ export function formatMetaBlockDetailed(
   meta: string,
   targetWidth: number,
   measure: Measure = NARROW_MEASURE,
-  color = false,
+  sgr: SgrMode = "none",
 ): MetaBlockResult {
   let data: unknown;
   try {
@@ -348,9 +350,9 @@ export function formatMetaBlockDetailed(
     const detail = breakAt === -1 ? "" : reason.slice(breakAt);
     const diagnostic = dim(
       wrapValue(`! could not parse frontmatter: ${summary}`, targetWidth, measure).join("\n") + detail,
-      color,
+      sgr,
     );
-    const echo = dim(meta.trimEnd(), color);
+    const echo = dim(meta.trimEnd(), sgr);
     return {
       text: `${diagnostic}\n${echo}`,
       verbatimRanges: [lineSpan(echo, diagnostic.split("\n").length)],
@@ -358,18 +360,18 @@ export function formatMetaBlockDetailed(
   }
 
   if (!isPlainRecord(data)) {
-    const echo = dim(meta.trimEnd(), color);
+    const echo = dim(meta.trimEnd(), sgr);
     return { text: echo, verbatimRanges: [lineSpan(echo, 0)] };
   }
 
-  return { text: formatMapping(data, targetWidth, 0, measure, color), verbatimRanges: [] };
+  return { text: formatMapping(data, targetWidth, 0, measure, sgr), verbatimRanges: [] };
 }
 
 export function formatMetaBlock(
   meta: string,
   targetWidth: number,
   measure: Measure = NARROW_MEASURE,
-  color = false,
+  sgr: SgrMode = "none",
 ): string {
-  return formatMetaBlockDetailed(meta, targetWidth, measure, color).text;
+  return formatMetaBlockDetailed(meta, targetWidth, measure, sgr).text;
 }

@@ -63,6 +63,12 @@ function goldenBytes(color: boolean, name: string): string {
   return value;
 }
 
+// The two-mode parity harness stays a *boolean* harness on purpose: the frozen golden
+// tables have exactly two sides, `colorOn` and `colorOff`, and those two sides are the
+// pre-`SgrMode` renders this file exists to hold still. The mapping to the canonical value
+// happens here and nowhere else — `true` is `"full"`, `false` is `"none"` — so WP-2 of
+// `plans/colour-modes.md` moved no golden byte and could not have. `formats` is a third
+// mode with no golden to compare against; it is pinned per producer in its own tests.
 function context(color: boolean): LayoutContext {
   return createLayoutContext({
     width: WIDTH,
@@ -72,7 +78,7 @@ function context(color: boolean): LayoutContext {
     // renderer rather than about `src/lang.ts`'s normalisation (which has its own tests).
     resolveFenceLanguage: (raw) => raw,
     emoji: true,
-    color,
+    sgr: color ? "full" : "none",
   });
 }
 

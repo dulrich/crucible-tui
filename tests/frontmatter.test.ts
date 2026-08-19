@@ -353,14 +353,14 @@ describe("the metadata block emits its dim only when the colour decision says so
   const META = "title: Example\ncreated: 2026-07-06\n";
 
   test("colour on emits the same dim pair it always did", () => {
-    const out = formatMetaBlock(META, 80, undefined, true);
+    const out = formatMetaBlock(META, 80, undefined, "full");
     expect(out).toContain(`${ESC}[2mtitle  ${ESC}[22m: Example`);
   });
 
   test("colour off emits no escape at all, and the same visible text", () => {
-    const off = formatMetaBlock(META, 80, undefined, false);
+    const off = formatMetaBlock(META, 80, undefined, "none");
     expect(off).not.toContain(ESC);
-    expect(stripAnsi(formatMetaBlock(META, 80, undefined, true))).toBe(off);
+    expect(stripAnsi(formatMetaBlock(META, 80, undefined, "full"))).toBe(off);
   });
 
   test("the default is off — an unstated destination gets no escapes", () => {
@@ -371,8 +371,8 @@ describe("the metadata block emits its dim only when the colour decision says so
   });
 
   test("the em dash for an empty mapping is dimmed on the same decision", () => {
-    expect(formatMetaBlock("", 80, undefined, true)).toContain(`${ESC}[2m`);
-    expect(formatMetaBlock("", 80, undefined, false)).not.toContain(ESC);
+    expect(formatMetaBlock("", 80, undefined, "full")).toContain(`${ESC}[2m`);
+    expect(formatMetaBlock("", 80, undefined, "none")).not.toContain(ESC);
   });
 
   test("the degraded paths obey it too — diagnostic and raw echo alike", () => {
@@ -381,17 +381,68 @@ describe("the metadata block emits its dim only when the colour decision says so
     const notAMapping = "just: a\n- list\n";
     const unparseable = "title: [unterminated\n";
     for (const meta of [notAMapping, unparseable]) {
-      expect(formatMetaBlockDetailed(meta, 80, undefined, false).text).not.toContain(ESC);
-      expect(formatMetaBlockDetailed(meta, 80, undefined, true).text).toContain(`${ESC}[2m`);
+      expect(formatMetaBlockDetailed(meta, 80, undefined, "none").text).not.toContain(ESC);
+      expect(formatMetaBlockDetailed(meta, 80, undefined, "full").text).toContain(`${ESC}[2m`);
     }
+  });
+
+  /**
+   * **`dim` is a format, not a hue** — Decision 1 of `plans/colour-modes.md`, in the user's
+   * own words, and this module is where that membership is worth the most: the metadata
+   * block is *entirely* dim, so `formats` renders it byte-identically to `full` and this is
+   * the one producer the mode split does not divide.
+   *
+   * If a future edit reclassifies `dim` as a hue — the specific mistake Decision 1 forbids
+   * — every frontmatter block in the corpus silently loses its styling under
+   * `--color=never`, and these are the cases that say so.
+   */
+  test("`formats` keeps the dim pair — byte-identical to `full`, because dim is a format", () => {
+    expect(formatMetaBlock(META, 80, undefined, "formats")).toBe(
+      formatMetaBlock(META, 80, undefined, "full"),
+    );
+    expect(formatMetaBlock(META, 80, undefined, "formats")).toContain(
+      `${ESC}[2mtitle  ${ESC}[22m: Example`,
+    );
+  });
+
+  test("`formats` is not `none` here, which is what makes the case above non-vacuous", () => {
+    expect(formatMetaBlock(META, 80, undefined, "formats")).not.toBe(
+      formatMetaBlock(META, 80, undefined, "none"),
+    );
+  });
+
+  test("the degraded paths and the empty-mapping em dash keep their dim under `formats` too", () => {
+    expect(formatMetaBlock("", 80, undefined, "formats")).toContain(`${ESC}[2m`);
+    for (const meta of ["just: a\n- list\n", "title: [unterminated\n"]) {
+      expect(formatMetaBlockDetailed(meta, 80, undefined, "formats").text).toBe(
+        formatMetaBlockDetailed(meta, 80, undefined, "full").text,
+      );
+    }
+  });
+
+  test("the empty-block raw echo still emits its bare 2m/22m pair under `formats`", () => {
+    // `styleSpan` has no empty-string guard, by measurement (`src/style.ts`), so an empty
+    // frontmatter block's dimmed echo is a pair around nothing. It survives `formats`
+    // because `dim` survives `formats`, and it is pinned in both modes so that nobody meets
+    // it in a `formats` render and reads it as filter residue.
+    expect(formatMetaBlock("", 80, undefined, "formats")).toContain(`${ESC}[2m`);
+    expect(formatMetaBlock("", 80, undefined, "formats")).toContain(`${ESC}[22m`);
+    expect(formatMetaBlock("", 80, undefined, "none")).not.toContain(ESC);
+  });
+
+  test("the verbatim ranges do not move with the mode either", () => {
+    const unparseable = "title: [unterminated\n";
+    expect(formatMetaBlockDetailed(unparseable, 80, undefined, "formats").verbatimRanges).toEqual(
+      formatMetaBlockDetailed(unparseable, 80, undefined, "none").verbatimRanges,
+    );
   });
 
   test("the verbatim ranges do not move with the colour decision", () => {
     // The ranges are line spans over the same text; a decision about escapes must not change
     // which lines `--check` exempts.
     const unparseable = "title: [unterminated\n";
-    expect(formatMetaBlockDetailed(unparseable, 80, undefined, true).verbatimRanges).toEqual(
-      formatMetaBlockDetailed(unparseable, 80, undefined, false).verbatimRanges,
+    expect(formatMetaBlockDetailed(unparseable, 80, undefined, "full").verbatimRanges).toEqual(
+      formatMetaBlockDetailed(unparseable, 80, undefined, "none").verbatimRanges,
     );
   });
 });

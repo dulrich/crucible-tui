@@ -55,7 +55,30 @@
  *
  * Both read the same table and the same colour gate; what differs is only how a style is
  * applied to text, and each producer keeps the rule its bytes already record.
+ *
+ * ## The mode filter (WP-2 of `plans/colour-modes.md`)
+ *
+ * This module is also where the hue/format split lives, and it lives here because it is a
+ * property of a *style*, not of a producer (Decision 8, user 2026-08-18: decide by style
+ * property, never by producer provenance). `STYLE_CLASSES` classifies every committed name
+ * as hue, format or control; `emitsUnder` is the whole rule; `filterChain` rebuilds a chain
+ * with the suppressed links removed, and **both emitters run their existing bodies over the
+ * filtered chain** so the re-open surgery and the newline encasing cannot reintroduce a
+ * byte the filter dropped.
+ *
+ * The predecessor plan needed eight work packages for this and this one needs a filter,
+ * for one reason: since `plans/colour-policy.md` every producer holds a *named* chain
+ * rather than an opaque byte string, so the name survives to the point of emission. WP-2's
+ * only structural change is keeping that name on the `Styler` node (`createStyler` used to
+ * accumulate the bytes and discard it).
+ *
+ * **The one exception is named rather than hidden**: fenced-code syntax highlighting is
+ * `full`-only, decided at `src/blocks.ts`'s `highlightCode` and not here, because the
+ * highlight branch carries a visible-content transform (`fixHardReturn`) and its theme
+ * carries format styles — see Decision 3 and `src/AGENTS.md`.
  */
+
+import { type SgrMode } from "./colour";
 
 /** One style's escape pair, exactly as it is emitted. */
 export interface StyleCode {
@@ -92,20 +115,100 @@ export const STYLE_TABLE = {
 export type StyleName = keyof typeof STYLE_TABLE;
 
 /**
+ * What kind of thing a committed style *is* — the axis `SgrMode` filters on.
+ *
+ * Three classes, not two, because `reset` is neither (Decision 8 of
+ * `plans/colour-modes.md`, from cycle-1 f9). It opens and closes with the same `0m` both
+ * directions, it carries no colour and no weight, and it is what frames every paragraph,
+ * rule and list item (`src/blocks.ts`, `src/lists.ts`) — filing it under "format" would be
+ * an accident that happened to work and filing it under "hue" would strip the framing out
+ * of `formats` mode for no reason anyone could state.
+ */
+export type StyleClass = "hue" | "format" | "control";
+
+/**
+ * **The committed classification** (WP-2 of `plans/colour-modes.md`).
+ *
+ * `satisfies Record<StyleName, StyleClass>` is the load-bearing part: it is a compile-time
+ * error to add an entry to `STYLE_TABLE` without classifying it, which is exactly the
+ * failure a "decide by style property" rule (Decision 8, user 2026-08-18) has to be
+ * protected from — an unclassified style would otherwise silently pick up whatever the
+ * lookup's default was.
+ *
+ * - **hue** — the seven foreground colours. These are what an explicit `never` directive
+ *   drops, and nothing else is.
+ * - **format** — weight, emphasis and decoration. Decision 1: *`--no-color` means no hue,
+ *   all other formatting preserved*; **`dim` is a format, not a hue**, which is the one
+ *   membership the user named directly and the one that keeps `src/frontmatter.ts`'s
+ *   metadata block legible under `formats`.
+ * - **control** — `reset`, per Decision 8: emitted whenever `sgr !== "none"`.
+ *
+ * **This is a classification of names, never of producers.** Which producer asked is not
+ * an input here; the one place provenance decides anything is `highlightCode`
+ * (`src/blocks.ts`), which is keyed to `full` as an explicit, named, ratified *producer
+ * exception* (Decision 3) precisely because it could not be expressed as a property.
+ */
+export const STYLE_CLASSES = {
+  reset: "control",
+  bold: "format",
+  dim: "format",
+  italic: "format",
+  underline: "format",
+  strikethrough: "format",
+  red: "hue",
+  green: "hue",
+  yellow: "hue",
+  blue: "hue",
+  magenta: "hue",
+  cyan: "hue",
+  gray: "hue",
+} as const satisfies Record<StyleName, StyleClass>;
+
+/**
+ * Whether one committed style emits at all under one mode.
+ *
+ * The whole of the mode semantics, in three lines: `none` emits nothing of the tool's own,
+ * `full` emits everything the table authorizes, and `formats` emits everything that is not
+ * a hue. Exported so `tests/style.test.ts` can assert the rule directly, per name and per
+ * mode, rather than only through the bytes some producer happens to emit.
+ */
+export function emitsUnder(name: StyleName, sgr: SgrMode): boolean {
+  if (sgr === "none") return false;
+  if (sgr === "full") return true;
+  return STYLE_CLASSES[name] !== "hue";
+}
+
+/**
  * The colour half of the resolved policy, as the emitter needs it.
  *
  * A `LayoutContext` satisfies this structurally, so every visitor keeps calling
- * `applyStyle(ctx, …)`; `src/table.ts` and `src/frontmatter.ts`, which are handed a plain
- * boolean rather than a context, use `styleSpan` or construct the one-field value. What
- * matters is that the decision arrives as a value — this module reads no environment, no
- * argv and no module-load global, which is the whole reason the three former authorities
- * are gone.
+ * `applyStyle(ctx, …)`; `src/table.ts` and `src/frontmatter.ts`, which are handed the mode
+ * rather than a context, construct the one-field value at the call. What matters is that
+ * the decision arrives as a value — this module reads no environment, no argv and no
+ * module-load global, which is the whole reason the three former authorities are gone.
+ *
+ * **The field is `sgr: SgrMode`, not `color: boolean`** (WP-2 of `plans/colour-modes.md`).
+ * The boolean could not express `formats`, and widening it to a second flag beside itself
+ * would have made `color=false, hue=true` representable — one canonical value with three
+ * inhabitants is what cycle-1 f7 asked for and what this is.
  */
 export interface ColourGate {
-  readonly color: boolean;
+  readonly sgr: SgrMode;
 }
 
 export interface Styler {
+  /**
+   * **The style's own name, kept on the node** — WP-2 of `plans/colour-modes.md`.
+   *
+   * Until that package a `Styler` accumulated byte strings and *discarded* the name, so by
+   * the time the emitter saw a chain there was nothing left to classify: the bytes
+   * `\x1b[90m` and `\x1b[1m` are indistinguishable as far as "is this a hue" goes without
+   * re-parsing them, and re-parsing emitted bytes to recover a decision the builder
+   * already knew is the shape of defect this repo owns `src/style.ts` to avoid. Keeping
+   * the name is the one structural change the hue/format split needed; everything else in
+   * this module is a filter over it.
+   */
+  readonly name: StyleName;
   readonly open: string;
   readonly close: string;
   readonly openAll: string;
@@ -131,12 +234,63 @@ export function createStyler(name: StyleName, parent?: Styler): Styler {
   const code: StyleCode | undefined = STYLE_TABLE[name];
   if (!code) throw new Error(`mdview: no style named ${name} in the committed style table`);
   return {
+    name,
     open: code.open,
     close: code.close,
     openAll: parent === undefined ? code.open : parent.openAll + code.open,
     closeAll: parent === undefined ? code.close : code.close + parent.closeAll,
     parent,
   };
+}
+
+/**
+ * Memo for `filterChain`, keyed on the *unfiltered* chain object.
+ *
+ * Every chain in this repo is a module-scope constant built once at import
+ * (`src/inline.ts:112-117`, `src/blocks.ts:108-116`, `src/lists.ts:105`,
+ * `src/table.ts:509-510`, `src/frontmatter.ts:10`, `src/wikilink.ts:86`, and
+ * `src/highlight.ts`'s whole theme), so this table saturates at a couple of dozen entries
+ * on the first coloured render and never grows again. A `WeakMap` rather than a `Map`
+ * because a caller *may* build a chain per call and nothing should keep it alive.
+ */
+const FORMATS_CHAINS = new WeakMap<Styler, Styler | null>();
+
+/**
+ * The chain a mode actually emits: the input chain with every style the mode suppresses
+ * removed, rebuilt so `openAll`/`closeAll` are the bytes that will really be written.
+ *
+ * `null` means *this chain emits nothing under this mode* — every link was filtered out —
+ * and the callers below turn that into "return the input untouched" rather than into a
+ * pair of empty strings, so a hue-only chain under `formats` leaves no residue at all.
+ *
+ * **Rebuilding through `createStyler` rather than string-editing `openAll` is the point.**
+ * The accumulation order is a parity-class-A obligation (`chalk`'s: outermost-first open,
+ * innermost-first close), and the surviving links have to nest with each other exactly as
+ * they would have if the dropped ones had never been asked for. Running the original
+ * builder over the surviving names is the only spelling that cannot get that wrong; it is
+ * also what makes `full` the identity by construction — no rebuild happens at all.
+ */
+function filterChain(chain: Styler, sgr: SgrMode): Styler | null {
+  if (sgr === "none") return null;
+  if (sgr === "full") return chain;
+
+  const cached = FORMATS_CHAINS.get(chain);
+  if (cached !== undefined) return cached;
+
+  // Outermost-first: `parent` walks *outward*, so the collected order is reversed to match
+  // the order `createStyler` was originally called in.
+  const names: StyleName[] = [];
+  for (let link: Styler | undefined = chain; link !== undefined; link = link.parent) names.push(link.name);
+  names.reverse();
+
+  let built: Styler | undefined;
+  for (const name of names) {
+    if (emitsUnder(name, sgr)) built = createStyler(name, built);
+  }
+
+  const result = built ?? null;
+  FORMATS_CHAINS.set(chain, result);
+  return result;
 }
 
 // `chalk`'s own `stringReplaceAll` (`chalk/source/utilities.js`), transcribed. It differs from
@@ -197,16 +351,29 @@ function stringEncaseCRLFWithFirstIndex(string: string, prefix: string, postfix:
  *
  * Both are in the output this repo shipped before the two packages left, so both are
  * class-A obligations, not polish.
+ *
+ * **The mode filter runs first, and everything below it runs over the filtered chain**
+ * (WP-2 of `plans/colour-modes.md`). That ordering is not a preference: the re-open
+ * surgery re-emits *this chain's own* close codes, and the encasing re-opens *this chain's
+ * own* `openAll` after every line break — so running either over the unfiltered chain
+ * under `formats` would put back exactly the hue bytes the filter just removed. Neither
+ * helper changed; what changed is which chain they are handed. Under `full` the filter is
+ * the identity and these are the same bytes as before, by construction.
  */
 export function applyStyle(ctx: ColourGate, chain: Styler, input: string): string {
   // `chalk`'s own guard: level 0, or an empty string, and the input comes back untouched.
-  if (!ctx.color || !input) return input;
+  if (ctx.sgr === "none" || !input) return input;
+
+  // Nothing in this chain survives the mode — the wiki-link's bare cyan under `formats`,
+  // or a hue-only theme entry. Emit nothing at all rather than an empty open/close pair.
+  const filtered = filterChain(chain, ctx.sgr);
+  if (filtered === null) return input;
 
   let string = input;
-  const { openAll, closeAll } = chain;
+  const { openAll, closeAll } = filtered;
 
   if (string.includes("\u001b")) {
-    let styler: Styler | undefined = chain;
+    let styler: Styler | undefined = filtered;
     while (styler !== undefined) {
       string = stringReplaceAll(string, styler.close, styler.open);
       styler = styler.parent;
@@ -239,9 +406,21 @@ export function applyStyle(ctx: ColourGate, chain: Styler, input: string): strin
  * (`tests/frontmatter.test.ts` pins it). Adding the guard here was tried and it moved that
  * byte pair.
  *
- * The colour gate is a plain boolean because its callers hold one, not a `LayoutContext`.
+ * **That pin survives `formats` intact, and it is stated here so nobody "fixes" it there
+ * either** (WP-2 of `plans/colour-modes.md`). `dim` is format-class, so the filter below
+ * keeps it: `formatMetaBlock("")` under `formats` emits the same bare `2m`/`22m` pair
+ * around nothing that it emits under `full`. A future reader who meets that pair in
+ * `formats` output and reads it as filter residue should read this paragraph instead —
+ * it is the same deliberate no-guard emission, pinned in both modes.
+ *
+ * The gate is a `ColourGate` rather than the plain boolean it took until that package,
+ * because a plain boolean cannot express the middle level and this function has to filter
+ * exactly as `applyStyle` does. Its callers (`src/frontmatter.ts`) thread the mode down
+ * from the resolved policy and construct the one-field value at the call.
  */
-export function styleSpan(color: boolean, chain: Styler, input: string): string {
-  if (!color) return input;
-  return chain.openAll + input + chain.closeAll;
+export function styleSpan(gate: ColourGate, chain: Styler, input: string): string {
+  if (gate.sgr === "none") return input;
+  const filtered = filterChain(chain, gate.sgr);
+  if (filtered === null) return input;
+  return filtered.openAll + input + filtered.closeAll;
 }

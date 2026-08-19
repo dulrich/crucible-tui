@@ -3,16 +3,27 @@ import { resolve } from "node:path";
 /**
  * Forced-color test fixture.
  *
- * **The gating this helper was built for has moved twice, and the helper is still the
+ * **The gating this helper was built for has moved three times, and the helper is still the
  * fixture for what a forced-colour child sees.** `marked-terminal` delegated syntax
  * highlighting to `cli-highlight`, which was gated behind `chalk.level === 0` — true
  * whenever stdout is not a TTY, which is always true under `bun test` — so the highlight
  * path, and any highlight.js "language not found" diagnostic, was dead code in every normal
- * test run. Since WP-2 of `plans/colour-policy.md` the gate is `ctx.color`, the resolved
- * policy handed in as a value (`src/highlight.ts` reads nothing else), so an in-process test
- * can now reach the highlighting path by asking for it — which is what
- * `tests/blocks.test.ts` does. What still needs a child is a claim about how the *policy
- * itself* resolves from an environment, which is this helper's job.
+ * test run. WP-2 of `plans/colour-policy.md` made the gate the resolved policy handed in as
+ * a value (`src/highlight.ts` reads nothing else), so an in-process test can reach the
+ * highlighting path by asking for it — which is what `tests/blocks.test.ts` does. What
+ * still needs a child is a claim about how the *policy itself* resolves from an
+ * environment, which is this helper's job.
+ *
+ * **The third move is WP-2 of `plans/colour-modes.md`, and it narrows the gate rather than
+ * relocating it: the highlighter runs under `sgr === "full"` and under nothing else**
+ * (`highlightCode`, `src/blocks.ts`; Decision 3's named producer exception). The practical
+ * consequence for anything built on this helper is that a `formats`-mode render — the new
+ * output of `--color=never`, `MDVIEW_COLOR=never` and config `never` — reaches the *same*
+ * colourless code branch a `none`-mode render does, so a fence carries no theme spans and
+ * no `fixHardReturn`. `forcedColorChildEnv` below pins `FORCE_COLOR=3`, which resolves to
+ * `full`, so this helper's own children are unaffected; a future helper that wanted to
+ * exercise `formats` would have to pin `MDVIEW_COLOR=never` instead, and would find the
+ * highlighter deliberately dark.
  *
  * Two facts about the original trap, both verified against this repo's
  * `render.ts`/`highlight.js` before this helper was written (see

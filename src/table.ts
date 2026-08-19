@@ -1,5 +1,6 @@
 import type { Token, Tokens } from "marked";
 import type { GlyphSet } from "./glyphs";
+import { type SgrMode } from "./colour";
 import { applyStyle, createStyler } from "./style";
 import { type Align, padToWidth, splitToken } from "./text";
 import { NARROW_MEASURE, type Measure } from "./width";
@@ -502,15 +503,23 @@ function resolveBorderChars(chars: Readonly<Record<string, string>> | undefined)
  * independent colour authorities. It now styles iff the resolved policy says so, like
  * every other producer.
  *
- * The gate arrives as `color`, threaded from `renderTable`'s caller
- * (`src/render.ts`, from `LayoutContext.color`); this module still reads no environment,
- * and now it reads no library's opinion of one either.
+ * The gate arrives as `sgr`, threaded from `renderTable`'s caller (`src/render.ts`, from
+ * `LayoutContext.sgr`); this module still reads no environment, and now it reads no
+ * library's opinion of one either.
+ *
+ * **It is the mode, not a boolean, since WP-2 of `plans/colour-modes.md`, and this is the
+ * producer where the split is most visible**: `gray` is hue-class and `bold` is
+ * format-class, so under `formats` a table keeps its **bold heads** and loses its **grey
+ * borders** — the glyphs are unchanged and unstyled, the geometry is untouched (styling
+ * never moves a column here), and `tests/table.test.ts` pins the exact pairs in all three
+ * modes. This module applies no filter of its own; it hands the mode to `applyStyle`,
+ * which owns the classification.
  */
 const BORDER = createStyler("gray"); // the old `border: ["grey"]`
 const HEAD = createStyler("bold"); // the old `head: ["bold"]`
 
-const styleBorder = (color: boolean, text: string): string => applyStyle({ color }, BORDER, text);
-const styleHead = (color: boolean, text: string): string => applyStyle({ color }, HEAD, text);
+const styleBorder = (sgr: SgrMode, text: string): string => applyStyle({ sgr }, BORDER, text);
+const styleHead = (sgr: SgrMode, text: string): string => applyStyle({ sgr }, HEAD, text);
 
 /** A row's cells, each already wrapped into its own display lines. */
 type LaidOutRow = string[][];
@@ -530,7 +539,7 @@ function drawRule(
   widths: number[],
   chars: BorderChars,
   kind: "top" | "mid" | "bottom",
-  color: boolean,
+  sgr: SgrMode,
 ): string {
   const junctions = {
     top: { first: chars.topLeft, inner: chars.topMid, fill: chars.top, last: chars.topRight },
@@ -547,7 +556,7 @@ function drawRule(
     .map((width, column) => {
       const left = column === 0 ? junctions.first : junctions.inner;
       const right = column === widths.length - 1 ? junctions.last : "";
-      return styleBorder(color, left + junctions.fill.repeat(cellWidth(width)) + right);
+      return styleBorder(sgr, left + junctions.fill.repeat(cellWidth(width)) + right);
     })
     .join("");
 }
@@ -571,12 +580,12 @@ function drawLine(
   chars: BorderChars,
   isHead: boolean,
   measure: Measure,
-  color: boolean,
+  sgr: SgrMode,
 ): string {
   return widths
     .map((width, column) => {
-      const left = styleBorder(color, column === 0 ? chars.left : chars.middle);
-      const right = column === widths.length - 1 ? styleBorder(color, chars.right) : "";
+      const left = styleBorder(sgr, column === 0 ? chars.left : chars.middle);
+      const right = column === widths.length - 1 ? styleBorder(sgr, chars.right) : "";
       const line = row[column]?.[lineIndex];
       const content =
         line === undefined
@@ -584,7 +593,7 @@ function drawLine(
           : " ".repeat(PADDING_LEFT) +
             padToWidth(line, width, aligns[column] ?? "left", measure) +
             " ".repeat(PADDING_RIGHT);
-      return left + (isHead ? styleHead(color, content) : content) + right;
+      return left + (isHead ? styleHead(sgr, content) : content) + right;
     })
     .join("");
 }
@@ -607,23 +616,23 @@ function composeTable(
   aligns: Align[],
   chars: BorderChars,
   measure: Measure,
-  color: boolean,
+  sgr: SgrMode,
 ): string {
-  const out: string[] = [drawRule(widths, chars, "top", color)];
+  const out: string[] = [drawRule(widths, chars, "top", sgr)];
 
   const emitRow = (row: LaidOutRow, isHead: boolean): void => {
     const height = rowHeight(row);
     for (let lineIndex = 0; lineIndex < height; lineIndex += 1) {
-      out.push(drawLine(row, lineIndex, widths, aligns, chars, isHead, measure, color));
+      out.push(drawLine(row, lineIndex, widths, aligns, chars, isHead, measure, sgr));
     }
   };
 
   emitRow(header, true);
   for (const row of rows) {
-    out.push(drawRule(widths, chars, "mid", color));
+    out.push(drawRule(widths, chars, "mid", sgr));
     emitRow(row, false);
   }
-  out.push(drawRule(widths, chars, "bottom", color));
+  out.push(drawRule(widths, chars, "bottom", sgr));
 
   return `${out.join("\n")}\n`;
 }
@@ -642,19 +651,19 @@ function composeTable(
  * allocation.totalWidth` directly. That equality is what makes a corrective render
  * pass unnecessary rather than merely absent.
  *
- * `color` is the resolved policy's, defaulted to `false` for the same reason
- * `LayoutContext.hyperlinks` is: unstyled is the answer every gate, sweep and direct test
- * call wants, and the one a forgotten argument should produce. `src/render.ts` passes
- * `ctx.color`. Styling never changes the geometry — head and border styles wrap already
- * measured strings — so the equality above holds at both settings, and
- * `tests/table.test.ts` asserts it at both.
+ * `sgr` is the resolved policy's, defaulted to `"none"` for the same reason
+ * `LayoutContext.hyperlinks` defaults to `false`: unstyled is the answer every gate, sweep
+ * and direct test call wants, and the one a forgotten argument should produce.
+ * `src/render.ts` passes `ctx.sgr`. Styling never changes the geometry — head and border
+ * styles wrap already measured strings — so the equality above holds at every mode, and
+ * `tests/table.test.ts` asserts it at all three.
  */
 export function renderTable(
   token: Tokens.Table,
   targetWidth: number,
   glyphs: GlyphSet,
   measure: Measure = NARROW_MEASURE,
-  color = false,
+  sgr: SgrMode = "none",
 ): string {
   const grid = tableGrid(token);
   if (grid.columnCount === 0) return "";
@@ -675,6 +684,6 @@ export function renderTable(
     grid.aligns,
     chars,
     measure,
-    color,
+    sgr,
   );
 }

@@ -1369,10 +1369,11 @@ two names.
 
 ### Colour: one owned decision, resolved from inputs handed in
 
-Whether inline styling emits SGR codes at all is `LayoutContext.color`; whether the renderer
-emits OSC-8 hyperlinks is `LayoutContext.hyperlinks`. Both are resolved **once per render**, by
-`resolveColourPolicy` (`src/colour.ts`), and threaded as `renderDocumentDetailed`'s last
-parameter — WP-1 of `plans/colour-policy.md`.
+**How much SGR this render emits is `LayoutContext.sgr`, a three-level `SgrMode`**; whether the
+renderer emits OSC-8 hyperlinks is `LayoutContext.hyperlinks`. Both are resolved **once per
+render**, by `resolveColourPolicy` (`src/colour.ts`), and threaded as
+`renderDocumentDetailed`'s last parameter — WP-1 of `plans/colour-policy.md`, with the colour
+half widened from a boolean at WP-2 of `plans/colour-modes.md`.
 
 **Nothing in `src/colour.ts` reads `process`.** The environment, the destination's TTY-ness, the
 platform, the parsed `--color` flag and the config file's `color` key are all arguments. That is
@@ -1423,7 +1424,7 @@ and the `MDVIEW_COLOR=always` render did not, with identical visible text. `--co
 happened to agree with `FORCE_COLOR=3` only because `@colors` sniffed argv for `--color` too,
 which was the same accident in a second package.
 
-**Both packages are gone and every producer reads `ctx.color`.** The styles come from
+**Both packages are gone and every producer reads the resolved mode.** The styles come from
 `src/style.ts` — a narrow committed table of exactly the `[open, close]` pairs this renderer is
 authorized to emit, with `38`/`48` introducers rejected by an assertion independent of the
 emitter — and the syntax colours from `src/highlight.ts`, this repo's transcription of
@@ -1450,6 +1451,99 @@ gone: the piped default now emits exactly what a `FORCE_COLOR=0` render always e
 what the ratified spec's first decision asks for. The visible text is identical, and the
 sanitized colour-off renders every gate and sweep actually measures were byte-identical across
 the package (84 of 84).
+
+#### Three levels, not two: `SgrMode` and the hue/format split (WP-2 of `plans/colour-modes.md`)
+
+`ColourPolicy.color: boolean` became **`sgr: "full" | "formats" | "none"`**, and that one type
+is the whole of the colour-mode work. The predecessor plan
+(`plans/styled-runs-and-colour-policy.md`, closed won't-implement) needed eight work packages
+for the same semantics because hue and weight were fused into opaque byte strings at six
+independent producers, and *"thread a policy to the producers"* cannot express *"drop hue,
+keep bold"*. `plans/colour-policy.md` retired that premise without setting out to: since it
+landed, every producer holds a **named** chain (`createStyler("gray")`, not `"\x1b[90m"`) and
+exactly two emitters turn a chain into bytes. The name survives to the point of emission, so
+the mode semantics are a **filter inside `src/style.ts`** rather than a renderer migration.
+
+**What each level means.**
+
+| Level | Emits | Reached by |
+|---|---|---|
+| `full` | every committed style | `always` at any slot; `FORCE_COLOR` truthy; the `isTTY` floor |
+| `formats` | format and control classes; **no hue** | the three explicit `never` **directives** only — `--color=never`, `MDVIEW_COLOR=never`, config `never` |
+| `none` | nothing of the tool's own | `NO_COLOR` presence; `FORCE_COLOR=0`; a non-TTY with nothing requested |
+
+**The kill-switch/directive split is the load-bearing distinction and it is not cosmetic**
+(Decision 5). A `never` *directive* is a user saying *this tool, this render, no colour*, and
+Decision 1 reads that as "no hue, keep the formatting" — dim, bold, italic, underline and
+strikethrough are not colour. `NO_COLOR` and `FORCE_COLOR=0` are kill-switches with an
+established cross-tool meaning and an installed base, and they keep today's bytes exactly.
+**Those three directive routes are the exhaustive list of inputs whose rendered bytes WP-2
+moved**; `full` and `none` renders are byte-identical to the WP-1 commit across the gate
+corpus at every width and both tiers, verified by scripted byte diff (336 combos, 0 differing)
+as well as by `render-diff --expect a`. Any other moved byte is a defect, not a re-baseline.
+
+**The classification is of style *names*, and it lives beside the table it classifies.**
+`STYLE_CLASSES` (`src/style.ts`) is total over `STYLE_TABLE` by a `satisfies` constraint, so a
+new committed style cannot be added without being classified:
+
+- **hue** — `red green yellow blue magenta cyan gray`. The only class `formats` drops.
+- **format** — `bold dim italic underline strikethrough`. **`dim` is a format, not a hue** —
+  the user's own words at Decision 1, and the membership most at risk of being "corrected" by
+  someone reading `2m` as a brightness. It is what keeps the frontmatter metadata block
+  legible under `--color=never`.
+- **control** — `reset` (Decision 8, cycle-1 f9). `0m` both directions, framing every
+  paragraph, rule and list item. Emitted whenever `sgr !== "none"`.
+
+**The filter runs before `chalk`'s two surgeries, and the ordering is the part to get right.**
+`applyStyle`'s re-open surgery re-emits *this chain's own* close codes and appends the matching
+open; its newline encasing reinserts *this chain's own* `openAll` after every line break. Run
+either over the unfiltered chain and a `formats` render gets its hue back — on the second line
+of every wrapped span, where no single-line assertion would see it. `filterChain` rebuilds the
+chain through `createStyler` over the surviving names rather than string-editing `openAll`,
+because the accumulation order (outermost-first open, innermost-first close) is a parity-class-A
+obligation and re-running the original builder is the only spelling that cannot get it wrong.
+A chain that filters to nothing emits **nothing** — not an empty open/close pair.
+
+##### The reader inventory, with each reader's threshold
+
+Every consumer of the colour decision, and which of the three levels it keys on. The table
+exists because "derive a boolean and carry on" is exactly the change cycle-2 f4 rejected: it
+would have run the highlighter — and `fixHardReturn`'s visible-content change — under
+`formats`.
+
+| Reader | Threshold | Why |
+|---|---|---|
+| `applyStyle` / `styleSpan` (`src/style.ts`) | all three | the filter itself; `none` returns the input, `formats` drops hue-class links, `full` is the identity |
+| every inline visitor (`src/inline.ts`), every block leaf (`src/blocks.ts`), the list-item chain (`src/lists.ts`), `styleWikiLinkCarriers` (`src/wikilink.ts`) | `sgr !== "none"`, **via `applyStyle`** | they pass `ctx` through and implement no filter of their own — Decision 8's property rule in structural form |
+| `renderTable` (`src/table.ts`) | all three | the producer the split divides: `bold` heads survive `formats`, `gray` borders do not |
+| `formatMetaBlockDetailed` (`src/frontmatter.ts`) | `sgr !== "none"` in effect | it emits only `dim`, which is format-class, so `full` and `formats` are byte-identical here |
+| **`highlightCode` (`src/blocks.ts`)** | **`sgr !== "full"` returns raw code** | Decision 3's named producer exception — see below |
+| `LayoutContext.color` | derived, `sgr !== "none"` | **no production reader left.** Retained as the default threshold and tested for all three modes; deleting it is a future package's call |
+
+**Decision 3 is a producer exception, named rather than hidden.** Fenced-code syntax
+highlighting runs under `full` and nothing else, so a `formats` fence is byte-identical to a
+`none` fence. Two reasons, both measured: the highlight branch carries `fixHardReturn`, a
+**visible-content** transform inside a `codeRange` (it rewrites the first `\r` as the five
+literal characters `/\n/g`), so reaching it under `formats` would break
+`visible(formats) === visible(off)` — the property WP-4's G2 gate is about, which this keeps
+true *by construction*; and the theme is not hue-only — it carries `dim`, `italic`, `bold` and
+`underline` (`src/highlight.ts`), all format-class, so a property filter would have produced a
+half-highlighted fence, decoration with its colours removed and its emphases kept. What
+`formats` loses is enumerated: the theme's bold/italic/underline/dim spans inside fenced code,
+and nothing else. The property-pure alternative — highlighting under `formats` through a
+`fixHardReturn`-free path — is recorded in the plan as the fallback if the exception is ever
+withdrawn. **A future package adding a second producer exception owes the same two-part
+justification**; everywhere else the rule is Decision 8's.
+
+**Two things this package deliberately did not touch, and both are user-withheld ground.** The
+task-state pre-pass (`src/render.ts:186-192`; "The task-state pre-pass" above) keeps its
+class-C exception withheld and its 84 corrupted lines exactly as they are — any task-state byte
+movement anywhere is a defect. The wiki-link verbatim defect ("The wiki-link carrier defect"
+above) stays recorded-not-fixed, and its pinned witnesses in `tests/render.test.ts` and
+`tests/wikilink.test.ts` had their policy literals migrated (`color: true` → `sgr: "full"`,
+`color: false` → `sgr: "none"`) with **not one expected byte moved** — they are the instrument
+a future fix has to trip, and a migration that also tidied an expectation would have destroyed
+it.
 
 ### Ambiguous width (WP-3)
 
@@ -1751,9 +1845,12 @@ this repo may claim those pass.
 
   **The highlighting path is dead under every test and gate, and that is a property of the
   colour decision rather than of a library.** `highlightCode` (`src/blocks.ts`) returns the raw,
-  unstyled code whenever `ctx.color` is false — i.e. whenever the resolved policy
+  unstyled code whenever `ctx.sgr` is not `"full"` — i.e. whenever the resolved policy
   (`src/colour.ts`) says so, which is every non-TTY run with nothing forced: `bun test`,
-  `--check`, both sweeps, CI. It **used** to be the same gate the library's `highlight()`
+  `--check`, both sweeps, CI. **The gate narrowed from `ctx.color` at WP-2 of
+  `plans/colour-modes.md`** (Decision 3, "Three levels, not two" above): the format-preserving
+  `formats` mode takes this same dark branch, so `--color=never` no longer reaches the
+  highlighter at all. It **used** to be the same gate the library's `highlight()`
   applied at `index.js:591` (`chalk.level === 0`); WP-1 of `plans/colour-policy.md` made the two
   able to disagree — `cli-highlight` was still reading its own `chalk`'s module-load level while
   this read the policy, so `--color=always` on a pipe took the styled branch *and* got an
@@ -1764,9 +1861,9 @@ this repo may claim those pass.
   `src/lang.ts` normalises every fence language so a real document never reaches it;
   `tests/helpers/block-parity.ts`'s `unresolvable language` case reaches it deliberately, and
   `tests/blocks.test.ts` captures and asserts the message. **Exercising the styled path still
-  requires a colour-on policy** — every gate `verify` runs is colour-off — but it no longer
-  requires a subprocess: an injected `{ color: true }` is enough now that no library resolves
-  colour at module load. That is the same shape of trap as the fence exemption, one step less
+  requires a `full` policy** — every gate `verify` runs is colour-off, and `formats` is not
+  colour-on for this producer — but it no longer requires a subprocess: an injected
+  `{ sgr: "full" }` is enough now that no library resolves colour at module load. That is the same shape of trap as the fence exemption, one step less
   hidden: a gate that passes because the code under it never ran.
 - **The viewer never narrates parser internals to stderr.** `yaml` reports recoverable oddities
   through `process.emitWarning`, which no `try`/`catch` can intercept, so Node's default handler

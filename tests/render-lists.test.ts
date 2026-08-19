@@ -1221,8 +1221,8 @@ describe("renderDocument — the coalesced colon-guard continuation drift (WP-5,
 // ---------------------------------------------------------------------------
 
 describe("colour cannot move a character — the three WP-3 repairs, at width 80", () => {
-  const FORCED: ColourPolicy = { color: true, hyperlinks: false, tmux: false };
-  const OFF: ColourPolicy = { color: false, hyperlinks: false, tmux: false };
+  const FORCED: ColourPolicy = { sgr: "full", hyperlinks: false, tmux: false };
+  const OFF: ColourPolicy = { sgr: "none", hyperlinks: false, tmux: false };
 
   const render = (source: string, width: number, glyphs: GlyphSet, policy: ColourPolicy): string =>
     renderDocument(source, width, glyphs, NARROW_MEASURE, false, resolveFenceLanguage, policy);

@@ -11,20 +11,21 @@ import {
   renderLink,
   renderStrong,
 } from "../src/inline";
+import { type SgrMode } from "../src/colour";
 import { createLayoutContext, type LayoutContext } from "../src/layout-context";
 import { NARROW_MEASURE } from "../src/width";
 import { inlineParityCases, inlineParityFailures, type ParityCase } from "./helpers/inline-parity";
 
 const ESC = "\u001b";
 
-function context(overrides: { emoji?: boolean; color?: boolean } = {}): LayoutContext {
+function context(overrides: { emoji?: boolean; sgr?: SgrMode } = {}): LayoutContext {
   return createLayoutContext({
     width: 80,
     glyphs: UNICODE_GLYPHS,
     measure: NARROW_MEASURE,
     resolveFenceLanguage: (raw) => raw,
     emoji: overrides.emoji ?? true,
-    color: overrides.color ?? false,
+    sgr: overrides.sgr ?? "none",
   });
 }
 
@@ -93,11 +94,11 @@ describe("inline visitors — byte parity with the marked-terminal methods they 
 });
 
 describe("inline visitors — the exact bytes, with the colour decision supplied", () => {
-  // These do not need a subprocess: the owned emitters branch on `LayoutContext.color`,
+  // These do not need a subprocess: the owned emitters branch on `LayoutContext.sgr`,
   // which is precisely what makes them testable at both settings in one process, and
   // what stops the non-TTY/`@colors` divergence from reaching the output.
-  const on = context({ color: true });
-  const off = context({ color: false });
+  const on = context({ sgr: "full" });
+  const off = context({ sgr: "none" });
 
   test("strong is bold, and nothing when colour is off", () => {
     const token = asToken(withChildren({ type: "strong" }, "loud"));
@@ -171,8 +172,109 @@ describe("inline visitors — the exact bytes, with the colour decision supplied
   });
 });
 
+/**
+ * **The `formats` mode, pinned at the direct visitor with exact-pair assertions** — WP-2 of
+ * `plans/colour-modes.md`, and cycle-3 f6 is the reason it is *here* rather than in a
+ * document-level render. A paragraph is framed in `reset` (`0m` both directions, Decision
+ * 8), so a document-level "does the formats render contain an escape" check passes even if
+ * the hue filter is completely dead. Asserting the whole byte string of one visitor's
+ * output is the only form that fails when the filter stops working, and it is what these
+ * cases do.
+ *
+ * The six chains, and what each is under the classification (`STYLE_CLASSES`,
+ * `src/style.ts`):
+ *
+ * | Visitor | Chain | Under `formats` |
+ * |---|---|---|
+ * | `strong` | `bold` | unchanged — format |
+ * | `em` | `italic` | unchanged — format |
+ * | `codespan` | `yellow` | **nothing at all** — hue-only chain |
+ * | `del` | `dim` · `gray` · `strikethrough` | `2m`/`22m` and `9m`/`29m`; `90m`/`39m` gone |
+ * | `link` | `blue` | **nothing at all** — hue-only chain |
+ * | `link`'s href | `blue` · `underline` | `4m`/`24m` only |
+ *
+ * A chain that filters down to nothing emits **nothing** rather than an empty open/close
+ * pair, which is why the codespan and link cases assert the bare text and not a residue.
+ */
+describe("inline visitors — the exact bytes under `formats` (the hue/format split)", () => {
+  const formats = context({ sgr: "formats" });
+  const off = context({ sgr: "none" });
+
+  test("strong keeps its bold — format class, byte-identical to `full`", () => {
+    const token = asToken(withChildren({ type: "strong" }, "loud"));
+    expect(renderStrong(formats, token, parse)).toBe(`${ESC}[1mloud${ESC}[22m`);
+  });
+
+  test("em keeps its italic — format class", () => {
+    const token = asToken(withChildren({ type: "em" }, "quiet"));
+    expect(renderEm(formats, token, parse)).toBe(`${ESC}[3mquiet${ESC}[23m`);
+  });
+
+  test("codespan's yellow is hue-only, so it emits nothing — not an empty pair", () => {
+    const token = asToken({ type: "codespan", raw: "x", text: "x" });
+    expect(renderCodespan(formats, token)).toBe("x");
+    // And the whole point of the mode: `formats` is not `none` in general, but for a
+    // hue-only producer the two agree exactly.
+    expect(renderCodespan(formats, token)).toBe(renderCodespan(off, token));
+  });
+
+  test("del keeps dim and strikethrough, loses grey — the exact-pair case (cycle-3 f6)", () => {
+    const token = asToken(withChildren({ type: "del" }, "gone"));
+    const rendered = renderDel(formats, token, parse);
+    // The positive half, as a whole byte string rather than as a `toContain`.
+    expect(rendered).toBe(`${ESC}[2m${ESC}[9mgone${ESC}[29m${ESC}[22m`);
+    // The negative half, named individually so a failure says which code came back.
+    expect(rendered).toContain(`${ESC}[2m`);
+    expect(rendered).toContain(`${ESC}[22m`);
+    expect(rendered).toContain(`${ESC}[9m`);
+    expect(rendered).toContain(`${ESC}[29m`);
+    expect(rendered).not.toContain(`${ESC}[90m`);
+    expect(rendered).not.toContain(`${ESC}[39m`);
+  });
+
+  test("the surviving links still nest outermost-first, which is what rebuilding buys", () => {
+    // `dim` is the outer link and `strikethrough` the inner one; dropping `gray` from
+    // between them must not reorder them or leave the closes crossed. Editing `openAll` as
+    // a string instead of rebuilding the chain is the way to get this wrong.
+    const token = asToken(withChildren({ type: "del" }, "x"));
+    const rendered = renderDel(formats, token, parse);
+    expect(rendered.indexOf(`${ESC}[2m`)).toBeLessThan(rendered.indexOf(`${ESC}[9m`));
+    expect(rendered.indexOf(`${ESC}[29m`)).toBeLessThan(rendered.indexOf(`${ESC}[22m`));
+  });
+
+  test("a link loses its blue wrap entirely and its href keeps only the underline", () => {
+    const token = asToken({
+      type: "link",
+      raw: "x",
+      href: "https://example.com/x",
+      title: null,
+      text: "label",
+      tokens: [inline("label")],
+    });
+    const rendered = renderLink(formats, token, parse);
+    if (!rendered.includes("(")) {
+      // OSC-8 path — a terminal capability, never asserted against here.
+      expect(rendered).toContain(`${ESC}[4mhttps://example.com/x${ESC}[24m`);
+      return;
+    }
+    expect(rendered).toBe(`label (${ESC}[4mhttps://example.com/x${ESC}[24m)`);
+    expect(rendered).not.toContain(`${ESC}[34m`);
+    expect(rendered).not.toContain(`${ESC}[39m`);
+  });
+
+  test("the visible text is identical in all three modes — the filter moves no character", () => {
+    const source = asToken(withChildren({ type: "del" }, "gone"));
+    // eslint-disable-next-line no-control-regex
+    const strip = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, "");
+    expect(strip(renderDel(formats, source, parse))).toBe(strip(renderDel(off, source, parse)));
+    expect(strip(renderDel(context({ sgr: "full" }), source, parse))).toBe(
+      strip(renderDel(off, source, parse)),
+    );
+  });
+});
+
 describe("inline visitors — the library behaviours that must not be tidied up", () => {
-  const ctx = context({ color: false });
+  const ctx = context({ sgr: "none" });
 
   test("codespan still emits the colon sentinel the block renderers undo", () => {
     const token = asToken({ type: "codespan", raw: "a:b", text: "a:b" });
@@ -219,9 +321,9 @@ describe("inline visitors — the library behaviours that must not be tidied up"
       text: ":rocket:",
       tokens: [inline(":rocket:")],
     });
-    const rendered = renderLink(context({ color: false, emoji: true }), token, parse);
+    const rendered = renderLink(context({ sgr: "none", emoji: true }), token, parse);
     expect(rendered).toContain("\u{1F680} ");
-    const literal = renderLink(context({ color: false, emoji: false }), token, parse);
+    const literal = renderLink(context({ sgr: "none", emoji: false }), token, parse);
     expect(literal).toContain(":rocket:");
   });
 });
@@ -260,7 +362,7 @@ describe("the inline visitors take the colour decision and read nothing else", (
         measure: Object.assign((text) => text.length, { ambiguous: "narrow" }),
         resolveFenceLanguage: (raw) => raw,
         emoji: false,
-        color: false,
+        sgr: "none",
       });
       const inner = { type: "text", raw: "loud", text: "loud" };
       const token = { type: "strong", raw: "loud", text: "loud", tokens: [inner] };
@@ -285,6 +387,6 @@ describe("the inline visitors take the colour decision and read nothing else", (
 
   test("the same visitor with the decision set the other way does emit, so the pin is not vacuous", () => {
     const token = asToken(withChildren({ type: "strong" }, "loud"));
-    expect(renderStrong(context({ color: true }), token, parse)).toBe(`${ESC}[1mloud${ESC}[22m`);
+    expect(renderStrong(context({ sgr: "full" }), token, parse)).toBe(`${ESC}[1mloud${ESC}[22m`);
   });
 });

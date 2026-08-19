@@ -291,9 +291,25 @@ describe("renderWithForcedColor", () => {
       // visible as a failure rather than as a quietly weaker test.
       process.env.MDVIEW_COLOR = "never";
       process.env.NO_COLOR = "1";
-      const { text: forced } = await renderWithForcedColor("**loud** words\n", 60);
+      // **The source carries a hue as well as a format, and that is required rather than
+      // incidental since WP-2 of `plans/colour-modes.md`.** `MDVIEW_COLOR=never` is one of
+      // the three explicit `never`-directive routes whose output that plan deliberately
+      // moves (Decision 5): it resolves to `formats`, not to `none`, so the in-process
+      // render is no longer colourless and the old `not.toContain("\u001b")` assertion
+      // asserted the pre-WP-2 semantics. Bold alone would have made this case *vacuous* —
+      // `bold` is format-class and `reset` is control-class, so `**loud** words` renders
+      // byte-identically under `full` and `formats`. The codespan's yellow is hue-class, so
+      // it is present on the forced side and absent on the ambient side, and the claim this
+      // test is about — the two sides resolve **opposite** modes — is sharper than it was:
+      // the boundary it now witnesses is the mode boundary itself.
+      const source = "**loud** `words`\n";
+      const { text: forced } = await renderWithForcedColor(source, 60);
       expect(forced).toContain("\u001b[1m");
-      expect(renderDocumentDetailed("**loud** words\n", 60).text).not.toContain("\u001b");
+      expect(forced).toContain("\u001b[33m");
+      const ambient = renderDocumentDetailed(source, 60).text;
+      expect(ambient).toContain("\u001b[1m");
+      expect(ambient).not.toContain("\u001b[33m");
+      expect(ambient).not.toBe(forced);
       // And the sanitizer is what makes it so, checked directly rather than only through
       // the child's behaviour.
       const env = forcedColorChildEnv({ MDVIEW_COLOR: "never", NO_COLOR: "1", FORCE_COLOR: "0" });

@@ -652,7 +652,7 @@ describe("border and head styling obey the policy that is handed in", () => {
   const table = lexTable(["| Head | Other |", "|---|---|", "| a | b |", ""].join("\n"));
 
   test("colour off emits no escape at all", () => {
-    const output = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, false);
+    const output = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "none");
     expect(output).not.toContain(ESC);
   });
 
@@ -662,7 +662,7 @@ describe("border and head styling obey the policy that is handed in", () => {
   });
 
   test("colour on wraps every border piece in grey and every head cell in bold", () => {
-    const output = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, true);
+    const output = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "full");
     expect(output).toContain(`${ESC}[90m`);
     expect(output).toContain(`${ESC}[1m`);
     // One wrap per *cell*, not one per line — the escape-sequence layout `cli-table3`
@@ -675,14 +675,56 @@ describe("border and head styling obey the policy that is handed in", () => {
   });
 
   test("styling changes no column: the two renders strip to the same text", () => {
-    const plain = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, false);
-    const styled = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, true);
+    const plain = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "none");
+    const styled = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "full");
     expect(stripAnsi(styled)).toBe(plain);
     expect(maxWidth(styled)).toBe(maxWidth(plain));
   });
 
+  /**
+   * **The table is the producer where the mode split is most visible** — WP-2 of
+   * `plans/colour-modes.md`. `bold` is format-class and `gray` is hue-class, so a
+   * `formats` render keeps every head cell bold and loses every grey border piece, with
+   * the glyphs themselves unchanged and unmoved.
+   *
+   * Asserted as **exact pairs with counts**, not as "some SGR is present": the counts are
+   * what fail if the filter drops the wrong class, and the `39m`/`90m` absences are what
+   * fail if it drops nothing at all. This is also WP-4's axis seed in miniature — a table
+   * has no paragraph `reset` framing to mask a dead filter, which is why cycle-3 f6 chose
+   * it over a document-level probe.
+   */
+  test("`formats` keeps every bold head and drops every grey border piece", () => {
+    const output = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "formats");
+    // The positive arm: the same two bold pairs `full` emits, byte for byte.
+    expect(output).toContain(`${ESC}[1m`);
+    expect(output.split(`${ESC}[1m`).length - 1).toBe(2);
+    expect(output.split(`${ESC}[22m`).length - 1).toBe(2);
+    // The negative arm: grey's open and its close, named separately.
+    expect(output).not.toContain(`${ESC}[90m`);
+    expect(output).not.toContain(`${ESC}[39m`);
+  });
+
+  test("`formats` is neither of the other two modes — the seed is not vacuous either way", () => {
+    const none = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "none");
+    const formats = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "formats");
+    const full = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "full");
+    expect(formats).not.toBe(none);
+    expect(formats).not.toBe(full);
+    // And it is exactly `full` minus the grey pairs, which is the claim in byte form.
+    expect(formats).toBe(full.split(`${ESC}[90m`).join("").split(`${ESC}[39m`).join(""));
+  });
+
+  test("the filter moves no column: all three modes strip to the same text and width", () => {
+    const none = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, "none");
+    for (const sgr of ["none", "formats", "full"] as const) {
+      const output = renderTable(table, 40, UNICODE_GLYPHS, NARROW_MEASURE, sgr);
+      expect(stripAnsi(output)).toBe(none);
+      expect(maxWidth(output)).toBe(maxWidth(none));
+    }
+  });
+
   test("and the allocated geometry still equals the rendered geometry under colour", () => {
-    const styled = renderTable(WIDE_TABLE, 100, UNICODE_GLYPHS, NARROW_MEASURE, true);
+    const styled = renderTable(WIDE_TABLE, 100, UNICODE_GLYPHS, NARROW_MEASURE, "full");
     const grid = tableGrid(WIDE_TABLE);
     const allocation = allocateWidths(naturalWidths(grid.header, grid.rows), 100);
     expect(maxWidth(styled)).toBe(allocation.totalWidth);

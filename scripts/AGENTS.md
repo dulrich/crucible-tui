@@ -206,10 +206,10 @@ code-range dump is the real bar.
 
 This is the fourth time a gate here passed for a narrower reason than it appeared (the
 fixture had no long bullets; the highlight path is dead under tests because the renderer
-skips highlighting whenever the colour decision is false — `src/blocks.ts`'s `highlightCode`
-returns raw code when `LayoutContext.color` is false, which is every non-TTY run; tier purity
-was unmeasured; code ranges are exempt). **When a gate passes, check that it passes for the
-right reason.**
+skips highlighting unless the resolved mode is `full` — `src/blocks.ts`'s `highlightCode`
+returns raw code whenever `LayoutContext.sgr !== "full"`, which is every non-TTY run; tier
+purity was unmeasured; code ranges are exempt). **When a gate passes, check that it passes
+for the right reason.**
 
 That third one is worth naming precisely, because the mechanism outlived every dependency
 that carried it: the rule was `marked-terminal`'s `highlight()` short-circuiting at
@@ -219,6 +219,19 @@ repo's own renderer, where the decision was `supports-color`'s answer, and WP-1 
 value, with no library asked. Same gate, same blindness, owned twice over. Since WP-2 of that
 plan the *whole* highlighting path obeys it, `cli-highlight`'s own `chalk` having been the
 last thing that did not — see `src/AGENTS.md`'s "Colour" section and its rendering policy.
+
+**And since WP-2 of `plans/colour-modes.md` the gate is narrower than "is colour on":
+`sgr !== "full"` returns raw code, so the format-preserving `formats` mode takes the same
+dark branch `none` does** (Decision 3 — an explicit, ratified *producer* exception, argued
+in `src/blocks.ts`'s `highlightCode` and enumerated in `src/AGENTS.md`). Two consequences
+for this file's instruments. The blindness above is **unchanged in extent** — every gate
+`verify` runs is still colourless and still cannot see this path. But the *coverage claim*
+narrows: a run that pins `MDVIEW_COLOR=never` is no longer a colour-on run as far as
+fenced code is concerned, so it exercises the highlighter not at all. Only a `full` run —
+`FORCE_COLOR=3`, `MDVIEW_COLOR=always`, `--color=always`, or a real TTY — reaches it. That
+is also what makes `visible(formats) === visible(off)` hold **by construction** for code
+rather than by inspection: `fixHardReturn`, the one visible-content transform on this path,
+is downstream of the gate.
 
 #### The differential harness is the instrument for that bar
 
@@ -507,18 +520,24 @@ absent. Every row below was found with `-a`.)
 
 **Producers — they put escape bytes into rendered text.**
 
-| Site | What it emits | Obeys `ctx.color`? |
+(The column asked "Obeys `ctx.color`?" until WP-2 of `plans/colour-modes.md`. The decision
+is a three-level `ctx.sgr` now — `full`/`formats`/`none` — so the question is which
+*threshold* a site uses. Every row below is `sgr !== "none"` except the highlighter, which
+is keyed to `full`; the hue/format split itself is applied once, by style name, inside
+`src/style.ts`, so no producer implements a filter of its own.)
+
+| Site | What it emits | Obeys `ctx.sgr`? |
 |---|---|---|
-| `src/style.ts` (`applyStyle`) | the one styling primitive; every SGR pair in prose comes through here. Was `src/inline.ts:205-226` until WP-2 of `plans/colour-policy.md` moved it, with the byte table, into the module that owns styling | **yes** — returns the input untouched when the policy is off |
+| `src/style.ts` (`applyStyle`) | the one styling primitive; every SGR pair in prose comes through here. Was `src/inline.ts:205-226` until WP-2 of `plans/colour-policy.md` moved it, with the byte table, into the module that owns styling. **Since WP-2 of `plans/colour-modes.md` it is also where the hue/format filter lives** — `STYLE_CLASSES` classifies each committed name, and both emitters run their existing bodies over the *filtered* chain | **yes** — returns the input untouched at `none`, and drops hue-class links at `formats` |
 | `src/inline.ts:339,348,363,382,420,424,427` | its inline call sites — strong, em, codespan, del, link | via `applyStyle` |
 | `src/blocks.ts:151,195,213,426,457,518` | its block call sites — code, hr, html, heading, paragraph, blockquote | via `applyStyle` |
 | `src/lists.ts:380` | its list-item call site | via `applyStyle` |
 | `src/inline.ts`'s `renderLink`, through `src/ansi.ts`'s `link` | **OSC-8**, not SGR, plus the tmux DCS envelope | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken. The *emitter* was `ansiEscapes.link` until WP-3 of the same plan; it is this repo's transcription now, and the href is sanitized at emission |
-| `src/wikilink.ts` (`styleWikiLinkCarriers`) | the wiki-link label's cyan+underline, applied **after the walk** over a balanced carrier pair | **yes** — via `applyStyle` under the resolved policy, since WP-4 of `plans/colour-policy.md`. It was `src/render.ts:62-65`'s `styleWikiLink`: a hardcoded `[36m[4m…` injected **before the lexer**, at every colour level, obeying nothing — the last row in this table that answered **no**, and the last tool-generated escape entering the lexer's input |
-| `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit `color` argument since WP-1, through `src/style.ts`'s plain wrap since WP-2; it was two hardcoded constants and no decision at all |
-| `src/table.ts` (`styleBorder`/`styleHead`) | `grey`/`bold` for borders and headers | **yes** — `renderTable`'s `color` argument since WP-2; it was `@colors/colors`' own module-load answer, which did not consult `isTTY` |
-| `src/blocks.ts`'s `highlightCode` | the syntax theme inside fences | **yes** — `ctx.color`, gating `src/highlight.ts` since WP-2; it was `cli-highlight`'s bundled `chalk` level, decided at module load |
-| ~~`src/inline.ts:283` (`detectInlineColor`)~~ | **deleted** at WP-1 of `plans/colour-policy.md` with every consumer — the authority the first row obeys is `resolveColourPolicy` (`src/colour.ts`), threaded through `LayoutContext.color` | n/a |
+| `src/wikilink.ts` (`styleWikiLinkCarriers`) | the wiki-link label's cyan+underline, applied **after the walk** over a balanced carrier pair; under `formats` the cyan drops and the underline stays — the only two-link chain here with one link of each class | **yes** — via `applyStyle` under the resolved policy, since WP-4 of `plans/colour-policy.md`. It was `src/render.ts:62-65`'s `styleWikiLink`: a hardcoded `[36m[4m…` injected **before the lexer**, at every colour level, obeying nothing — the last row in this table that answered **no**, and the last tool-generated escape entering the lexer's input |
+| `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit argument since WP-1 (`color`, widened to `sgr` at WP-2 of `plans/colour-modes.md`), through `src/style.ts`'s plain wrap since WP-2 of `plans/colour-policy.md`; it was two hardcoded constants and no decision at all. `dim` is **format**-class, so a metadata block renders identically under `full` and `formats` |
+| `src/table.ts` (`styleBorder`/`styleHead`) | `grey`/`bold` for borders and headers | **yes** — `renderTable`'s `sgr` argument (`color` until WP-2 of `plans/colour-modes.md`); it was `@colors/colors`' own module-load answer, which did not consult `isTTY`. It is the producer the mode split divides: **bold heads survive `formats`, grey borders do not** |
+| `src/blocks.ts`'s `highlightCode` | the syntax theme inside fences | **yes, and at a narrower threshold than every other row** — `ctx.sgr !== "full"` returns raw code (WP-2 of `plans/colour-modes.md`, Decision 3's named producer exception), where it was `ctx.color` from WP-2 of `plans/colour-policy.md` and `cli-highlight`'s bundled `chalk` level, decided at module load, before that. **This is the one site in the renderer where provenance rather than style class decides**, and it is why a `formats` render's fences are byte-identical to a `none` render's |
+| ~~`src/inline.ts:283` (`detectInlineColor`)~~ | **deleted** at WP-1 of `plans/colour-policy.md` with every consumer — the authority the first row obeys is `resolveColourPolicy` (`src/colour.ts`), threaded through `LayoutContext.sgr` | n/a |
 
 **Layout-consumers — they read or strip escapes to decide where characters go.** These are
 the sites a style-last restructure has to satisfy, and the colour-only defects all lived

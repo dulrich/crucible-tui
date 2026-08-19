@@ -78,6 +78,9 @@ function goldenBytes(emoji: boolean, color: boolean, name: string): string {
   return value;
 }
 
+// As in `block-parity.ts`: the golden tables have two sides, so this harness keeps its
+// boolean and maps it to the canonical `SgrMode` at the one construction site. `true` is
+// `"full"`, `false` is `"none"`; no frozen byte moved at WP-2 of `plans/colour-modes.md`.
 function context(emoji: boolean, color: boolean): LayoutContext {
   return createLayoutContext({
     width: 80,
@@ -85,7 +88,7 @@ function context(emoji: boolean, color: boolean): LayoutContext {
     measure: NARROW_MEASURE,
     resolveFenceLanguage: (raw) => raw,
     emoji,
-    color,
+    sgr: color ? "full" : "none",
   });
 }
 
