@@ -186,7 +186,16 @@ describe("the runs/ exemption is exactly that narrow (WP-12d)", () => {
     }
   });
 
-  test("no default-manifest glob can ever match anything under runs/ — the assertion that makes the exemption enforceable", async () => {
+  test("no default-manifest entry can ever match anything under runs/ — the assertion that makes the exemption enforceable", async () => {
+    // Since WP-1 of `plans/gate-corpus-reframe.md` the bundled manifest's `globs` are an
+    // explicit, wildcard-free path list (the gate corpus, scoped to `tests/fixtures/`),
+    // not a live-document glob — but this assertion's two guarantees are unchanged and
+    // still load-bearing: the exemption (`EXEMPT_ROOT_DIRS`, `tests/helpers/
+    // containment.ts`) and the gate corpus must stay provably disjoint, whatever either
+    // one is at the time. The wildcard checks below are retained as defense-in-depth —
+    // the manifest *schema* still allows a `*`/`**` segment even though no current entry
+    // uses one — so a future entry that reintroduced a wildcard overlapping `runs/` would
+    // still be caught here, not just by the eligibility assertion in `tests/gate-corpus.test.ts`.
     const manifestPath = BUNDLED_DEFAULT_MANIFEST;
     const manifest = JSON.parse(await Bun.file(manifestPath).text()) as {
       corpora: Array<{ root: string; globs?: string[] }>;
@@ -194,13 +203,13 @@ describe("the runs/ exemption is exactly that narrow (WP-12d)", () => {
     expect(manifest.corpora.length).toBeGreaterThan(0);
     for (const spec of manifest.corpora) {
       const resolvedRoot = resolve(dirname(manifestPath), spec.root);
-      // The corpus root itself must never be, or resolve into, the exempted directory.
+      // No corpus root may be, or resolve into, the exempted directory.
       expect(basename(resolvedRoot)).not.toBe("runs");
       for (const glob of spec.globs ?? []) {
+        // No entry may begin `runs/` — as a literal segment (the live case today, since
+        // every entry is wildcard-free) or as a bare wildcard that could expand to match
+        // `runs` itself (the defense-in-depth case).
         const firstSegment = glob.split("/")[0] ?? "";
-        // A bare wildcard as the first segment could expand to match `runs` itself; a
-        // literal `runs` segment obviously would. If either ever appears, the corpus and
-        // the exemption are no longer disjoint and this must fail.
         const overlapsRuns = EXEMPT_ROOT_DIRS.has(firstSegment) || firstSegment === "**" || firstSegment === "*";
         expect(overlapsRuns).toBe(false);
       }
