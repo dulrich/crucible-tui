@@ -940,8 +940,19 @@ export function renderDocumentDetailed(
   // marker plus the indent, which is exactly what `list` glues back on afterwards, so the
   // composed line lands at `targetWidth` and `rewrapListBody`'s pass over it is the no-op
   // it documents itself as.
+  //
+  // The last argument is the resolved colour policy, added by WP-2 of
+  // `plans/colour-policy.md`: the head and border styles used to be `@colors/colors`'
+  // decision inside `src/table.ts`, taken from the environment without consulting `isTTY`,
+  // and they are this render's decision now like every other producer's.
   renderer.table = (token: Tokens.Table) =>
-    renderTable(token, Math.max(1, targetWidth - layout.prefix.width()), glyphs, measure);
+    renderTable(
+      token,
+      Math.max(1, targetWidth - layout.prefix.width()),
+      glyphs,
+      measure,
+      layout.color,
+    );
 
   // **The owned inline visitors** (WP-2). These were the first group taken off the
   // library, and they had to be byte-identical to it because the block renderers around

@@ -9,20 +9,22 @@
  * package's `dependencies` (never `devDependencies`), following each
  * resolved package's own `dependencies` *and* `optionalDependencies`
  * transitively. `optionalDependencies` is included deliberately, not
- * skipped: `cli-table3` declares `@colors/colors` as optional, but
- * `cli-table3`'s own `src/cell.js` does `require('@colors/colors/safe')`
- * unconditionally whenever a cell style property is set — so it ships real
- * code and must be reproduced like any other dependency, not waved through
- * as merely suggested. (Since WP-3 of `plans/tn-review-remediation.md`
- * `@colors/colors` is also a *direct* dependency of this package —
- * `src/table.ts` imports it for the border/head styling it took over from
- * `cli-table3` — so it would now be reached either way. The optional-edge
- * rule stays, because it is what keeps `cli-table3` itself, still pulled in
- * by `marked-terminal`, from dropping its own optional edges silently.)
+ * skipped, and the case that established the rule is worth keeping now that
+ * both packages in it are gone: `cli-table3` declared `@colors/colors` as
+ * optional while its own cell code required it unconditionally whenever a
+ * style property was set — so an "optional" edge shipped real code, and a
+ * walker that skipped optional edges would have published an incomplete
+ * notice file. Neither package is in this tree any more. `cli-table3` left
+ * with `marked-terminal` (WP-6 of `plans/marked-terminal-replacement.md`),
+ * and `@colors/colors` left at WP-2 of `plans/colour-policy.md`, when
+ * `src/table.ts`'s border/head styling moved onto `src/style.ts`'s committed
+ * style table — so the direct-ownership note this header used to carry about
+ * both is history, not current fact. The rule stays: any dependency may do
+ * what `cli-table3` did.
  *
  * Each resolved package is identified by realpath, so a hoisting conflict
  * (bun nests a second copy of a package under whichever consumer needed a
- * different version — see `string-width`, `chalk`, `parse5`, `emoji-regex`,
+ * different version — `string-width`, `chalk`, `parse5`, `emoji-regex`,
  * `strip-ansi`, `ansi-regex` in this tree) still dedupes to one notice per
  * distinct name@version, not one per physical copy.
  *

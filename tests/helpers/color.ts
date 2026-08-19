@@ -3,13 +3,21 @@ import { resolve } from "node:path";
 /**
  * Forced-color test fixture.
  *
- * `marked-terminal` delegates syntax highlighting to `cli-highlight`, which is
- * gated behind `chalk.level === 0` — true whenever stdout is not a TTY, which is
- * always true under `bun test`. That means the highlight path (and any
- * highlight.js "language not found" diagnostic) is dead code in every normal test
- * run. Two facts about this trap, both verified against this repo's
+ * **The gating this helper was built for has moved twice, and the helper is still the
+ * fixture for what a forced-colour child sees.** `marked-terminal` delegated syntax
+ * highlighting to `cli-highlight`, which was gated behind `chalk.level === 0` — true
+ * whenever stdout is not a TTY, which is always true under `bun test` — so the highlight
+ * path, and any highlight.js "language not found" diagnostic, was dead code in every normal
+ * test run. Since WP-2 of `plans/colour-policy.md` the gate is `ctx.color`, the resolved
+ * policy handed in as a value (`src/highlight.ts` reads nothing else), so an in-process test
+ * can now reach the highlighting path by asking for it — which is what
+ * `tests/blocks.test.ts` does. What still needs a child is a claim about how the *policy
+ * itself* resolves from an environment, which is this helper's job.
+ *
+ * Two facts about the original trap, both verified against this repo's
  * `render.ts`/`highlight.js` before this helper was written (see
- * plans/vault-readiness.md's WP-1 brief):
+ * plans/vault-readiness.md's WP-1 brief), and both still worth knowing because the second
+ * one is about highlight.js and highlight.js has not gone anywhere:
  *
  * 1. Chalk resolves its color level at MODULE-LOAD time, not per call. Setting
  *    `FORCE_COLOR` after `render.ts` (and therefore chalk) has already been

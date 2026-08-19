@@ -40,10 +40,13 @@
  *                                    [--max-char-diff N] [--max-sgr N]
  *
  * **`--colour-mode` is not spelled `--color`, and never may be** (WP-1,
- * `plans/own-the-token-walk.md`). `has-flag` — which `supports-color` and
- * `@colors/colors` both consult — scans the whole of `process.argv`, so a harness flag
- * spelled `--color` or `--no-color` would silently flip the colour decision of the very
- * renderer this instrument is measuring. The axis itself lives in `scripts/corpus.ts`
+ * `plans/own-the-token-walk.md`). `has-flag` — which `supports-color` consulted, and
+ * `@colors/colors` too until WP-2 of `plans/colour-policy.md` removed both from the
+ * runtime closure — scans the whole of `process.argv`, so a harness flag spelled
+ * `--color` or `--no-color` silently flipped the colour decision of the very renderer this
+ * instrument measures. The rule outlived both packages: `--color` is now `mdview`'s own
+ * flag and the highest slot of the ratified precedence matrix, so that spelling would be
+ * read by the renderer directly. The axis itself lives in `scripts/corpus.ts`
  * with the rest of the render seam; this file owns its flags, its printed line and its
  * two ratchets.
  */

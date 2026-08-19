@@ -324,6 +324,12 @@ const DOCUMENTED_FORMER_PACKAGES = new Set([
   // Undeclared since WP-3 of `plans/tn-review-remediation.md` and physically removed with
   // `marked-terminal`, which was the only thing still requiring it.
   "cli-table3",
+  // Removed in WP-2 of `plans/colour-policy.md`, which replaced it with `src/highlight.ts`
+  // over `highlight.js` direct. Its `dist/theme.js` and `dist/index.js` are the transcription
+  // source for the owned colorizer's theme vocabulary and span grammar, cited in that module,
+  // in two plans and in the plan that removed it — the same shape of citation `marked-terminal`
+  // is listed for, and it went foreign the moment the package left `node_modules`.
+  "cli-highlight",
 ]);
 
 /**

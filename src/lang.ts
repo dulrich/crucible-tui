@@ -1,16 +1,21 @@
 /**
  * Fence-language normalization for syntax highlighting.
  *
- * `marked-terminal` hands a fence's declared language straight to `cli-highlight` (via
- * an internal `highlight()` helper), which does not throw on an unknown language — it
- * logs via `console.error` and carries on, so the `try`/`catch` around it never helps
- * (verified against `marked-terminal`'s `index.js:590`; see the WP-3 execution brief).
- * That message reaches stderr on every unrecognized fence in interactive use — the
- * vault's single largest fence category, `dataviewjs` (280 occurrences), triggers it on
- * every render. This module resolves a declared language to one `cli-highlight` actually
- * supports before it ever reaches that path, so the message never fires.
+ * `marked-terminal` hands a fence's declared language straight to the highlighter (via
+ * an internal `highlight()` helper), and highlight.js **logs before it throws** — a
+ * `console.error` naming the language, then an `Error` — so a `try`/`catch` around the
+ * call suppresses the throw and not the message (verified against `marked-terminal`'s
+ * `index.js:590`; see the WP-3 execution brief). That message reaches stderr on every
+ * unrecognized fence in interactive use — the vault's single largest fence category,
+ * `dataviewjs` (280 occurrences), triggers it on every render. This module resolves a
+ * declared language to one the highlighter actually supports before it ever reaches that
+ * path, so the message never fires.
+ *
+ * The support question used to be `cli-highlight`'s one-line `supportsLanguage`; WP-2 of
+ * `plans/colour-policy.md` retired that package, and it is `src/highlight.ts`'s now — the
+ * same `!!hljs.getLanguage(name)` call, from the module that owns the highlight.js import.
  */
-import { supportsLanguage } from "cli-highlight";
+import { supportsLanguage } from "./highlight";
 
 // Locked mapping (user-confirmed, `plans/vault-readiness.md` decision 3): `dataviewjs`
 // is plain JavaScript handed to Obsidian's Dataview plugin, so it highlights correctly
@@ -76,7 +81,7 @@ export function getBuiltinAliases(): Readonly<Record<string, string>> {
 }
 
 /**
- * Whether `cli-highlight` (and therefore highlight.js) recognizes `language`.
+ * Whether highlight.js recognizes `language`.
  * `mdview highlight-as` validates against this before writing, so a typo'd or
  * unsupported target language is rejected at write time rather than producing
  * a fence that mysteriously never highlights later.
@@ -86,7 +91,7 @@ export function isSupportedLanguage(language: string): boolean {
 }
 
 /**
- * Resolve a fence's declared language to one `cli-highlight` supports, against `aliases`.
+ * Resolve a fence's declared language to one highlight.js supports, against `aliases`.
  *
  * - Marked puts the *whole* fence info-string tail into `token.lang` — ` ```js
  *   {highlight=1} ` arrives as `"js {highlight=1}"` — so only the first
@@ -97,7 +102,7 @@ export function isSupportedLanguage(language: string): boolean {
  *   that would change today's rendering for the common case of a plain, unlabelled
  *   fence, which this WP does not touch.
  * - Never passes a *present but unsupported* language through as-is or as `undefined`:
- *   `undefined` would make `cli-highlight` auto-detect and colorize arbitrarily, which
+ *   `undefined` would make the colorizer auto-detect and colorize arbitrarily, which
  *   is not what "unsupported" should mean here. `"plaintext"` is itself always
  *   supported, so the fallback cannot recurse into the same problem.
  */

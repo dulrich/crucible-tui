@@ -26,11 +26,14 @@ import {
  * Everything here spawns subprocesses for the reason `tests/helpers/color.ts:15-46`
  * records: Bun's module cache is shared across a whole `bun test` run, so a module that
  * resolves its colour decision at load has already resolved by the time any test executes,
- * and no in-process mutation of `FORCE_COLOR` can move it. **The renderer's own decision is
- * no longer one of those** — WP-1 of `plans/colour-policy.md` made it a per-call
- * resolution over an explicit input — but `cli-highlight`'s bundled `chalk` and
- * `@colors/colors` still are, and both put styling into rendered output, so the digests
- * this file compares still have to come from two processes. WP-2 retires the last two.
+ * and no in-process mutation of `FORCE_COLOR` can move it. **Nothing in this renderer is
+ * one of those any more**: WP-1 of `plans/colour-policy.md` made the renderer's own
+ * decision a per-call resolution over an explicit input, and WP-2 retired the last two —
+ * `cli-highlight`'s bundled `chalk` and `@colors/colors`, both of which put styling into
+ * rendered output. The subprocesses stay because of what *this file* asserts rather than
+ * because the renderer needs them: every test here is about whether the two children
+ * resolve opposite modes from their own environment, which is only observable across a
+ * process boundary. See `scripts/corpus.ts`'s colour-axis header.
  */
 
 let dir: string;

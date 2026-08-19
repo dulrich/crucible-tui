@@ -109,6 +109,15 @@ is left exactly as it was.
 output is something you can diff, grep and paste without stripping escape sequences first.
 A terminal gets colour, as it always did.
 
+**"Colourless" means every part of the page, and that took two releases to be true.**
+Table borders and table headers used to be styled by a library that answered the colour
+question from the environment alone, without checking whether the destination was a
+terminal, so a piped table arrived wrapped in escape sequences whatever you asked for.
+Syntax highlighting had the mirror-image problem — it was decided at start-up by another
+library, so `--color=always` into a pipe produced a document with no highlighting in it.
+Both now follow the setting below, and `--color=always` on a pipe gives you exactly what a
+terminal would have shown.
+
 Resolution order, highest precedence first:
 
 1. `--color=auto|always|never` (bare `--color` = `always`).

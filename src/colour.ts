@@ -21,7 +21,11 @@
  * detection untestable on this machine, and untestable branches are the ones that rot.
  *
  * What this module deliberately does **not** do: decide *which bytes* a style is, or emit
- * any. That is WP-2's `src/style.ts`. This is on/off and nothing else.
+ * any. That is `src/style.ts`, which WP-2 built — and WP-2 is also what made this module's
+ * answer the *only* one: it retired `@colors/colors` and `cli-highlight` from the tree, so
+ * the third and fourth authorities above are gone rather than merely outranked, and the
+ * fifth (`src/frontmatter.ts`) styles through the same emitter under this decision. This is
+ * on/off and nothing else.
  */
 
 /** The three values every colour directive in this tool can take. */

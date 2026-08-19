@@ -329,7 +329,7 @@ describe("lang.ts: the fence-language resolver and its built-in defaults", () =>
     expect(getBuiltinAliases()).toEqual({ dataviewjs: "javascript", dataview: "sql" });
   });
 
-  test("isSupportedLanguage matches cli-highlight's own answer, case-insensitively", () => {
+  test("isSupportedLanguage matches highlight.js's own answer, case-insensitively", () => {
     expect(isSupportedLanguage("javascript")).toBe(true);
     expect(isSupportedLanguage("JavaScript")).toBe(true);
     expect(isSupportedLanguage("plaintext")).toBe(true);

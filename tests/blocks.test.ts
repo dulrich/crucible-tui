@@ -11,10 +11,10 @@ import {
 import { UNICODE_GLYPHS } from "../src/glyphs";
 import { createLayoutContext, type LayoutContext } from "../src/layout-context";
 import { NARROW_MEASURE, WIDE_MEASURE } from "../src/width";
-import { blockParityFailures, type BlockParityCase } from "./helpers/block-parity";
+import { blockParityCases, blockParityFailures, type BlockParityCase } from "./helpers/block-parity";
 import { forcedColorChildEnv } from "./helpers/color";
 
-const ESC = "";
+const ESC = "\u001b";
 
 function context(overrides: { width?: number; color?: boolean; emoji?: boolean; wide?: boolean } = {}): LayoutContext {
   return createLayoutContext({
@@ -56,27 +56,60 @@ const heading = (depth: number, text: string): Record<string, unknown> => ({
 // ---------------------------------------------------------------------------
 
 describe("code, hr and html — byte parity with the marked-terminal methods they replaced", () => {
-  // `bun test` is never a TTY, so `chalk` is at level 0 here and both sides emit plain
-  // text. For `code` specifically that half is not merely blind to styling, it is blind to
-  // the highlighter: `highlight()` returns the fence unstyled at level 0 and never calls
-  // `cli-highlight` at all. The subprocess test below is the one that exercises it.
+  // `bun test` is never a TTY, so the resolved policy is colour-off here and both sides
+  // emit plain text. For `code` specifically that half is not merely blind to styling, it
+  // is blind to the highlighter: `highlight()` returns the fence unstyled when
+  // `ctx.color` is false and never calls the colorizer at all. The colour-on test below
+  // is the one that exercises it.
   test("every case matches, colour off", () => {
     expect(blockParityFailures(false)).toEqual([]);
   });
 
-  // **This one is still a subprocess after WP-1 of `plans/colour-policy.md`, and `code` is
-  // why.** The colour *decision* is a parameter now, so `blockParityCases(true)` could be
-  // built in this process — but `renderCode`'s colour-on branch calls `cli-highlight`,
-  // whose styling is gated on its own bundled `chalk`'s module-load level. In this process
-  // that level is 0, so an in-process colour-on run would compare unstyled output against a
-  // golden captured under `FORCE_COLOR=3` and fail for a reason that has nothing to do with
-  // the transcription. The child therefore sets the environment *and* passes the decision.
-  // WP-2's owned colorizer is what lets this come back in-process.
-  test("every case matches with colour on, in a subprocess where the highlighter is live", async () => {
+  // **This was a subprocess until WP-2 of `plans/colour-policy.md`, and `code` was why.**
+  // WP-1 made the colour *decision* a parameter, but `renderCode`'s colour-on branch still
+  // called `cli-highlight`, whose styling was gated on its own bundled `chalk`'s
+  // module-load level — 0 in this process — so an in-process colour-on run compared
+  // unstyled output against a golden captured under `FORCE_COLOR=3` and failed for a
+  // reason that had nothing to do with the transcription. `src/highlight.ts` reads the
+  // policy it is handed and nothing else, so the case runs here, in one process, like the
+  // inline table already did. The subprocess is kept alongside it (below) precisely to
+  // prove the two agree — an in-process claim about colour is exactly the kind this repo
+  // has shipped green and wrong before.
+  test("every case matches with colour on, in this process", () => {
+    // The table's `unresolvable language` case reaches highlight.js, which logs through
+    // `console.error` before throwing (`src/lang.ts` exists so a real fence never does).
+    // Captured rather than left to pollute the run — and asserted, so the case is known to
+    // have taken the branch `renderCode`'s `catch` is written for.
+    const original = console.error;
+    const captured: string[] = [];
+    console.error = (...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+    };
+    let cases: BlockParityCase[];
+    try {
+      cases = blockParityCases(true);
+    } finally {
+      console.error = original;
+    }
+    expect(captured.some((message) => message.includes("not-a-real-language"))).toBe(true);
+    // Non-vacuity, asserted on the bytes rather than on a detector's opinion of the
+    // environment: if neither side carries an escape the comparison proves nothing — and
+    // for `code` it is worse than nothing, because an unstyled highlighter short-circuits
+    // the branch under test.
+    expect(cases.some((entry) => entry.ours.includes(ESC))).toBe(true);
+    expect(cases.some((entry) => entry.theirs.includes(ESC))).toBe(true);
+    expect(cases.filter((entry) => entry.ours !== entry.theirs)).toEqual([]);
+  });
+
+  // The same table, in a child under `FORCE_COLOR=3`, kept as the control on the move
+  // above: it is the environment the golden bytes were captured in, and if anything in
+  // this renderer ever starts resolving a colour question at module load again, these two
+  // tests are what disagree.
+  test("and the same cases match in a subprocess under FORCE_COLOR=3", async () => {
     const helper = resolve(import.meta.dir, "helpers/block-parity.ts");
     const child = `
       const argv = process.argv;
-      // cli-highlight logs an unresolvable language through console.error and carries on;
+      // highlight.js logs an unresolvable language through console.error and then throws;
       // captured rather than left to pollute the test run's stderr.
       console.error = () => {};
       const { blockParityCases } = await import(argv[argv.length - 1]);
@@ -104,10 +137,6 @@ describe("code, hr and html — byte parity with the marked-terminal methods the
       goldenSawEscapes: boolean;
       failures: BlockParityCase[];
     };
-    // Non-vacuity, asserted on the bytes rather than on a detector's opinion of the
-    // environment: if neither side carries an escape, the comparison proves nothing — and
-    // for `code` it is worse than nothing, because an unstyled highlighter short-circuits
-    // the branch under test.
     expect(parsed.sawEscapes).toBe(true);
     expect(parsed.goldenSawEscapes).toBe(true);
     expect(parsed.failures).toEqual([]);
