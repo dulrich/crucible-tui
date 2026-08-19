@@ -1099,6 +1099,82 @@ disposition:
 correct output. **A package that deletes the pre-pass owns that test**, and owes a repair for the
 nested lex — suppressing it for task items is real design work, not a side effect.
 
+#### The wiki-link carrier defect: unguarded pre-lexer substitution reaches verbatim contexts
+
+**Recorded, not fixed — WP-1 of `plans/colour-modes.md` (rev 4 at `c381d1c`, the
+record-not-fix downgrade reached after three fix designs failed across three audit
+cycles).** `markWikiLinks` (`src/wikilink.ts:116-121`, called from `preprocessBody`,
+`src/render.ts:251-274`) runs on every source line that `FENCE_LINE`
+(`src/render.ts:51`, ``` ``` ``` and `~~~` only) does not toggle off. There is no
+indented-code, block-HTML, or container guard, so the pass fires on a line that later
+tokenizes as verbatim content exactly as it fires on ordinary prose.
+
+**The substitution is irreversible by construction, which is why the defect cannot be
+patched downstream, at a leaf or anywhere else.** `markWikiLinks` replaces the whole
+`[[…]]` (or `![[…]]`) match with carrier-wrapped `alias ?? slug`
+(`src/wikilink.ts:116-121`) — the fragment, the `|` separator, the `!`, and the slug
+itself (whenever an alias is given) are all discarded before the lexer ever runs. A leaf
+that later discovers it is rendering verbatim content has nothing left in the rendered
+text to restore the authored brackets from.
+
+**Context table**, verified 2026-08-19 by direct execution against this commit at width
+80, `UNICODE_GLYPHS`, both colour policies (`{color:false,hyperlinks:false,tmux:false}` /
+`{color:true,hyperlinks:false,tmux:false}`):
+
+| Context | Today's behaviour | Status | Witness |
+|---|---|---|---|
+| Indented code | `[[slug]]`, `[[slug\|Alias]]`, `[[slug#head\|Alias]]` and `![[embed]]` all lose their authored brackets — each label survives as plain text — **inside a recorded `codeRange`**; under colour the cyan/underline pair lands inside that range too, beside the syntax highlighter's own `highlightAuto` SGR | corrupted-recorded | `tests/render.test.ts`, "defect record: indented code loses authored brackets — plain, alias, fragment, embed (pinned until the successor fix plan)" |
+| Fenced code | Left untouched — `FENCE_LINE`'s toggle skips every line between a pair of ` ``` `/`~~~` fences | guarded-by-FENCE_LINE | `tests/wikilink.test.ts`, "a fenced [[slug]] example is verbatim in both modes — the fence toggle" |
+| Block HTML | `[[slug]]` loses its brackets the same way, but **the corrupted line is not inside any recorded `codeRange`** — `extractCodeRanges` only ever brackets output `wrapCode` produced (fenced/indented code), and block HTML never passes through `wrapCode` — so this corruption carries no class-C protection or exemption at all | corrupted-recorded | `tests/render.test.ts`, "defect record: block HTML loses authored brackets and carries no codeRange exemption" |
+| Blockquote-nested code | Same corruption as indented code, at the code's own nested position, inside a recorded `codeRange` | corrupted-recorded | `tests/render.test.ts`, "defect record: indented code nested inside a blockquote loses authored brackets" |
+| List-nested code | Same corruption, inside a recorded `codeRange` | corrupted-recorded | `tests/render.test.ts`, "defect record: indented code nested inside a list item loses authored brackets" |
+| Codespan interior | `` `[[note]]` `` recognizes and styles the label exactly as prose does — the pre-pass has always fired there (carriers ride the inline `text` token). Decided behaviour, not corruption — "recognition semantics stay frozen" (Decision 7, cycle-1 f6) | kept-recognizing | `tests/wikilink.test.ts`, "defect record: a codespan's wiki-link is still recognized and styled — kept by Decision 7" |
+| Inline-HTML interior | `<span>[[note]]</span>` recognizes and styles the label too — for `<span>[[note]]</span>`, marked lexes `html("<span>")` + `text(carriers…)` + `html("</span>")`, so the carriers ride the inline `text` token between the two tag tokens, not the `html` visitor (cycle-1 f6) | kept-recognizing | `tests/wikilink.test.ts`, "defect record: an inline-HTML interior's wiki-link is still recognized and styled — kept by Decision 7" |
+| Link labels (a wiki-link's own alias containing a Markdown link) | Does not match `WIKI_LINK` at all — the alias group is `[^\]]+`, and a nested `[label](url)` contains `]` — passes through as literal text, unaffected by this defect | recorded-unchanged | `tests/wikilink.test.ts`, "an alias containing a Markdown link does not match, and continues not to" (pre-existing, WP-4 of `plans/colour-policy.md`) |
+
+**Three failed fix designs, and why each died** — one plan, three audit cycles, no fourth
+mechanism proposed after the third failed:
+
+1. **Restore at the leaves** (rev 1). A leaf renderer (`code`, `html`, …) that detects it
+   is rendering verbatim content tries to undo the carrier substitution and reconstruct
+   the authored `[[…]]`. Dead on arrival: the substitution already discarded the
+   fragment, the `|` separator, the `!`, and the slug itself whenever an alias is present
+   (`src/wikilink.ts:116-121`) — there is nothing left in the rendered text for a leaf to
+   restore *from*. `runs/dispatch/colour-modes-plan-audit-report-cycle1.md`, finding 2.
+2. **A byte-offset line map** (rev 2). Accumulate marked's block-token `raw` lengths
+   before substitution runs, to know per source line which lines are block-verbatim, and
+   skip those in `preprocessBody`. Failed on three independent grounds: marked
+   normalizes CRLF to LF, so concatenated token `raw` lengths cannot reconstruct a CRLF
+   source's line coordinates — the committed gate-corpus witness
+   `tests/fixtures/witnesses/defect-0-crlf-frontmatter.md` breaks the map's own stop
+   condition on the binding corpus; top-level accumulation cannot see code nested under
+   `blockquote` or `list` tokens, which only ever appear in container children; and
+   computing the map before `stripSentinelChar`/`stripTaskStateSentinel`/
+   `stripWikiLinkCarriers` run is not classification-preserving — stripping code point 2
+   alone changes a paragraph into indented code. `runs/dispatch/colour-modes-plan-audit-report-cycle2.md`,
+   finding 1.
+3. **A line-count map** (rev 3). Count physical lines per top-level token instead of
+   bytes, to sidestep CRLF. Failed differently: token raw line counts are not additive
+   across blank-line boundaries (a five-physical-line source splits into three tokens
+   whose raw line counts sum to seven, with no rule for which token owns a shared blank
+   line), and — more decisively — **marked elides reference definitions from the token
+   array entirely**, keeping them only in `tokens.links` with no `raw` and no position, so
+   a line-count walk has nothing to place a following code block against.
+   `runs/dispatch/colour-modes-plan-audit-report-cycle3.md`, finding 1.
+
+**A fix needs pre-lexer knowledge of which source lines are block-verbatim — source
+anchoring marked's own lexer does not provide** (no source-offset API; the same interface
+gap `src/walk.ts`'s header and `docs/adr/0001-editor-path.md` both cite for the styled-run
+work this repo has already deferred once). That is a successor plan's job — plausibly by
+owning the lexer — and the three failures above, together with the context table and the
+witnesses it cites, are its starting record rather than a foundation to build on: a future
+fix that changes any pinned byte will trip a named witness, which is the point. This
+record sits beside, and does not amend, "The task-state pre-pass" above: that pass's own
+class-C exception was requested and **the user withheld it** (`src/render.ts:186-192`,
+this file's task-state section above). The two defects share a mechanism — an unguarded
+pre-lexer substitution reaching fenced or indented code — but they are independently
+dispositioned, and repairing one does not authorize repairing the other.
+
 #### Colourless gates cannot see colour-only defects — and that is now a class, not an anecdote
 
 Three separate measurements have found a defect that is invisible without `FORCE_COLOR`, and the

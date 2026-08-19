@@ -402,6 +402,32 @@ describe("end to end: what a wiki-link renders to, in both colour modes", () => 
     }
   });
 
+  // The defect record — `src/AGENTS.md`, "The wiki-link carrier defect", and WP-1 of
+  // `plans/colour-modes.md`. Codespans and inline-HTML interiors are the two contexts the
+  // context table marks **kept-recognizing** rather than corrupted: the pre-pass has
+  // always fired there (this is not new to WP-1), and "recognition semantics stay frozen"
+  // (Decision 7) means that stays exactly as it is. Pinned here as decided behaviour, not
+  // as something a future package should "fix" by suppressing recognition inside these
+  // two contexts.
+  test("defect record: a codespan's wiki-link is still recognized and styled — kept by Decision 7", () => {
+    const source = "see `[[note]]` here\n";
+    expect(render(source)).toBe("see note here\n\n");
+    const coloured = render(source, 80, true);
+    expect(coloured).toBe(`${ESC}[0msee ${ESC}[33m${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}${ESC}[39m here${ESC}[0m\n\n`);
+  });
+
+  test("defect record: an inline-HTML interior's wiki-link is still recognized and styled — kept by Decision 7", () => {
+    // marked lexes `<span>[[note]]</span>` as `html("<span>")` + `text(carriers…)` +
+    // `html("</span>")` — the carriers ride the inline `text` token between the two tag
+    // tokens, not the `html` visitor (cycle-1 f6 of the plan-audit reports).
+    const source = "<span>[[note]]</span>\n";
+    expect(render(source)).toBe("<span>note</span>\n\n");
+    const coloured = render(source, 80, true);
+    expect(coloured).toBe(
+      `${ESC}[0m${ESC}[90m<span>${ESC}[39m${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}${ESC}[90m</span>${ESC}[39m${ESC}[0m\n\n`,
+    );
+  });
+
   test("task-ordered-text.md renders byte-identically in both tiers with colour off", async () => {
     // The plan names this fixture explicitly: it is the one whose rendering the task-state
     // pre-pass holds together, and it shares `preprocessBody` with the wiki-link pass. Its
