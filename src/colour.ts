@@ -24,12 +24,42 @@
  * any. That is `src/style.ts`, which WP-2 built — and WP-2 is also what made this module's
  * answer the *only* one: it retired `@colors/colors` and `cli-highlight` from the tree, so
  * the third and fourth authorities above are gone rather than merely outranked, and the
- * fifth (`src/frontmatter.ts`) styles through the same emitter under this decision. This is
- * on/off and nothing else.
+ * fifth (`src/frontmatter.ts`) styles through the same emitter under this decision.
+ *
+ * **It stopped being on/off at WP-2 of `plans/colour-modes.md`** and is now a three-level
+ * `SgrMode` — how *much* SGR, still never which bytes. The reason the widening is one line
+ * of type here rather than a migration is that every SGR byte already passes through
+ * `src/style.ts`'s committed table by *name*, so "drop hue, keep bold" is a filter over
+ * that table and not a change to any producer.
  */
 
 /** The three values every colour directive in this tool can take. */
 export type ColourDirective = "auto" | "always" | "never";
+
+/**
+ * **The one canonical colour value** (WP-2 of `plans/colour-modes.md`, cycle-1 f7).
+ *
+ * Three levels, not two booleans, and the difference is the whole package: a pair of
+ * independent flags (`color`, `hue`) can express `color=false, hue=true`, which is not a
+ * state this renderer has, and every reader would then have to decide for itself which of
+ * the two it meant. One value with three inhabitants makes the impossible state
+ * unrepresentable and turns "which threshold does this reader use" into a question with a
+ * written answer per reader (`src/AGENTS.md`, "The reader inventory").
+ *
+ * - `"full"` — every committed style emits: hue, format and control.
+ * - `"formats"` — hue is dropped, format and control still emit (Decision 1: *`--no-color`
+ *   means no hue, all other formatting preserved*; Decision 8: `reset` is control and
+ *   emits whenever `sgr !== "none"`). Reachable **only** by the explicit `never` directive
+ *   — flag, `MDVIEW_COLOR` or config — which is the exhaustive list of routes whose bytes
+ *   this plan moves (Decision 5).
+ * - `"none"` — this render emits no SGR of the tool's own at all. Authored escape bytes in
+ *   the document are content and are untouched at every level, `none` included.
+ *
+ * The classification of a *style name* into hue/format/control is `src/style.ts`'s
+ * `STYLE_CLASSES`, deliberately beside the committed table it classifies rather than here:
+ * this module decides *how much* to emit, that one decides *which bytes* are which.
+ */
+export type SgrMode = "full" | "formats" | "none";
 
 /**
  * The resolved decision for one render.
@@ -39,8 +69,14 @@ export type ColourDirective = "auto" | "always" | "never";
  * them on — a pipe has no hyperlink support to force.
  */
 export interface ColourPolicy {
-  /** Whether this render emits SGR at all. */
-  readonly color: boolean;
+  /**
+   * How much SGR this render emits.
+   *
+   * Was `color: boolean` until WP-2 of `plans/colour-modes.md`. The boolean survives one
+   * level down, on `LayoutContext`, as a **constructor-derived** field
+   * (`color === (sgr !== "none")`) — never as a second input.
+   */
+  readonly sgr: SgrMode;
   /** Whether this render emits OSC-8 hyperlinks. */
   readonly hyperlinks: boolean;
   /**
@@ -163,28 +199,55 @@ function directiveFromEnv(
  * `NO_COLOR` sitting *above* `FORCE_COLOR` is deliberate and is the one ordering worth
  * naming: a user who exported `NO_COLOR` said something about this machine, and a
  * `FORCE_COLOR` inherited from some parent process did not.
+ *
+ * ## The three-level answer, and the one asymmetry in it (Decisions 4–5)
+ *
+ * **The precedence order above is untouched by WP-2 of `plans/colour-modes.md`** — every
+ * slot decides at exactly the same point it always did, on exactly the same input. What
+ * changed is only *what a slot's "no" means*, and it does not mean the same thing in every
+ * slot:
+ *
+ * | Slot | `always` | `never` / off |
+ * |---|---|---|
+ * | `--color` flag | `"full"` | **`"formats"`** — an explicit directive |
+ * | `MDVIEW_COLOR` | `"full"` | **`"formats"`** — an explicit directive |
+ * | `NO_COLOR` | — | `"none"` — a kill-switch |
+ * | `FORCE_COLOR` | `"full"` | `"none"` — `FORCE_COLOR=0` is a kill-switch |
+ * | config `color` | `"full"` | **`"formats"`** — an explicit directive |
+ * | `isTTY` floor | `"full"` | `"none"` — nothing was requested |
+ *
+ * **The three bolded cells are the entire rendered-byte movement this plan authorizes**
+ * (Decision 5), and the split is not cosmetic. A `never` *directive* is a user saying
+ * *this tool, this render, no colour* — Decision 1 reads that as "no hue, keep the
+ * formatting", because dim/bold/italic are not colour. A kill-switch is a different
+ * statement with an established cross-tool meaning and an installed base
+ * (`NO_COLOR` presence, `FORCE_COLOR=0`), and it keeps today's bytes exactly: `"none"`.
+ * The `isTTY` floor is `"none"` for a third reason again — nothing was requested at all,
+ * and the landed G1 gate (a piped default render emits **zero** sequences,
+ * `scripts/corpus.ts`) is ratified-by-implementation and wins over the withdrawn plan's
+ * "formats survive `auto` in a pipe" row (Decision 4).
  */
-export function resolveColor(input: ColourPolicyInput = {}): boolean {
+export function resolveColor(input: ColourPolicyInput = {}): SgrMode {
   const env = input.env ?? {};
   const warn = input.warn ?? NOOP;
 
-  if (input.flag === "always") return true;
-  if (input.flag === "never") return false;
+  if (input.flag === "always") return "full";
+  if (input.flag === "never") return "formats";
 
   const fromEnv = directiveFromEnv(env, "MDVIEW_COLOR", warn);
-  if (fromEnv === "always") return true;
-  if (fromEnv === "never") return false;
+  if (fromEnv === "always") return "full";
+  if (fromEnv === "never") return "formats";
 
-  if (env.NO_COLOR !== undefined) return false;
+  if (env.NO_COLOR !== undefined) return "none";
 
   const forced = parseForceColor(env.FORCE_COLOR);
-  if (forced === "always") return true;
-  if (forced === "never") return false;
+  if (forced === "always") return "full";
+  if (forced === "never") return "none";
 
-  if (input.config === "always") return true;
-  if (input.config === "never") return false;
+  if (input.config === "always") return "full";
+  if (input.config === "never") return "formats";
 
-  return input.isTTY === true;
+  return input.isTTY === true ? "full" : "none";
 }
 
 /**
@@ -289,7 +352,7 @@ export function resolveHyperlinks(input: HyperlinkInput = {}): boolean {
  */
 export function resolveColourPolicy(input: ColourPolicyInput = {}): ColourPolicy {
   return {
-    color: resolveColor(input),
+    sgr: resolveColor(input),
     hyperlinks: resolveHyperlinks(input),
     tmux: resolveTmux(input.env ?? {}),
   };

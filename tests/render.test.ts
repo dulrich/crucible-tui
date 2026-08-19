@@ -52,13 +52,85 @@ describe("renderDocument — wiki-links", () => {
   test("with colour on, the label is cyan+underline and the characters are unchanged", () => {
     const source = "See [[mdview|the viewer]] for details.\n";
     const coloured = renderDocument(source, 80, undefined, undefined, undefined, undefined, {
-      color: true,
+      sgr: "full",
       hyperlinks: false,
       tmux: false,
     });
     const ESC = String.fromCharCode(27);
     expect(coloured).toContain(`${ESC}[36m${ESC}[4mthe viewer${ESC}[24m${ESC}[39m`);
     expect(stripAnsi(coloured)).toBe(stripAnsi(renderDocument(source, 80)));
+  });
+});
+
+/**
+ * **The `formats` mode at the document level** — WP-2 of `plans/colour-modes.md`.
+ *
+ * Two obligations that only a whole-document render can witness, plus the framing Decision 8
+ * governs. Everything else about the mode is pinned at its own producer with exact-pair
+ * assertions (`tests/inline.test.ts`, `tests/table.test.ts`, `tests/frontmatter.test.ts`,
+ * `tests/wikilink.test.ts`, `tests/blocks.test.ts`), deliberately: cycle-3 f6 established
+ * that a document-level probe is masked by the paragraph `reset` and cannot fail when the
+ * hue filter is dead.
+ *
+ * 1. **Authored escapes are content and survive byte-for-byte** (cycle-2 f3). This is what
+ *    killed rev 2's "formats ≡ full minus hue codes" identity gate: an authored `31m` is not
+ *    the tool's to remove at *any* mode, so a filter that operated on the finished byte
+ *    stream rather than on the tool's own style chains would have been unsound. The filter
+ *    is over named chains at the emitter, so an authored sequence is never even a candidate.
+ * 2. **The reset framing is present under `formats`** (Decision 8) — paragraphs and list
+ *    items alike, which is the second `reset` chain (`src/lists.ts`) the decision names.
+ */
+describe("renderDocument under `formats` — authored escapes, and the reset framing", () => {
+  const ESC = String.fromCharCode(27);
+  const NONE = { sgr: "none", hyperlinks: false, tmux: false } as const;
+  const FORMATS = { sgr: "formats", hyperlinks: false, tmux: false } as const;
+  const FULL = { sgr: "full", hyperlinks: false, tmux: false } as const;
+  const render = (source: string, policy: typeof NONE | typeof FORMATS | typeof FULL): string =>
+    renderDocument(source, 60, UNICODE_GLYPHS, undefined, undefined, undefined, policy);
+
+  const AUTHORED = `A paragraph with authored ${ESC}[31mred${ESC}[39m in it.\n`;
+
+  test("an authored hue sequence survives `formats` byte-for-byte, in place and in order", () => {
+    const out = render(AUTHORED, FORMATS);
+    expect(out).toContain(`${ESC}[31mred${ESC}[39m`);
+    expect(out.split(`${ESC}[31m`).length - 1).toBe(1);
+    expect(out.split(`${ESC}[39m`).length - 1).toBe(1);
+    // And the tool's own framing sits outside it rather than through it.
+    expect(out).toBe(`${ESC}[0mA paragraph with authored ${ESC}[31mred${ESC}[39m in it.${ESC}[0m\n\n`);
+  });
+
+  test("the same authored sequence survives `none` and `full` too — fidelity is not modal", () => {
+    for (const policy of [NONE, FORMATS, FULL]) {
+      expect(render(AUTHORED, policy)).toContain(`${ESC}[31mred${ESC}[39m`);
+    }
+    expect(render(AUTHORED, NONE)).toBe(`A paragraph with authored ${ESC}[31mred${ESC}[39m in it.\n\n`);
+  });
+
+  test("a paragraph and a list item both keep their reset framing under `formats`", () => {
+    // `src/blocks.ts`'s `RESET` and `src/lists.ts`'s `LIST_ITEM` — the two chains Decision 8
+    // is about. `0m` opens and closes, so this is pinned as the whole byte string.
+    expect(render("plain prose\n", FORMATS)).toBe(`${ESC}[0mplain prose${ESC}[0m\n\n`);
+    expect(render("- a list item\n", FORMATS)).toBe(`    • ${ESC}[0ma list item${ESC}[0m\n\n`);
+    // ... and are absent under `none`, so the assertions above are not vacuous.
+    expect(render("plain prose\n", NONE)).toBe("plain prose\n\n");
+    expect(render("- a list item\n", NONE)).toBe("    • a list item\n\n");
+  });
+
+  test("`formats` is exactly `full` minus the tool's own hue pairs on a mixed document", () => {
+    // Stated as a *measured* relationship on one document rather than as an identity gate:
+    // rev 2's identity was unsound in general (an authored hue must not be removed), so this
+    // case deliberately carries no authored escape and is a per-document witness, not a rule.
+    const source = "`code` and **bold**\n";
+    expect(render(source, FULL)).toBe(`${ESC}[0m${ESC}[33mcode${ESC}[39m and ${ESC}[1mbold${ESC}[22m${ESC}[0m\n\n`);
+    expect(render(source, FORMATS)).toBe(`${ESC}[0mcode and ${ESC}[1mbold${ESC}[22m${ESC}[0m\n\n`);
+    expect(render(source, NONE)).toBe("code and bold\n\n");
+  });
+
+  test("the three modes differ only in escapes — every visible character is identical", () => {
+    const source = `# Heading\n\n${AUTHORED}\n- item with \`code\` and **bold**\n\n| a | b |\n|---|---|\n| c | d |\n`;
+    const base = stripAnsi(render(source, NONE));
+    expect(stripAnsi(render(source, FORMATS))).toBe(base);
+    expect(stripAnsi(render(source, FULL))).toBe(base);
   });
 });
 
@@ -75,8 +147,13 @@ describe("renderDocument — the wiki-link defect in verbatim contexts (plans/co
   const ESC = String.fromCharCode(27);
   const CYAN_UNDERLINE_OPEN = `${ESC}[36m${ESC}[4m`;
   const CYAN_UNDERLINE_CLOSE = `${ESC}[24m${ESC}[39m`;
-  const PLAIN = { color: false, hyperlinks: false, tmux: false } as const;
-  const COLOUR = { color: true, hyperlinks: false, tmux: false } as const;
+  // Migrated at WP-2 of `plans/colour-modes.md` (`color: true` -> `sgr: "full"`,
+  // `color: false` -> `sgr: "none"`). **Not one expected byte in this describe block
+  // moved with them**: these witnesses record the defect's current output and exist to
+  // trip when a future fix changes it, so a migration that also "tidied" an expectation
+  // would have destroyed the instrument.
+  const PLAIN = { sgr: "none", hyperlinks: false, tmux: false } as const;
+  const COLOUR = { sgr: "full", hyperlinks: false, tmux: false } as const;
 
   test("defect record: indented code loses authored brackets — plain, alias, fragment, embed (pinned until the successor fix plan)", () => {
     const source =
@@ -479,7 +556,7 @@ describe("renderDocument — fence language normalization silences highlight.js 
     };
     try {
       try {
-        highlightToAnsi({ color: true }, "const x = 1;", "not-a-real-language-xyz");
+        highlightToAnsi({ sgr: "full" }, "const x = 1;", "not-a-real-language-xyz");
       } catch {
         // highlight.js throws in addition to logging for a genuinely unknown language;
         // the console.error call happens before the throw, which is all this control

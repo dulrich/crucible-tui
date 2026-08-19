@@ -51,10 +51,25 @@ import { applyStyle, createStyler, type ColourGate, type Styler } from "./style"
  *
  * **The colour gate is the caller's**, exactly as it was: `cli-highlight` never asked
  * whether to colour — its `chalk@4` did, at module load, from the environment, and that is
- * the authority this package retires. `src/blocks.ts`' `highlightCode` short-circuits on
- * `ctx.color` before calling in, and the `ctx` handed here is what the theme's
- * `applyStyle` reads, so a caller that reaches this with colour off gets highlight.js's
- * plain text rather than styled output.
+ * the authority this package retires. `src/blocks.ts`' `highlightCode` short-circuits
+ * before calling in, and the `ctx` handed here is what the theme's `applyStyle` reads, so a
+ * caller that reaches this with colour off gets highlight.js's plain text rather than
+ * styled output.
+ *
+ * **That short-circuit is `ctx.sgr !== "full"`, not `!ctx.color`** — WP-2 of
+ * `plans/colour-modes.md`, Decision 3, and the sentence above is the reason it had to be
+ * stated here rather than only at the call site. Syntax highlighting is an explicit,
+ * ratified **producer** exception to the property rule: this whole path is reached under
+ * `full` and under nothing else, so `formats` renders a fence exactly as `none` does. The
+ * theme below is *why* — it carries `dim`, `italic`, `bold` and `underline`, all
+ * format-class, so a property filter would have kept a partly-highlighted fence rather than
+ * dropping colour from it — and `src/blocks.ts`' `highlightCode` carries the full
+ * justification including the `fixHardReturn` half.
+ *
+ * The consequence for this module is that it never sees `"formats"` from production, and
+ * the theme's own `applyStyle` calls are therefore always identity-filtered. Nothing here
+ * asserts that, deliberately: a direct caller (`tests/highlight.test.ts`) may pass any mode,
+ * and what it gets is the ordinary property filter — hue spans drop, format spans stay.
  */
 
 /**

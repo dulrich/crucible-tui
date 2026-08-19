@@ -850,7 +850,7 @@ export function renderDocumentDetailed(
   // (`renderRule`, shared with the `hr` override below) — present only when frontmatter
   // is present, so a document with none renders byte-identical to before this WP.
   const metaResult =
-    meta !== null ? formatMetaBlockDetailed(meta, targetWidth, measure, policy.color) : null;
+    meta !== null ? formatMetaBlockDetailed(meta, targetWidth, measure, policy.sgr) : null;
   const metaBlock =
     metaResult !== null ? `${metaResult.text}\n${renderRule(glyphs, targetWidth, measure)}\n\n` : "";
 
@@ -922,7 +922,7 @@ export function renderDocumentDetailed(
     measure,
     resolveFenceLanguage: resolveFenceLanguageFor,
     emoji,
-    color: policy.color,
+    sgr: policy.sgr,
     hyperlinks: policy.hyperlinks,
     tmux: policy.tmux,
   });
@@ -979,14 +979,17 @@ export function renderDocumentDetailed(
   // The last argument is the resolved colour policy, added by WP-2 of
   // `plans/colour-policy.md`: the head and border styles used to be `@colors/colors`'
   // decision inside `src/table.ts`, taken from the environment without consulting `isTTY`,
-  // and they are this render's decision now like every other producer's.
+  // and they are this render's decision now like every other producer's. It is the
+  // three-level `sgr` rather than a boolean since WP-2 of `plans/colour-modes.md` — a table
+  // is the producer that splits across the modes (bold heads survive `formats`, grey borders
+  // do not), so a boolean could not carry the answer it needs.
   renderer.table = (token: Tokens.Table) =>
     renderTable(
       token,
       Math.max(1, targetWidth - layout.prefix.width()),
       glyphs,
       measure,
-      layout.color,
+      layout.sgr,
     );
 
   // **The owned inline visitors** (WP-2). These were the first group taken off the

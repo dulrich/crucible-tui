@@ -9,21 +9,24 @@ import {
   renderParagraph,
 } from "../src/blocks";
 import { UNICODE_GLYPHS } from "../src/glyphs";
+import { type SgrMode } from "../src/colour";
 import { createLayoutContext, type LayoutContext } from "../src/layout-context";
 import { NARROW_MEASURE, WIDE_MEASURE } from "../src/width";
 import { blockParityCases, blockParityFailures, type BlockParityCase } from "./helpers/block-parity";
 import { forcedColorChildEnv } from "./helpers/color";
 
 const ESC = "\u001b";
+// eslint-disable-next-line no-control-regex
+const ANSI = /\u001b\[[0-9;]*m/g;
 
-function context(overrides: { width?: number; color?: boolean; emoji?: boolean; wide?: boolean } = {}): LayoutContext {
+function context(overrides: { width?: number; sgr?: SgrMode; emoji?: boolean; wide?: boolean } = {}): LayoutContext {
   return createLayoutContext({
     width: overrides.width ?? 80,
     glyphs: UNICODE_GLYPHS,
     measure: overrides.wide ? WIDE_MEASURE : NARROW_MEASURE,
     resolveFenceLanguage: (raw) => raw,
     emoji: overrides.emoji ?? true,
-    color: overrides.color ?? false,
+    sgr: overrides.sgr ?? "none",
   });
 }
 
@@ -59,7 +62,7 @@ describe("code, hr and html — byte parity with the marked-terminal methods the
   // `bun test` is never a TTY, so the resolved policy is colour-off here and both sides
   // emit plain text. For `code` specifically that half is not merely blind to styling, it
   // is blind to the highlighter: `highlight()` returns the fence unstyled when
-  // `ctx.color` is false and never calls the colorizer at all. The colour-on test below
+  // `ctx.sgr` is `"none"` and never calls the colorizer at all. The colour-on test below
   // is the one that exercises it.
   test("every case matches, colour off", () => {
     expect(blockParityFailures(false)).toEqual([]);
@@ -144,7 +147,7 @@ describe("code, hr and html — byte parity with the marked-terminal methods the
 });
 
 describe("code — the three branches of the library's highlight()", () => {
-  const off = context({ color: false });
+  const off = context({ sgr: "none" });
 
   test("colour off returns the fence verbatim, indented four columns, with section padding", () => {
     const token = asToken({ type: "code", raw: "", text: "const x = 1;", lang: "javascript" });
@@ -176,10 +179,138 @@ describe("code — the three branches of the library's highlight()", () => {
         return "plaintext";
       },
       emoji: true,
-      color: false,
+      sgr: "none",
     });
     renderCode(ctx, asToken({ type: "code", raw: "", text: "x", lang: "dataviewjs" }));
     expect(seen).toEqual(["dataviewjs"]);
+  });
+});
+
+/**
+ * **Decision 3, witnessed** — WP-2 of `plans/colour-modes.md`.
+ *
+ * Fenced-code syntax highlighting is `full`-only: `highlightCode` (`src/blocks.ts`) gates on
+ * `ctx.sgr !== "full"`, so a `formats` render takes the same colourless branch a `none`
+ * render takes. This is an explicit, ratified **producer** exception to the property rule —
+ * everywhere else in this renderer the mode decides by style class — and the exception has
+ * two stated reasons, both witnessed below rather than asserted in prose only.
+ *
+ * The consequence that matters to the gates is the first case: `visible(formats) ===
+ * visible(off)` holds for code **by construction** rather than by inspection, because the
+ * one thing on this path that changes visible content — `fixHardReturn`, which rewrites the
+ * first `\r` as the five literal characters `/\n/g`, inside a `codeRange` — is downstream of
+ * the gate. WP-4's G2 gate is that equality over the whole corpus; this is its direct form.
+ */
+/**
+ * **Decision 8 at the block leaves** — `reset` is a control style, emitted whenever
+ * `sgr !== "none"`, so the paragraph and rule framing is present under `formats` exactly as
+ * it is under `full`. Pinned as whole byte strings (cycle-1 f9, cycle-3 f6): `0m` is shared
+ * between the two directions and between several producers, so a `toContain` here would say
+ * almost nothing.
+ *
+ * The hue-carrying leaves are pinned in the same block, because they are the contrast that
+ * makes the framing assertions mean something: `heading` and `blockquote` drop their hue and
+ * keep their format links, `html` is hue-only and emits nothing at all.
+ */
+describe("block leaves under `formats` — the reset framing survives, the hues do not", () => {
+  const formats = context({ sgr: "formats" });
+  const full = context({ sgr: "full" });
+  const off = context({ sgr: "none" });
+
+  test("a paragraph keeps its reset frame — byte-identical to `full`", () => {
+    const token = asToken(paragraph("alpha beta"));
+    expect(renderParagraph(formats, token, parse, 5)).toBe(`${ESC}[0malpha\nbeta${ESC}[0m\n\n`);
+    expect(renderParagraph(formats, token, parse, 5)).toBe(renderParagraph(full, token, parse, 5));
+    expect(renderParagraph(off, token, parse, 5)).toBe("alpha\nbeta\n\n");
+  });
+
+  test("a rule keeps its reset frame — byte-identical to `full`", () => {
+    expect(renderHr(formats, "---")).toBe(`${ESC}[0m---${ESC}[0m\n\n`);
+    expect(renderHr(formats, "---")).toBe(renderHr(full, "---"));
+    expect(renderHr(off, "---")).toBe("---\n\n");
+  });
+
+  test("chalk's empty-input guard still applies to the frame at `formats`", () => {
+    expect(renderHr(formats, "")).toBe("\n\n");
+  });
+
+  test("a heading loses green/magenta and keeps bold and underline", () => {
+    // Level 1 is magenta·underline·bold; the magenta goes, the other two stay, and they stay
+    // in their original nesting order — underline outside bold.
+    expect(renderHeading(formats, asToken(heading(1, "t")), parse, 80)).toBe(
+      `${ESC}[4m${ESC}[1m# t${ESC}[22m${ESC}[24m\n\n`,
+    );
+    // Level 2 is green·bold, so only the bold survives.
+    expect(renderHeading(formats, asToken(heading(2, "t")), parse, 80)).toBe(
+      `${ESC}[1m## t${ESC}[22m\n\n`,
+    );
+  });
+
+  test("a blockquote loses its grey and keeps its italic", () => {
+    expect(renderBlockquote(formats, "alpha\n\n")).toBe(`${ESC}[3m    alpha${ESC}[23m\n\n`);
+  });
+
+  test("block HTML is a hue-only producer, so `formats` emits nothing around it", () => {
+    const token = asToken({ type: "html", raw: "<b>x</b>", text: "<b>x</b>", block: true });
+    expect(renderHtml(formats, token, 80)).toBe("<b>x</b>");
+    expect(renderHtml(formats, token, 80)).toBe(renderHtml(off, token, 80));
+    expect(renderHtml(full, token, 80)).toContain(`${ESC}[90m`);
+  });
+
+  test("no block leaf moves a visible character between the three modes", () => {
+    const strip = (text: string): string => text.replace(ANSI, "");
+    const para = asToken(paragraph("alpha beta gamma"));
+    for (const gate of [off, formats, full]) {
+      expect(strip(renderParagraph(gate, para, parse, 12))).toBe(
+        strip(renderParagraph(off, para, parse, 12)),
+      );
+      expect(strip(renderHeading(gate, asToken(heading(2, "alpha beta")), parse, 9))).toBe(
+        strip(renderHeading(off, asToken(heading(2, "alpha beta")), parse, 9)),
+      );
+    }
+  });
+});
+
+describe("code under `formats` — Decision 3's producer exception, witnessed", () => {
+  const formats = context({ sgr: "formats" });
+  const off = context({ sgr: "none" });
+  const full = context({ sgr: "full" });
+  const strip = (text: string): string => text.replace(ANSI, "");
+
+  test("the hard-return witness: `formats` does not run fixHardReturn, exactly as `none` does not", () => {
+    // The `\r` survives untouched. Under `full` it becomes `/\n/g` — a *visible content*
+    // change inside a code range — which is precisely why the gate is at `full` and not at
+    // `sgr !== "none"`.
+    const token = asToken({ type: "code", raw: "", text: "a\rb", lang: "plaintext" });
+    expect(renderCode(formats, token)).toBe("    a\rb\n\n");
+    expect(renderCode(formats, token)).toBe(renderCode(off, token));
+    expect(strip(renderCode(full, token))).toContain("/\\n/g");
+    expect(strip(renderCode(full, token))).not.toBe(strip(renderCode(off, token)));
+  });
+
+  test("a fence is byte-identical under `formats` and `none` — no theme, no escapes at all", () => {
+    const token = asToken({ type: "code", raw: "", text: "const x = 1;", lang: "javascript" });
+    expect(renderCode(formats, token)).toBe("    const x = 1;\n\n");
+    expect(renderCode(formats, token)).toBe(renderCode(off, token));
+    expect(renderCode(formats, token)).not.toContain(ESC);
+  });
+
+  test("the exception is not vacuous: the same fence under `full` really is highlighted", () => {
+    // Without this the case above would pass just as well if highlighting were broken
+    // everywhere, which is the shape of green gate this repo has shipped before.
+    const token = asToken({ type: "code", raw: "", text: "const x = 1;", lang: "javascript" });
+    expect(renderCode(full, token)).toContain(ESC);
+    expect(strip(renderCode(full, token))).toBe(renderCode(off, token));
+  });
+
+  test("what `formats` loses is enumerated: the theme's own format-class spans", () => {
+    // Decision 3 requires the loss to be named. The theme carries `dim`, `italic`, `bold`
+    // and `underline` (`src/highlight.ts`), all format-class — so a *property* filter would
+    // have kept them and produced a half-highlighted fence. The producer exception drops
+    // them along with the hues, and this is the case that says so out loud.
+    const token = asToken({ type: "code", raw: "", text: "# heading\n\n**bold**\n", lang: "markdown" });
+    expect(renderCode(full, token)).toContain(ESC);
+    expect(renderCode(formats, token)).not.toContain(ESC);
   });
 });
 
@@ -193,13 +324,13 @@ describe("hr", () => {
   });
 
   test("chalk.reset wraps it when colour is on, and reset is \\x1b[0m at both ends", () => {
-    expect(renderHr(context({ color: true }), "---")).toBe(`${ESC}[0m---${ESC}[0m\n\n`);
+    expect(renderHr(context({ sgr: "full" }), "---")).toBe(`${ESC}[0m---${ESC}[0m\n\n`);
   });
 
   test("an empty rule stays empty rather than picking up a bare escape pair", () => {
     // chalk's own guard: level 0 *or* an empty string returns the input untouched. At
     // width 1 the rule is empty, and this is the shape that reaches the terminal.
-    expect(renderHr(context({ color: true }), "")).toBe("\n\n");
+    expect(renderHr(context({ sgr: "full" }), "")).toBe("\n\n");
   });
 });
 
@@ -293,7 +424,7 @@ describe("paragraph", () => {
     // escapes along. Standardising the two orders would move bytes on every styled paragraph
     // in the corpus at forced colour, for nothing.
     const token = asToken(paragraph("alpha beta"));
-    expect(renderParagraph(context({ color: true }), token, parse, 5)).toBe(
+    expect(renderParagraph(context({ sgr: "full" }), token, parse, 5)).toBe(
       `${ESC}[0malpha\nbeta${ESC}[0m\n\n`,
     );
   });
@@ -322,7 +453,7 @@ describe("heading", () => {
   test("level 1 is magenta+underline+bold; every other level is green+bold", () => {
     // And the style is applied *after* the reflow (index.js:127-131), the inverse of
     // `paragraph` — so it wraps the whole already-wrapped block in one pair.
-    const on = context({ color: true });
+    const on = context({ sgr: "full" });
     expect(renderHeading(on, asToken(heading(1, "t")), parse, 80)).toBe(
       `${ESC}[35m${ESC}[4m${ESC}[1m# t${ESC}[22m${ESC}[24m${ESC}[39m\n\n`,
     );
@@ -332,7 +463,7 @@ describe("heading", () => {
   });
 
   test("a wrapped heading closes and reopens its styling around the break", () => {
-    const on = context({ color: true });
+    const on = context({ sgr: "full" });
     expect(renderHeading(on, asToken(heading(2, "alpha beta")), parse, 9)).toBe(
       `${ESC}[32m${ESC}[1m## alpha${ESC}[22m${ESC}[39m\n${ESC}[32m${ESC}[1mbeta${ESC}[22m${ESC}[39m\n\n`,
     );
@@ -370,7 +501,7 @@ describe("blockquote", () => {
   });
 
   test("grey italic when colour is on, with the indent inside the styling", () => {
-    expect(renderBlockquote(context({ color: true }), "alpha\n\n")).toBe(
+    expect(renderBlockquote(context({ sgr: "full" }), "alpha\n\n")).toBe(
       `${ESC}[90m${ESC}[3m    alpha${ESC}[23m${ESC}[39m\n\n`,
     );
   });

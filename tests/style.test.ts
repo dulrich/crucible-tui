@@ -2,13 +2,17 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
+  STYLE_CLASSES,
   STYLE_TABLE,
   applyStyle,
   createStyler,
+  emitsUnder,
   styleSpan,
+  type StyleClass,
   type StyleCode,
   type StyleName,
 } from "../src/style";
+import type { SgrMode } from "../src/colour";
 import { UNICODE_GLYPHS } from "../src/glyphs";
 import { NARROW_MEASURE } from "../src/width";
 import { renderDocument } from "../src/render";
@@ -106,14 +110,14 @@ describe("the committed style table is narrow, and every parameter is checked", 
 });
 
 describe("the emitter — chalk's applyStyle, and the plain wrap beside it", () => {
-  const on = { color: true };
-  const off = { color: false };
+  const on = { sgr: "full" } as const;
+  const off = { sgr: "none" } as const;
   const BOLD = createStyler("bold");
   const DEL = createStyler("strikethrough", createStyler("gray", createStyler("dim")));
 
   test("colour off returns the input untouched, whatever the chain", () => {
     expect(applyStyle(off, DEL, "text")).toBe("text");
-    expect(styleSpan(false, BOLD, "text")).toBe("text");
+    expect(styleSpan(off, BOLD, "text")).toBe("text");
   });
 
   test("a chain accumulates outermost-first and closes innermost-first", () => {
@@ -135,11 +139,165 @@ describe("the emitter — chalk's applyStyle, and the plain wrap beside it", () 
 
   test("styleSpan does neither — it is the frontmatter rule, and it wraps an empty string", () => {
     const DIM = createStyler("dim");
-    expect(styleSpan(true, DIM, "a\nb")).toBe(`${ESC}[2ma\nb${ESC}[22m`);
-    expect(styleSpan(true, DIM, `a${ESC}[22mb`)).toBe(`${ESC}[2ma${ESC}[22mb${ESC}[22m`);
-    expect(styleSpan(true, DIM, "")).toBe(`${ESC}[2m${ESC}[22m`);
+    expect(styleSpan(on, DIM, "a\nb")).toBe(`${ESC}[2ma\nb${ESC}[22m`);
+    expect(styleSpan(on, DIM, `a${ESC}[22mb`)).toBe(`${ESC}[2ma${ESC}[22mb${ESC}[22m`);
+    expect(styleSpan(on, DIM, "")).toBe(`${ESC}[2m${ESC}[22m`);
     // Where `applyStyle` returns an empty input untouched, as chalk does.
     expect(applyStyle(on, DIM, "")).toBe("");
+  });
+});
+
+/**
+ * The hue/format/control classification and the filter over it — WP-2 of
+ * `plans/colour-modes.md`.
+ *
+ * **Written out independently of `src/style.ts`, exactly as the table inventory above is,
+ * and for the same reason**: the classification is a *ratified* answer (Decisions 1 and 8),
+ * not a convenience, so a future edit that reclassifies `dim` as a hue — which is the
+ * specific mistake Decision 1 was written to forbid — has to disagree with a list here to
+ * land. Reading `STYLE_CLASSES` into the expectation would make that edit self-approving.
+ */
+describe("the style classification — hue, format, control", () => {
+  const RATIFIED: Record<StyleName, StyleClass> = {
+    // Decision 1: the seven hues, and only these, are what an explicit `never` drops.
+    red: "hue",
+    green: "hue",
+    yellow: "hue",
+    blue: "hue",
+    magenta: "hue",
+    cyan: "hue",
+    gray: "hue",
+    // Decision 1 again: "bold, dim, italic, underline, strikethrough survive", and **dim
+    // is a format, not a hue** — the user's own words, and the membership most at risk of
+    // being "corrected" by someone reading `2m` as a brightness.
+    bold: "format",
+    dim: "format",
+    italic: "format",
+    underline: "format",
+    strikethrough: "format",
+    // Decision 8 (cycle-1 f9): `reset` is neither, and is emitted whenever `sgr !== "none"`.
+    reset: "control",
+  };
+
+  test("every committed style is classified, and classified as ratified", () => {
+    expect(Object.keys(STYLE_CLASSES).sort()).toEqual(Object.keys(STYLE_TABLE).sort());
+    for (const [name, expected] of Object.entries(RATIFIED)) {
+      expect(STYLE_CLASSES[name as StyleName]).toBe(expected);
+    }
+  });
+
+  test("the table and the classification cover exactly the same names", () => {
+    // The compile-time `satisfies` says this too; asserting it at runtime is what catches a
+    // future edit that widens one of the two through a cast.
+    expect(Object.keys(RATIFIED).sort()).toEqual(Object.keys(STYLE_TABLE).sort());
+  });
+
+  test("`none` emits nothing, `full` emits everything, `formats` emits everything but hue", () => {
+    for (const name of Object.keys(STYLE_TABLE) as StyleName[]) {
+      expect(emitsUnder(name, "none")).toBe(false);
+      expect(emitsUnder(name, "full")).toBe(true);
+      expect(emitsUnder(name, "formats")).toBe(STYLE_CLASSES[name] !== "hue");
+    }
+  });
+
+  test("`reset` survives `formats` — Decision 8, stated as a case of its own", () => {
+    // Paragraphs, rules and list items are framed in it (`src/blocks.ts`, `src/lists.ts`),
+    // so this one membership decides whether a `formats` document keeps its framing.
+    expect(emitsUnder("reset", "formats")).toBe(true);
+    expect(emitsUnder("reset", "none")).toBe(false);
+  });
+});
+
+/**
+ * The filter at the emitter — the same three claims the unfiltered emitter makes, made
+ * again under `formats`, because the interesting failures are the ones where the filter and
+ * `chalk`'s two surgeries interact.
+ */
+describe("the emitter under `formats` — the filter, and the two surgeries over it", () => {
+  const formats: { sgr: SgrMode } = { sgr: "formats" };
+  const full: { sgr: SgrMode } = { sgr: "full" };
+  const none: { sgr: SgrMode } = { sgr: "none" };
+  const BOLD = createStyler("bold");
+  const GRAY = createStyler("gray");
+  const DEL = createStyler("strikethrough", createStyler("gray", createStyler("dim")));
+  const DIM = createStyler("dim");
+
+  test("a format-only chain is untouched by the filter", () => {
+    expect(applyStyle(formats, BOLD, "x")).toBe(applyStyle(full, BOLD, "x"));
+  });
+
+  test("a hue-only chain emits nothing at all — not an empty open/close pair", () => {
+    expect(applyStyle(formats, GRAY, "x")).toBe("x");
+    expect(styleSpan(formats, GRAY, "x")).toBe("x");
+    // The residue this rules out, spelled so the failure is legible if it ever appears.
+    expect(applyStyle(formats, GRAY, "x")).not.toContain(ESC);
+  });
+
+  test("a mixed chain keeps its non-hue links in their original nesting order", () => {
+    expect(applyStyle(formats, DEL, "x")).toBe(`${ESC}[2m${ESC}[9mx${ESC}[29m${ESC}[22m`);
+  });
+
+  test("the re-open surgery runs over the FILTERED chain, so it cannot restore a dropped hue", () => {
+    // This is the case that fails if the filter is applied after the surgery rather than
+    // before it: `stringReplaceAll` re-emits *this chain's own* close codes and appends the
+    // matching open. Over the unfiltered `DEL` the grey link would find the `39m` in the
+    // input and put `90m` straight back into a `formats` render.
+    const rendered = applyStyle(formats, DEL, `a${ESC}[39mb`);
+    expect(rendered).not.toContain(`${ESC}[90m`);
+    expect(rendered).toBe(`${ESC}[2m${ESC}[9ma${ESC}[39mb${ESC}[29m${ESC}[22m`);
+  });
+
+  test("the newline encasing re-opens the FILTERED chain, not the original", () => {
+    // Same failure mode, one surgery over: the encasing reinserts `openAll` after every
+    // line break, so an unfiltered `openAll` here would leak a hue on every line but the
+    // first — invisible in any single-line assertion.
+    const rendered = applyStyle(formats, DEL, "a\nb");
+    expect(rendered).toBe(
+      `${ESC}[2m${ESC}[9ma${ESC}[29m${ESC}[22m\n${ESC}[2m${ESC}[9mb${ESC}[29m${ESC}[22m`,
+    );
+    expect(rendered).not.toContain(`${ESC}[90m`);
+  });
+
+  test("`none` still returns the input untouched, whatever the chain's classes", () => {
+    expect(applyStyle(none, DEL, "x")).toBe("x");
+    expect(styleSpan(none, DEL, "x")).toBe("x");
+  });
+
+  test("styleSpan's no-guard empty-string emission survives `formats` — pinned, not a bug", () => {
+    // `dim` is format-class, so `formatMetaBlock("")`'s bare `2m`/`22m` pair around nothing
+    // is emitted under `formats` exactly as it is under `full`. It looks like filter residue
+    // and is not: `styleSpan` has no empty-string guard by measurement (see `src/style.ts`),
+    // and adding one here would move a forced-colour byte in `tests/frontmatter.test.ts`.
+    expect(styleSpan(formats, DIM, "")).toBe(`${ESC}[2m${ESC}[22m`);
+    expect(styleSpan(full, DIM, "")).toBe(`${ESC}[2m${ESC}[22m`);
+    expect(styleSpan(none, DIM, "")).toBe("");
+    // The contrast that says the pair is `dim`'s and not the filter's: a hue-only chain
+    // over the same empty string emits nothing.
+    expect(styleSpan(formats, GRAY, "")).toBe("");
+  });
+
+  test("applyStyle keeps chalk's own empty-input guard at every mode", () => {
+    expect(applyStyle(formats, DIM, "")).toBe("");
+    expect(applyStyle(full, DIM, "")).toBe("");
+  });
+
+  test("the filter never touches visible text, at any mode", () => {
+    const input = `a${ESC}[39mb\nc`;
+    for (const gate of [none, formats, full]) {
+      expect(stripAnsi(applyStyle(gate, DEL, input))).toBe(stripAnsi(input));
+    }
+  });
+
+  test("a chain built per call is filtered correctly too — the memo is keyed, not global", () => {
+    // The `WeakMap` in `src/style.ts` is keyed on the chain object. A fresh chain with the
+    // same shape must get the same answer, and a *different* chain must not inherit it.
+    expect(applyStyle(formats, createStyler("strikethrough", createStyler("gray")), "x")).toBe(
+      `${ESC}[9mx${ESC}[29m`,
+    );
+    expect(applyStyle(formats, createStyler("gray", createStyler("strikethrough")), "x")).toBe(
+      `${ESC}[9mx${ESC}[29m`,
+    );
+    expect(applyStyle(formats, createStyler("cyan"), "x")).toBe("x");
   });
 });
 
@@ -162,7 +320,7 @@ describe("the styling inventory — every producer emits, under an injected TTY 
     NARROW_MEASURE,
     false,
     resolveFenceLanguage,
-    { color: true, hyperlinks: false, tmux: false },
+    { sgr: "full", hyperlinks: false, tmux: false },
   );
   const plain = renderDocument(
     source,
@@ -171,7 +329,7 @@ describe("the styling inventory — every producer emits, under an injected TTY 
     NARROW_MEASURE,
     false,
     resolveFenceLanguage,
-    { color: false, hyperlinks: false, tmux: false },
+    { sgr: "none", hyperlinks: false, tmux: false },
   );
 
   // name -> the exact byte sequence that producer opens with

@@ -100,7 +100,11 @@ function unescapeEntities(html: string): string {
 // `marked-terminal`'s `defaultOptions` (`index.js:30-55`) for the six block methods this
 // module owns. `src/render.ts` overrides none of them, so the defaults are what shipped.
 // Built through `src/style.ts`'s `createStyler`/`applyStyle` — the transcription of
-// `chalk`'s own `applyStyle`, over the committed style table, gated on `ctx.color`.
+// `chalk`'s own `applyStyle`, over the committed style table, gated on `ctx.sgr` — which
+// since WP-2 of `plans/colour-modes.md` is also where the hue/format filter is applied, by
+// style *name*. Nothing on this side of the call changed for it: `RESET` is control-class
+// and frames a paragraph at every level but `none` (Decision 8), the hue chains below drop
+// their hue links under `formats` and keep their format ones.
 // Composing naively (`green(bold(x))`) diverges on real content: chalk
 // re-opens a style after a nested style closed it, and encases line breaks. Both fire here
 // — `heading` styles an already-reflowed multi-line block, and a paragraph carrying an
@@ -123,7 +127,7 @@ const RESET = createStyler("reset"); // chalk.reset, used by `hr` and `paragraph
  * `highlight()` — `index.js:590-602`, and **three branches that all matter**.
  *
  * 1. `:591` short-circuits to the raw, unstyled code whenever `chalk.level === 0`. That is
- *    the decision `LayoutContext.color` carries — since WP-1 of `plans/colour-policy.md`,
+ *    the decision `LayoutContext.sgr` carries — since WP-1 of `plans/colour-policy.md`,
  *    `resolveColourPolicy`'s (`src/colour.ts`), threaded in rather than re-derived here.
  *    **It is the only gate on this path again**, and WP-2 is what made that true: until it
  *    landed, `cli-highlight` consulted its own bundled `chalk`'s module-load level, so
@@ -149,9 +153,39 @@ const RESET = createStyler("reset"); // chalk.reset, used by `hr` and `paragraph
  * when `language` is `undefined`, which is what makes the colorizer auto-detect for an
  * unlabelled fence (`highlightAuto`; see `src/highlight.ts` for why the two call branches
  * are not interchangeable).
+ *
+ * ## The gate is `sgr !== "full"`, and that is a named producer exception
+ *
+ * **Decision 3 of `plans/colour-modes.md` (cycle-3 f2), ratified at approval.** This is the
+ * one reader in the renderer whose threshold is not "does this render emit SGR at all" —
+ * fenced-code syntax highlighting runs under `full` and under nothing else, so `formats`
+ * takes the same colourless branch `none` does. Two reasons, both measured rather than
+ * asserted:
+ *
+ * 1. **`fixHardReturn` is a visible-content transform on this path.** It rewrites the first
+ *    `\r` as the five literal characters `/\n/g` (`src/inline.ts`'s
+ *    `HARD_RETURN_REPLACEMENT` documents the upstream defect), *inside* a `codeRange`.
+ *    Reaching it under `formats` would break `visible(formats) === visible(off)`, which is
+ *    the property WP-4's G2 gate is about. Keeping the gate at `full` makes that equality
+ *    hold **by construction** for every fenced block, not by inspection —
+ *    `tests/blocks.test.ts`'s hard-return witness is what says so out loud.
+ * 2. **The theme is not hue-only**, so filtering it by property would be false advertising:
+ *    `src/highlight.ts` carries `dim` (`type`), `italic` (`emphasis`), `bold` (`strong`)
+ *    and `underline` (`link`), all format-class, all of which a property filter would keep.
+ *    A fence would then be *partly* highlighted under `formats` — decoration with its
+ *    colours removed and its emphases retained, which is not a state anyone asked for.
+ *
+ * What `formats` loses, enumerated (Decision 3 requires the enumeration): the theme's
+ * bold/italic/underline/dim spans inside fenced code, and nothing else. The property-pure
+ * alternative — highlighting under `formats` through a `fixHardReturn`-free path — is
+ * recorded in the plan as the fallback if the exception is ever withdrawn.
+ *
+ * **Provenance decides here and only here.** Everywhere else the rule is Decision 8's:
+ * decide by style property, never by producer. This function is the named exception, and
+ * a future package adding a second one owes the same two-part justification.
  */
 function highlightCode(ctx: LayoutContext, code: string, language: string | undefined): string {
-  if (!ctx.color) return code;
+  if (ctx.sgr !== "full") return code;
   const fixed = fixHardReturn(code);
   try {
     return highlightToAnsi(ctx, fixed, language);

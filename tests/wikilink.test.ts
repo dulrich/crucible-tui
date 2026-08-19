@@ -38,11 +38,15 @@ const CLOSE = WIKI_LINK_CLOSE;
 const CYAN_UNDERLINE_OPEN = `${ESC}[36m${ESC}[4m`;
 const CYAN_UNDERLINE_CLOSE = `${ESC}[24m${ESC}[39m`;
 
-const on = { color: true };
-const off = { color: false };
+// Migrated at WP-2 of `plans/colour-modes.md`: `color: true` -> `sgr: "full"`,
+// `color: false` -> `sgr: "none"`. **No expected byte in this file moved with them** —
+// including WP-1's pinned defect witnesses, which record today's corrupted output and are
+// the instrument a future fix has to trip.
+const on = { sgr: "full" } as const;
+const off = { sgr: "none" } as const;
 
-const COLOUR = { color: true, hyperlinks: false, tmux: false } as const;
-const PLAIN = { color: false, hyperlinks: false, tmux: false } as const;
+const COLOUR = { sgr: "full", hyperlinks: false, tmux: false } as const;
+const PLAIN = { sgr: "none", hyperlinks: false, tmux: false } as const;
 
 const render = (source: string, width = 80, colour = false, glyphs = UNICODE_GLYPHS): string =>
   renderDocument(source, width, glyphs, undefined, undefined, undefined, colour ? COLOUR : PLAIN);
@@ -202,6 +206,65 @@ describe("the balanced-pair pass", () => {
 
   test("text with no carriers at all is returned untouched", () => {
     expect(styleWikiLinkCarriers("nothing here", on)).toBe("nothing here");
+  });
+});
+
+/**
+ * **The wiki-link chain under `formats`** — WP-2 of `plans/colour-modes.md`.
+ *
+ * `WIKI_LINK_STYLE` is `underline` over `cyan` (`src/wikilink.ts`), so the mode split falls
+ * straight through the middle of it: the cyan is hue-class and drops, the underline is
+ * format-class and stays. That is the enumeration Decision 5 asks for on this producer —
+ * *the cyan drops, the underline does not* — and it is worth its own block because the
+ * chain is the only two-link one in the renderer whose links are one of each class.
+ *
+ * The pass itself is unchanged: it still strips every carrier, balanced or not, at every
+ * mode. What the mode decides is only which bytes go in their place.
+ */
+describe("the balanced-pair pass under `formats` — the cyan drops, the underline stays", () => {
+  const formats = { sgr: "formats" } as const;
+  const UNDERLINE_OPEN = `${ESC}[4m`;
+  const UNDERLINE_CLOSE = `${ESC}[24m`;
+
+  test("a balanced pair keeps the underline and loses the cyan, exactly", () => {
+    expect(styleWikiLinkCarriers(`a ${OPEN}label${CLOSE} b`, formats)).toBe(
+      `a ${UNDERLINE_OPEN}label${UNDERLINE_CLOSE} b`,
+    );
+  });
+
+  test("the dropped codes are named individually, so a failure says which one came back", () => {
+    const styled = styleWikiLinkCarriers(markWikiLink("x"), formats);
+    expect(styled).toContain(`${ESC}[4m`);
+    expect(styled).toContain(`${ESC}[24m`);
+    expect(styled).not.toContain(`${ESC}[36m`);
+    expect(styled).not.toContain(`${ESC}[39m`);
+  });
+
+  test("every carrier is still removed, and no visible character moves", () => {
+    // The carriers are the pass's own contract and are independent of the mode.
+    const styled = styleWikiLinkCarriers(`a ${OPEN}label${CLOSE} b`, formats);
+    expect(styled).not.toContain(OPEN);
+    expect(styled).not.toContain(CLOSE);
+    expect(stripAnsi(styled)).toBe(styleWikiLinkCarriers(`a ${OPEN}label${CLOSE} b`, off));
+  });
+
+  test("the newline encasing re-opens the FILTERED chain — no cyan on the second line", () => {
+    // The failure this rules out is a filter applied after the encasing rather than before
+    // it: `applyStyle` reinserts `openAll` after every break, so an unfiltered chain would
+    // leak `36m` onto every line but the first.
+    expect(styleWikiLinkCarriers(`${OPEN}a\nb${CLOSE}`, formats)).toBe(
+      `${UNDERLINE_OPEN}a${UNDERLINE_CLOSE}\n${UNDERLINE_OPEN}b${UNDERLINE_CLOSE}`,
+    );
+  });
+
+  test("an empty label still emits nothing — applyStyle's own guard, unchanged by the mode", () => {
+    expect(styleWikiLinkCarriers(`${OPEN}${CLOSE}`, formats)).toBe("");
+  });
+
+  test("`formats` is neither of the other two modes on this producer", () => {
+    const input = `a ${OPEN}label${CLOSE} b`;
+    expect(styleWikiLinkCarriers(input, formats)).not.toBe(styleWikiLinkCarriers(input, on));
+    expect(styleWikiLinkCarriers(input, formats)).not.toBe(styleWikiLinkCarriers(input, off));
   });
 });
 
