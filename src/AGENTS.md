@@ -14,7 +14,7 @@ Run/verify contract, Conventions and the dependency record live there.
 | What each renderer method must do | the requirement table, and the four unassigned methods |
 | Parity: four classes | A/B/C/D, and why class C is a content hash rather than a gate |
 | The list pipeline | composition, the two wrap paths, the de-drift, the claim domains, the retained passes |
-| The sentinels | two control characters, one literal, and why the walks differ |
+| The sentinels | four control characters, one literal, the wiki-link carriers, and why the walks differ |
 | The task-state pre-pass | the 84 lines it still corrupts, why the "indented code" follow-up is retired, and the re-tokenisation that blocks its removal |
 | Colourless gates cannot see colour-only defects | three measurements, one mechanism, the rule it earns, and the WP-3 closure (`charDiff` 31 → 0) |
 | Glyph tier · Ambiguous width | the tier, the probe, and why `wide` forces ASCII |
@@ -810,24 +810,54 @@ split by **list kind** rather than by width or tier.
   inside an author's `**bold**` on a *continuation* line — is gone with the counter walk,
   because continuation lines no longer reach that branch.
 
-### The sentinels — two control characters, and one literal that is not a defect
+### The sentinels — four control characters, and one literal that is not a defect
 
-**Three carriers, not two.** Two are control characters stripped from the final output; the
-third is a literal string that round-trips within a render. All three exist because something
-downstream would otherwise misread the text.
+**Five carriers, not three** (this section said "three carriers, not two" until WP-4 of
+`plans/colour-policy.md` added the wiki-link pair — **recount when you add one**). Four are
+control characters stripped from the final output; the fifth is a literal string that
+round-trips within a render. All of them exist because something downstream would otherwise
+misread the text.
 
 | Carrier | Code point / spelling | Purpose |
 |---|---|---|
 | `SENTINEL` | 0 | Brackets fenced-code output so `--check` and the sweeps can record `codeRanges` and exempt them |
 | `TASK_STATE_SENTINEL` | 1 | Sits between `[` and the state char so `marked`'s GFM tasklist regex (`/^\[[ xX]\] /`) does not reclaim the item and rebuild it |
+| `WIKI_LINK_OPEN` / `WIKI_LINK_CLOSE` | 2 and 3 | Mark where a wiki-link's label starts and ends, so the label survives the lexer and the walk **unstyled** and a post-walk pass can style it under the resolved policy (`src/wikilink.ts`, WP-4 of `plans/colour-policy.md`) |
 | `COLON_REPLACER` | the literal `*#COLON\|*` | `codespan` replaces every `:` in a code span with it; `undoColon` restores them after emoji substitution has run |
 
-The two control characters are control characters, not zero-width Unicode, **deliberately**:
+The four control characters are control characters, not zero-width Unicode, **deliberately**:
 the ASCII tier exists for terminals that cannot render UTF-8, so an "invisible" U+200B in that
 path would be three bytes of exactly the thing the tier avoids — and every gate here measures
-display *width*, not code points, so nothing would have caught it. Both are stripped from the
-source before lexing (so a hostile or odd document cannot forge a range or a defeated regex)
-and from the rendered output before it reaches the terminal.
+display *width*, not code points, so nothing would have caught it. All are stripped from the
+source before lexing (so a hostile or odd document cannot forge a range, a defeated regex or
+a styled span) and from the rendered output before it reaches the terminal.
+
+**The wiki-link pair is the one that replaced an escape rather than defeating a regex, and
+that is why it exists at all.** `styleWikiLink` (`src/render.ts`, deleted) put a hardcoded
+`\x1b[36m\x1b[4m…\x1b[24m\x1b[39m` into the *markdown source*, before the lexer, at every
+colour level including colourless — so a plain `mdview note.md | cat` emitted colour nobody
+asked for (Decision 1), the bytes bypassed the committed style table entirely, and the one
+input every claim about the lexer is made against contained tool-generated escapes. Carriers
+carry the same information — *this run is a wiki-link label* — with no styling decision baked
+in, so the decision can be made once, at the end, by the same authority that makes every
+other one. Two properties make the substitution byte-safe and both are asserted in
+`tests/wikilink.test.ts`: the carriers measure **zero columns** (as the escapes they
+replaced did, `string-width` having stripped those), so no wrap point moves; and
+`src/ansi.ts`'s scanner classifies them as ordinary **text**, which is correct — a carrier is
+not a terminal sequence, and it is gone before output either way.
+
+**Two consequences worth knowing before you move the pass.** `stripAnsi` removes SGR, OSC-8
+and DCS — **not** carriers, deliberately — so every layout decision taken between the walk
+and the carrier pass (`substituteBullets`, the marker-shape guards, the detectors) sees
+carrier bytes inside what it treats as visible text. That is why the pass's position is
+specified rather than incidental: after `extractCodeRanges` (carriers are not newlines, so
+they cannot shift a range's line numbers, and this pass adds none) and **before**
+`stripEmojiTrailingSpace`, whose regex tolerates trailing SGR but knows nothing about
+carriers — a carrier surviving into it would suppress the strip with colour off and not with
+colour on, splitting the two modes apart on a line nothing is allowed to move. And
+unbalanced carriers **degrade to stripping, never to leaked bytes**: an orphaned opener, an
+orphaned closer and a second opener inside an open span are all simply removed, because the
+one failure a carrier scheme must not have is a half-open style pair reaching a terminal.
 
 **`COLON_REPLACER` is a first-class owned mechanism with a measured reason to exist, and WP-6
 expected to delete it.** The reasoning that predicted its death was that it existed "only to
@@ -1321,6 +1351,16 @@ emitter — and the syntax colours from `src/highlight.ts`, this repo's transcri
 close over all fourteen gate-corpus files at three widths in both glyph tiers:
 **`MDVIEW_COLOR=always` on a pipe is byte-identical to `FORCE_COLOR=3` in 84 of 84 combos**
 (36 of the 84 differed before), and the forced-colour render itself did not move a byte.
+
+**"Every producer" was one short until WP-4, and the exception was the oldest of them.**
+`styleWikiLink` (`src/render.ts`) read no policy at all — it wrote a cyan/underline SGR pair
+into the markdown *source* before the lexer, so it styled at every colour level including
+colourless and its bytes were not in the committed table. `src/wikilink.ts` replaced it with a
+carrier pair through the lexer and a post-walk pass over `applyStyle` (see "The sentinels"),
+and the sentence above is now unqualified. Measured: the forced-colour render is byte-identical
+across the change in all 84 colour-on combos, the colour-off render lost exactly those four
+escape codes on the one gate-corpus file that carries a wiki-link and moved no visible
+character on any of the 168 combos measured, and the colour axis's `sgrAny` went **5 → 0**.
 
 **One colour-off consequence, and it is Decision 1 rather than a regression.** Because
 `@colors` answered from the environment without consulting `isTTY`, a plain

@@ -98,6 +98,11 @@ src/layout-context.ts  the one immutable per-render value the visitors read —
                     resolver, emoji and colour (WP-2)
 src/inline.ts       the owned inline visitors, the emoji pass and the colon
                     sentinel (WP-2)
+src/wikilink.ts     wiki-link recognition (frozen), the carrier pair (code points
+                    2/3) that marks a label through the lexer and the walk, and the
+                    post-walk pass that styles each balanced pair through
+                    src/style.ts and strips every carrier; replaced styleWikiLink's
+                    pre-lexer SGR (WP-4 of plans/colour-policy.md)
 src/colour.ts       the one colour/hyperlink decision — resolveColourPolicy over
                     the ratified precedence matrix, and owned OSC-8 terminal
                     detection; reads no process state at all (WP-1 of
@@ -380,8 +385,21 @@ could not have, since it never saw document content. The package left with its o
 transitive `environment` — 16 → **14** packages, `THIRD-PARTY-LICENSES.txt` 368 → **338**
 lines. **The renderer now emits no escape byte that this repo does not spell**: SGR through
 `src/style.ts`'s committed table, syntax colours through `src/highlight.ts`, OSC-8 and its
-tmux envelope through `src/ansi.ts`. The one exception is `styleWikiLink`'s pre-lexer pair
-(`src/render.ts`), which is WP-4's to retire.
+tmux envelope through `src/ansi.ts`. **There is no exception left**: this sentence carried
+one — `styleWikiLink`'s pre-lexer pair (`src/render.ts`) — and WP-4 of the same plan retired
+it. That function spelled `\x1b[36m\x1b[4m…\x1b[24m\x1b[39m` by hand and put it into the
+*markdown source*, before the lexer, at every colour level including colourless, so it
+violated all three halves of the rule at once: it decided (nothing gated it), it emitted
+(bytes no committed table authorized), and it put tool-generated escapes into the one input
+every downstream claim is about. `src/wikilink.ts` replaced it with a **carrier pair** —
+control code points 2 and 3, the same idiom the two existing sentinels use — marking the
+label through the lexer and the walk; a pass over the finished document styles each balanced
+pair through `src/style.ts` under the resolved policy and removes every carrier, balanced or
+not. **No ESC byte this tool generates now enters the lexer** (asserted directly, by
+comparing authored-ESC positions and counts across `preprocessBody` rather than by demanding
+ESC absence, which Decision 1's fidelity rule for authored escapes forbids). The colour axis
+over the fixed gate corpus reads `sgrAny` **5 → 0** with `charDiff=0` held, and the
+forced-colour render did not move a byte in any of the 84 colour-on combos measured.
 
 **And the same module is what layout reads.** The dependency-ownership rule is about who
 *decides* and who *emits*; WP-3 added the third question — what layout can *see* — because

@@ -337,12 +337,24 @@ regardless of the colour decision (this is measured directly here, where the tab
 styling below was gated on `@colors/colors`' own answer and so could not appear at all). The
 other 7 of 14 files are `identical` at every width and every combo.
 
-**That composition is the seed's, and the *measured* number has since fallen.** WP-1 of
-`plans/colour-policy.md` put `src/frontmatter.ts`'s dim behind the resolved policy, so the
-three frontmatter witnesses stopped contributing: `sgrAny` measures **5** — `simple.md`'s
-wiki-link alone, which is WP-4's to remove — against a seed of 20. The seed is a ratchet and
-is left where it is until the plan's WP-5 replaces both counters with exact gates; what must
-not happen is the measured number going *up*.
+**That composition is the seed's, and the *measured* number has since fallen to zero.**
+WP-1 of `plans/colour-policy.md` put `src/frontmatter.ts`'s dim behind the resolved policy,
+so the three frontmatter witnesses stopped contributing and `sgrAny` measured **5** —
+`simple.md`'s wiki-link alone. **WP-4 removed that last five**: `styleWikiLink` is gone,
+the label rides through the lexer on carrier control characters instead
+(`src/wikilink.ts`), and the styling happens after the walk under the resolved policy. The
+measured `sgrAny` is **0** against a seed of 20, with `charDiff` still 0 and the
+forced-colour render byte-identical across the change. Both seeds are ratchets and are left
+where they are until the plan's WP-5 replaces them with exact gates; what must not happen
+is either measured number going *up*.
+
+**A zero here is worth one sentence of care, because a counter at zero is a counter that
+can pass vacuously.** What keeps this one honest is that the axis's classifier is still
+exercised non-vacuously elsewhere: `tests/colour-axis.test.ts` renders a temp-dir corpus
+carrying an **authored** escape — correct output, per Decision 1's fidelity rule — and
+asserts it lands in `sgrOnly`. The gate corpus deliberately contains no such file, which is
+asserted directly in `tests/wikilink.test.ts` rather than assumed, since this zero's reading
+depends on it.
 
 **History — the population used to drift, and WP-1 of `plans/gate-corpus-reframe.md`
 replaced it because of that.** Before this WP, the corpus was a **glob over live
@@ -430,10 +442,15 @@ frozen baseline and only the coloured side moves). The seed stays at 31 until WP
 replaces both counters with the three exact gates; what must not happen is the measured
 number going up.
 
-`sgrAny=20`'s two mechanisms are `src/render.ts:62-65` (`styleWikiLink`,
+`sgrAny=20`'s two mechanisms were `src/render.ts:62-65` (`styleWikiLink`,
 hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `src/frontmatter.ts`'s
-`DIM_START`/`DIM_END`, both unconditional; the second went behind the policy at WP-1, so
-the measured number is **5** — `simple.md`'s wiki-link alone, WP-4's to remove.
+`DIM_START`/`DIM_END`, both unconditional. The second went behind the policy at WP-1,
+taking the measured number to **5** — `simple.md`'s wiki-link alone — and **WP-4 took the
+first, so the measured number is 0.** The wiki-link's label is marked through the lexer by
+carrier control characters (`src/wikilink.ts`) and styled after the walk through
+`src/style.ts` under the resolved policy; the colourless render of `simple.md` lost exactly
+those four escape codes and not one visible character, at every width and both tiers. The
+seed stays at 20 until WP-5.
 
 **OSC-8 used to be outside what this can see, and WP-3 brought it inside.** `stripAnsi`
 (`src/list-lines.ts`) removed SGR only, so a hyperlink — and the tmux DCS envelope around
@@ -477,7 +494,7 @@ absent. Every row below was found with `-a`.)
 | `src/blocks.ts:151,195,213,426,457,518` | its block call sites — code, hr, html, heading, paragraph, blockquote | via `applyStyle` |
 | `src/lists.ts:380` | its list-item call site | via `applyStyle` |
 | `src/inline.ts`'s `renderLink`, through `src/ansi.ts`'s `link` | **OSC-8**, not SGR, plus the tmux DCS envelope | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken. The *emitter* was `ansiEscapes.link` until WP-3 of the same plan; it is this repo's transcription now, and the href is sanitized at emission |
-| `src/render.ts:62-65` (`styleWikiLink`) | hardcoded `[36m[4m…`, injected **before the lexer** | **no** |
+| `src/wikilink.ts` (`styleWikiLinkCarriers`) | the wiki-link label's cyan+underline, applied **after the walk** over a balanced carrier pair | **yes** — via `applyStyle` under the resolved policy, since WP-4 of `plans/colour-policy.md`. It was `src/render.ts:62-65`'s `styleWikiLink`: a hardcoded `[36m[4m…` injected **before the lexer**, at every colour level, obeying nothing — the last row in this table that answered **no**, and the last tool-generated escape entering the lexer's input |
 | `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit `color` argument since WP-1, through `src/style.ts`'s plain wrap since WP-2; it was two hardcoded constants and no decision at all |
 | `src/table.ts` (`styleBorder`/`styleHead`) | `grey`/`bold` for borders and headers | **yes** — `renderTable`'s `color` argument since WP-2; it was `@colors/colors`' own module-load answer, which did not consult `isTTY` |
 | `src/blocks.ts`'s `highlightCode` | the syntax theme inside fences | **yes** — `ctx.color`, gating `src/highlight.ts` since WP-2; it was `cli-highlight`'s bundled `chalk` level, decided at module load |

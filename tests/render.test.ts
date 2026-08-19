@@ -33,6 +33,33 @@ describe("renderDocument — wiki-links", () => {
     const output = renderDocument(source, 80);
     expect(output).toContain("[[mdview]]");
   });
+
+  // **"Styled" stopped meaning "styled unconditionally" at WP-4 of
+  // `plans/colour-policy.md`.** The three tests above pass either way — they strip escapes
+  // before asserting — and that is exactly why they could not see the defect: `styleWikiLink`
+  // put a cyan/underline SGR pair into the markdown *source*, before the lexer, at every
+  // colour level, so the default `renderDocument` call they make carried colour into a pipe
+  // with none requested. The mechanism and the gate are both pinned here; the carrier
+  // machinery itself is `tests/wikilink.test.ts`'s.
+  test("with no policy, a wiki-link emits no escape and no carrier", () => {
+    const output = renderDocument("See [[mdview]] for details.\n", 80);
+    expect(output).toContain("mdview");
+    expect(output).not.toContain(String.fromCharCode(27));
+    expect(output).not.toContain(String.fromCharCode(2));
+    expect(output).not.toContain(String.fromCharCode(3));
+  });
+
+  test("with colour on, the label is cyan+underline and the characters are unchanged", () => {
+    const source = "See [[mdview|the viewer]] for details.\n";
+    const coloured = renderDocument(source, 80, undefined, undefined, undefined, undefined, {
+      color: true,
+      hyperlinks: false,
+      tmux: false,
+    });
+    const ESC = String.fromCharCode(27);
+    expect(coloured).toContain(`${ESC}[36m${ESC}[4mthe viewer${ESC}[24m${ESC}[39m`);
+    expect(stripAnsi(coloured)).toBe(stripAnsi(renderDocument(source, 80)));
+  });
 });
 
 describe("renderDocument — Obsidian task states", () => {

@@ -260,13 +260,22 @@ describe("the styling inventory — every producer emits, under an injected TTY 
   });
 
   // The negative half: with the policy off, the same render carries no escape from any of
-  // these producers. (`styleWikiLink` is the one exception and it is WP-4's — it injects
-  // its escapes into the source before the lexer, at every colour level.)
-  test("with the policy off, the only escapes left are the wiki-link's", () => {
+  // these producers — **no exception, since WP-4 of `plans/colour-policy.md`**. This test
+  // read "the only escapes left are the wiki-link's" and expected exactly
+  // `36m`/`4m`/`24m`/`39m`, because `styleWikiLink` injected that pair into the source
+  // before the lexer at every colour level. It is gone: the label is carried through the
+  // lexer by control characters (`src/wikilink.ts`) and styled after the walk, through the
+  // emitter above, under the same gate as everything else. Decision 1 of that plan — zero
+  // tool-generated escape bytes with the policy off — is now total over this fixture.
+  test("with the policy off, no producer emits an escape at all", () => {
     const escapes = [...plain.matchAll(ANSI)].map((match) => match[0]);
-    expect(new Set(escapes)).toEqual(
-      new Set([`${ESC}[36m`, `${ESC}[4m`, `${ESC}[24m`, `${ESC}[39m`]),
-    );
+    expect(escapes).toEqual([]);
+    // And nothing invisible-but-present took the escapes' place: the carriers are stripped
+    // unconditionally, balanced or not.
+    expect(plain).not.toContain(String.fromCharCode(2));
+    expect(plain).not.toContain(String.fromCharCode(3));
+    expect(rendered).not.toContain(String.fromCharCode(2));
+    expect(rendered).not.toContain(String.fromCharCode(3));
   });
 
   test("and the visible text is identical either way", () => {

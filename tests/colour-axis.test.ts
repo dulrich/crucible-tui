@@ -40,22 +40,46 @@ import {
 let dir: string;
 let manifest: string;
 
+/** Written out rather than typed literally, per this repo's own sentinel convention. */
+const ESC = String.fromCharCode(27);
+
 /** A paragraph whose only styling is emphasis: coloured or not, the characters match. */
 const PLAIN =
   "Some **bold** text in a plain paragraph, long enough that it has to wrap at forty " +
   "columns and not at a hundred, which is what makes the width axis observable.\n";
 /**
- * A wiki link. `styleWikiLink` (`src/render.ts:62-65`) hardcodes `\x1b[36m\x1b[4m` and
- * consults no colour decision at all, so this file carries SGR **even in a colourless
- * render** — it is the producer this axis exists to make visible. Out of scope to repair
- * here (the successor plan owns it); in scope to measure.
+ * A wiki link — **the producer this axis was seeded with, and the one it retired.**
+ *
+ * `styleWikiLink` (`src/render.ts`, deleted at WP-4 of `plans/colour-policy.md`) hardcoded
+ * `\x1b[36m\x1b[4m` into the *source* before the lexer and consulted no colour decision at
+ * all, so this file used to carry SGR **even in a colourless render** and landed in the
+ * `sgrOnly` bucket at every width. It is kept, unchanged, as the regression witness for
+ * that: the label is styled through `src/style.ts` under the resolved policy now, so the
+ * colourless render carries no escape and this file lands in `identical`.
  */
 const WIKI = "A paragraph with a [[wiki-link]] in it.\n";
+/**
+ * An **authored** escape, and the reason this file exists at all.
+ *
+ * Retiring the wiki-link producer would otherwise have made the `sgrOnly` bucket
+ * unreachable in this suite — every remaining assertion on it would pass by having nothing
+ * to classify, which is the vacuity this instrument was built to prevent. It is not a
+ * substitute defect: Decision 1 of `plans/colour-policy.md` scopes "zero escape bytes" to
+ * *tool-generated* escapes and requires ESC written by the author to survive the verbatim
+ * paths intact, in both modes. So this file is **correct** output that the axis still has
+ * to see and count, which is exactly what makes it the right non-vacuity seed — and it is
+ * why the axis's ratchet is a threshold rather than an assertion of zero.
+ *
+ * The fixed gate corpus deliberately contains no such file (Decision 1 asserts as much),
+ * so nothing here changes what `bun run sweep` measures.
+ */
+const AUTHORED = `A paragraph with an authored ${ESC}[31mescape${ESC}[39m in it.\n`;
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "mdview-colour-axis-"));
   await writeFile(join(dir, "plain.md"), PLAIN);
   await writeFile(join(dir, "wiki.md"), WIKI);
+  await writeFile(join(dir, "authored.md"), AUTHORED);
   manifest = join(dir, "manifest.json");
   await writeFile(
     manifest,
@@ -92,8 +116,8 @@ describe("the two children resolve opposite colour modes (WP-1)", () => {
     const off = colourless[0];
     expect(on?.corpus).toBe("probe");
     expect(off?.corpus).toBe("probe");
-    expect(on?.digests.length).toBe(4);
-    expect(off?.digests.length).toBe(4);
+    expect(on?.digests.length).toBe(6);
+    expect(off?.digests.length).toBe(6);
 
     // Observed output, not intended environment: every render in the colour child carries
     // SGR, and the plain paragraph in the colourless child carries none.
@@ -188,18 +212,33 @@ describe("the width axis is real, not five copies of one render (WP-1)", () => {
 });
 
 describe("runColourAxis: the end-to-end join over a manifest corpus", () => {
-  test("the wiki-link producer lands in SGR-only, and the plain paragraph in identical", async () => {
+  test("the authored escape lands in SGR-only; the wiki-link and the plain paragraph in identical", async () => {
+    // **This assertion inverted at WP-4 of `plans/colour-policy.md`, and the inversion is
+    // the point.** It used to read "the wiki-link producer lands in SGR-only": `wiki.md`
+    // carried `styleWikiLink`'s hardcoded pair in the colourless render, so `sgrOnly` was
+    // 2 and `identical` 2. That producer is gone, so `wiki.md` now joins `plain.md` in
+    // `identical` and the only file left in `sgrOnly` is `authored.md` — whose escape the
+    // author wrote and Decision 1 requires to survive. See the constants above.
     const [axis] = await runColourAxis(argsFor("40,80"));
     expect(axis?.corpus).toBe("probe");
-    expect(axis?.combos).toBe(4);
+    expect(axis?.combos).toBe(6);
     expect(axis?.errors).toEqual([]);
-    // `wiki.md` at both widths: same characters, SGR in the colourless render.
+    // `authored.md` at both widths: same characters, SGR in the colourless render.
     expect(axis?.sgrOnly).toBe(2);
-    expect(axis?.identical).toBe(2);
+    expect(axis?.identical).toBe(4);
     expect(axis?.charDiffOnly).toBe(0);
     expect(axis?.both).toBe(0);
     expect(axis?.sgrAny).toBe(2);
     expect(axis?.charDiff).toBe(0);
+  });
+
+  test("the retired wiki-link producer emits nothing in a colourless render", async () => {
+    // The direct half of the inversion above, asserted on the digest rather than the
+    // bucket, so a future regression names the file rather than a count.
+    const [colourless] = await collectColourDigests("off", argsFor("40,80"));
+    expect(digestFor(colourless!, "wiki.md", 40).hasSgr).toBe(false);
+    expect(digestFor(colourless!, "wiki.md", 80).hasSgr).toBe(false);
+    expect(digestFor(colourless!, "authored.md", 80).hasSgr).toBe(true);
   });
 });
 
@@ -224,7 +263,7 @@ describe("--colour-mode on: the sweep itself, re-exec'd in colour (WP-1)", () =>
     );
     const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("[probe] files=2 combos=2 overflow=0 errors=0");
+    expect(stdout).toContain("[probe] files=3 combos=3 overflow=0 errors=0");
     // It is the sweep, not the axis: no bucket line is printed. (Matched on the printed
     // line's shape, not the bare word — the temp manifest's own path contains it.)
     expect(stdout).not.toContain("] colour-axis combos=");

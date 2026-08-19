@@ -29,16 +29,7 @@ import { MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, isGuardShapedLine, stripAns
 import { TASK_GLYPHS, renderList, substituteBullets } from "./lists";
 import { TokenWalker, type WalkRendererMethods } from "./walk";
 import { NARROW_MEASURE, type Measure } from "./width";
-
-// Obsidian wiki-links aren't markdown; style them before parsing so they render as
-// recognizable links-to-nowhere instead of literal brackets. This regex is deliberately
-// the same one an in-house web markdown renderer already uses against the same corpus —
-// same pattern, ANSI output instead of an HTML <span>. Two documents rendered by two
-// tools must decide what a wiki-link *is* the same way, or they disagree about the same
-// note. The one addition here is a leading optional `!` group (see `styleWikiLink`'s
-// call site in `preprocessBody`) to catch Obsidian's `![[embed]]` syntax, which that
-// renderer's pattern does not recognize at all.
-const WIKI_LINK = /(!)?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
+import { markWikiLinks, stripWikiLinkCarriers, styleWikiLinkCarriers } from "./wikilink";
 
 // Obsidian's custom checkbox states aren't GFM tasklist syntax — marked's tasklist
 // extension only recognizes " ", "x", "X". Line pattern and state table are kept
@@ -58,12 +49,6 @@ const TASK_STATE_LINE = /^(\s*[-*+]\s+)\[(.)\](\s)/;
 // gap. This tool closes that gap for both passes, since the corpus commonly quotes
 // `[[slug]]` inside fenced example commands.
 const FENCE_LINE = /^\s*(```|~~~)/;
-
-
-function styleWikiLink(label: string): string {
-  // cyan + underline, per the plan's suggestion (plans/mdview.md WP-2).
-  return `\x1b[36m\x1b[4m${label}\x1b[24m\x1b[39m`;
-}
 
 // GFM's own tasklist recognition (`istask = /^\[[ xX]\] /`, marked.cjs:524) only ever
 // matches these three characters. Every other Obsidian custom state (`/`, `-`, `>`,
@@ -246,12 +231,32 @@ function stripSentinelChar(body: string): string {
   return body.split(SENTINEL).join("");
 }
 
-function preprocessBody(body: string, glyphs: GlyphSet): string {
+/**
+ * The whole of what this tool does to a document *before* `marked`'s lexer sees it.
+ *
+ * **Exported for one reason, and it is a gate rather than a convenience** (WP-4 of
+ * `plans/colour-policy.md`): the lexer-input witness in `tests/wikilink.test.ts` asserts
+ * that this function introduces **no new ESC byte**, by comparing the positions and counts
+ * of authored ESC before and after it and by transforming ESC-free sources directly. That
+ * claim is about this function's output specifically, and it is not observable from
+ * rendered output — a renderer that emits colour correctly can still be putting escapes
+ * into its own parser's input, which is exactly what `styleWikiLink` did for the tool's
+ * whole life.
+ *
+ * The witness deliberately asserts *no new* ESC rather than *no* ESC. Decision 1 of that
+ * plan scopes "zero escape bytes" to tool-generated ones and requires authored ESC to pass
+ * through verbatim, so an absence assertion here would contradict the spec it is meant to
+ * enforce and would fail on any document that legitimately contains one.
+ */
+export function preprocessBody(body: string, glyphs: GlyphSet): string {
   let inFence = false;
-  // Strip both sentinel bytes from the incoming source before either mechanism runs —
-  // same reasoning for each, kept as two separate calls so neither strip's
-  // implementation needs to know the other's code point exists.
-  return stripTaskStateSentinel(stripSentinelChar(body))
+  // Strip all three carrier bytes from the incoming source before any mechanism runs —
+  // same reasoning for each, kept as three separate calls so no strip's implementation
+  // needs to know another's code point exists. `stripWikiLinkCarriers` joined the chain
+  // in WP-4 of `plans/colour-policy.md`, when the wiki-link pass stopped emitting SGR
+  // into the lexer's input and started emitting code points 2/3 instead: without it a
+  // document could write the carriers itself and forge a styled span.
+  return stripWikiLinkCarriers(stripTaskStateSentinel(stripSentinelChar(body)))
     .split("\n")
     .map((line) => {
       if (FENCE_LINE.test(line)) {
@@ -260,18 +265,10 @@ function preprocessBody(body: string, glyphs: GlyphSet): string {
       }
       if (inFence) return line;
 
-      const withTaskState = rewriteTaskState(line, glyphs);
-      return withTaskState.replace(
-        WIKI_LINK,
-        (_match, bang: string | undefined, slug: string, alias?: string) => {
-          const label = styleWikiLink(alias ?? slug);
-          // `![[target]]` is Obsidian's embed syntax; render it as a labelled embed
-          // reference rather than dropping the `!` on the floor (the plain-link case,
-          // `bang === undefined`, is unchanged — no glyph either way, since this must
-          // read identically under both glyph tiers and needs no capability detection).
-          return bang ? `embed: ${label}` : label;
-        },
-      );
+      // Recognition is frozen at what it was (`plans/colour-policy.md`, WP-4 and the
+      // cycle-2 f4 disposition): the same regex, applied to the same lines, skipped
+      // inside fences by the same toggle. Only the emission moved — see `src/wikilink.ts`.
+      return markWikiLinks(rewriteTaskState(line, glyphs));
     })
     .join("\n");
 }
@@ -1248,14 +1245,24 @@ export function renderDocumentDetailed(
     if (!coalesced) return settle(result);
 
     const budget = Math.max(1, targetWidth - pendingPrefixWidth());
-    // `segments` now carry live ANSI wherever `chalk` has a colour level, so the
-    // re-wrap has to be the ANSI-aware one — which it already was: `wrapAnsi`
-    // segments escape sequences out as atomic zero-width units and `measure` is
-    // `string-width`, which strips them before counting. That path was built for
-    // exactly this content (see `src/wrap.ts`'s module comment, which names list
-    // items carrying live ANSI as its reason to exist) and was already exercised here
-    // by `styleWikiLink`'s hard-coded escapes, which reach this seam through
-    // `preprocessBody` at every colour level.
+    // `segments` carry live ANSI whenever the resolved policy says colour, so the
+    // re-wrap has to be the ANSI-aware one — which it already was: `wrapAnsi` segments
+    // escape sequences out as atomic zero-width units and `measure` is `string-width`,
+    // which strips them before counting. That path was built for exactly this content
+    // (see `src/wrap.ts`'s module comment, which names list items carrying live ANSI as
+    // its reason to exist).
+    //
+    // **This comment used to say the seam was "already exercised at every colour level"
+    // by `styleWikiLink`'s hard-coded escapes, and WP-4 of `plans/colour-policy.md`
+    // retired that producer.** What reaches this seam from a wiki-link now is a pair of
+    // carrier control characters (code points 2/3, `src/wikilink.ts`), which are *text*
+    // to `src/ansi.ts`'s scanner and **zero columns** to `Measure` — re-measured here at
+    // WP-4 and asserted in `tests/wikilink.test.ts`. So the segment occupies exactly the
+    // columns its visible text does, as it did when the escapes were the carrier, and the
+    // colourless wrap is unmoved. A carrier can be separated from its label by a
+    // hard-split of an over-long word, which is harmless: the pass that consumes them runs
+    // over the whole rendered document, and `applyStyle`'s line-break encasing is what
+    // styles a pair that ended up spanning a newline.
     const wrapAt = (width: number): string =>
       segments.map((segment) => wrapAnsi(segment, Math.max(1, width), measure).join("\n")).join("\n");
 
@@ -1520,13 +1527,31 @@ export function renderDocumentDetailed(
   // a bug in either one can never silently affect the other's bookkeeping.
   const cleanedBody = stripTaskStateSentinel(strippedBody);
 
+  // **The wiki-link carrier pass** (WP-4 of `plans/colour-policy.md`). Each balanced pair
+  // of code points 2/3 that `preprocessBody` put into the *source* is styled here, through
+  // `src/style.ts`'s emitter under the resolved policy, and every carrier is removed —
+  // balanced or not. It replaced `styleWikiLink`, which spelled a cyan/underline SGR pair
+  // by hand and injected it into the lexer's input at every colour level, colourless
+  // included; after this the renderer emits no escape byte that this repo does not spell,
+  // and none at all when the policy says no.
+  //
+  // **Placed here on purpose, and both neighbours matter.** It runs after
+  // `extractCodeRanges` because carriers are not newlines and this pass adds none, so no
+  // code range's line numbers can shift either way — and running after keeps the ranges
+  // derived from exactly the bytes the walk produced. It runs *before*
+  // `stripEmojiTrailingSpace` because that pass's regex tolerates trailing SGR but knows
+  // nothing about carriers: a surviving carrier would suppress the strip with colour off
+  // and not with colour on, splitting the two modes apart on a line this package is not
+  // allowed to move.
+  const linkedBody = styleWikiLinkCarriers(cleanedBody, layout);
+
   // WP-11: one uniform pass over the body strips `insertEmojis`'s stray trailing
   // space wherever it survived to end-of-line, skipping fenced ranges. `bodyRanges`
   // (not the offset `codeRanges` below) is correct here — `cleanedBody`'s own line
   // numbering starts at 1 for the body, the same numbering `extractCodeRanges` used to
   // record `bodyRanges` in the first place; the `metaLineOffset` shift below is only
   // for the *returned* `codeRanges`, which describe the final `metaBlock`-prefixed text.
-  const emojiCleanedBody = stripEmojiTrailingSpace(cleanedBody, bodyRanges);
+  const emojiCleanedBody = stripEmojiTrailingSpace(linkedBody, bodyRanges);
 
   // `metaBlock` never passes through `code`/`rewriteTaskState`, so it never carries
   // either sentinel; its own line count is a fixed offset onto the body's ranges once
