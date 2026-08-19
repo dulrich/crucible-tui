@@ -162,7 +162,7 @@ describe("the styling inventory — every producer emits, under an injected TTY 
     NARROW_MEASURE,
     false,
     resolveFenceLanguage,
-    { color: true, hyperlinks: false },
+    { color: true, hyperlinks: false, tmux: false },
   );
   const plain = renderDocument(
     source,
@@ -171,7 +171,7 @@ describe("the styling inventory — every producer emits, under an injected TTY 
     NARROW_MEASURE,
     false,
     resolveFenceLanguage,
-    { color: false, hyperlinks: false },
+    { color: false, hyperlinks: false, tmux: false },
   );
 
   // name -> the exact byte sequence that producer opens with

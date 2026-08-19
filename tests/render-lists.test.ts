@@ -15,8 +15,12 @@ import {
   findContinuationOverIndent,
   findListOrphans,
 } from "../src/detectors";
+import type { ColourPolicy } from "../src/colour";
+import type { GlyphSet } from "../src/glyphs";
+import { resolveFenceLanguage } from "../src/lang";
 import { LIST_BULLET, isIndentedLine, stripAnsi } from "../src/list-lines";
 import { renderDocument, renderDocumentDetailed } from "../src/render";
+import { NARROW_MEASURE } from "../src/width";
 
 // ---------------------------------------------------------------------------
 // WP-2 / WP-2b — the loose-list double-wrap defect (characterized in WP-2, closed
@@ -1193,5 +1197,93 @@ describe("renderDocument — the coalesced colon-guard continuation drift (WP-5,
       "      either; it is WP-8's and its counts must stay",
       "      comparable. Use the detectors, don't tune them.",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-3 of `plans/colour-policy.md` — layout is escape-blind, and these are the
+// artifacts that proved it was not.
+//
+// **Read the direction of this group before changing an assertion in it.** The
+// colour-off render is the frozen baseline (cycle-3 f6); every assertion here says the
+// *stripped colour-on* render equals it. None of them may be satisfied by moving the
+// colourless side — that is the one thing this package was prohibited from doing.
+//
+// Three defects, all the same mechanism — a layout decision made on bytes instead of on
+// columns — and each with its own witness line at width 80 in `tight-list.md`:
+//
+// 1. `fixNestedLists`' `\S` matched an SGR reset's `m`, splitting a line at the escape
+//    and leaving `"    ESC[0m"` behind (measured on `nested-list.md`: 7 such lines).
+// 2. the empty-line filter compared raw bytes, so an encased blank line survived it.
+// 3. an escape-only run became a zero-width word in `wrapAnsi`, consuming the pending
+//    space and leaving it trailing; and the hard-break seam asked `HARD_BREAK_TAIL` of
+//    raw bytes, so a styled `<br />` stopped ending a line.
+// ---------------------------------------------------------------------------
+
+describe("colour cannot move a character — the three WP-3 repairs, at width 80", () => {
+  const FORCED: ColourPolicy = { color: true, hyperlinks: false, tmux: false };
+  const OFF: ColourPolicy = { color: false, hyperlinks: false, tmux: false };
+
+  const render = (source: string, width: number, glyphs: GlyphSet, policy: ColourPolicy): string =>
+    renderDocument(source, width, glyphs, NARROW_MEASURE, false, resolveFenceLanguage, policy);
+
+  const tightList = async (): Promise<string> =>
+    await readFile(`${import.meta.dir}/fixtures/tight-list.md`, "utf8");
+
+  test("the <br /> merge is gone: the author's break still ends the line", async () => {
+    const source = await tightList();
+    const lines = stripAnsi(render(source, 80, UNICODE_GLYPHS, FORCED)).split("\n");
+    expect(lines).toContain("    • A break tag ends this line.<br />");
+    expect(lines).toContain("      And this text follows the tag, again authored wrapped, so the tag is the");
+    expect(
+      lines.some((line) => line.includes("<br /> And this text follows")),
+    ).toBe(false);
+  });
+
+  test("the 'recorded at' trailing space is gone — the escape-only word is not a word", async () => {
+    const source = await tightList();
+    const lines = stripAnsi(render(source, 80, UNICODE_GLYPHS, FORCED)).split("\n");
+    expect(lines).toContain("    • The reference for this behaviour is recorded at");
+    expect(lines.some((line) => line.endsWith("recorded at "))).toBe(false);
+    // Nothing anywhere in the forced render ends in a space that the colourless render
+    // does not also end in — the general form of the same defect.
+    const off = stripAnsi(render(source, 80, UNICODE_GLYPHS, OFF)).split("\n");
+    expect(lines.map((line) => line.replace(/ +$/, ""))).toEqual(lines);
+    expect(off.map((line) => line.replace(/ +$/, ""))).toEqual(off);
+  });
+
+  test("the escape-only blank lines are gone: no line is whitespace-plus-escapes", async () => {
+    for (const fixture of ["tight-list.md", "nested-list.md"]) {
+      const source = await readFile(`${import.meta.dir}/fixtures/${fixture}`, "utf8");
+      const rendered = render(source, 80, UNICODE_GLYPHS, FORCED);
+      for (const line of rendered.split("\n")) {
+        // A line that is *only* sequences and whitespace is one the colourless render
+        // does not have at all — the shape repairs 1 and 2 jointly produced.
+        if (stripAnsi(line).trim() === "") expect(line).toBe(stripAnsi(line));
+      }
+    }
+  });
+
+  test("stripped colour-on equals colour-off, line for line, on both tiers", async () => {
+    for (const fixture of ["tight-list.md", "nested-list.md", "fenced-list.md", "loose-list.md"]) {
+      const source = await readFile(`${import.meta.dir}/fixtures/${fixture}`, "utf8");
+      for (const [tier, glyphs] of WP2_TIERS) {
+        for (const width of WP2_WIDTHS) {
+          expect(`${fixture} ${tier} w${width}: ${stripAnsi(render(source, width, glyphs, FORCED))}`).toBe(
+            `${fixture} ${tier} w${width}: ${render(source, width, glyphs, OFF)}`,
+          );
+        }
+      }
+    }
+  });
+
+  test("the bullet glyph is substituted under colour too", async () => {
+    // `substituteBullets` matched an anchored raw-byte regex, so an encased marker line
+    // kept the composer's literal `*` under colour — visible only once repair 1 stopped
+    // splitting those lines at the escape.
+    const source = await readFile(`${import.meta.dir}/fixtures/nested-list.md`, "utf8");
+    const lines = stripAnsi(render(source, 80, UNICODE_GLYPHS, FORCED)).split("\n");
+    expect(lines.some((line) => line.trimStart().startsWith("‣ "))).toBe(true);
+    expect(lines.some((line) => /^ +\* /.test(line))).toBe(false);
   });
 });

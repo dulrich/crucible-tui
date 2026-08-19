@@ -11,6 +11,7 @@ import {
   type BlockEnds,
   type ClassifiedOrphan,
 } from "../src/detectors";
+import { link as osc8Link } from "../src/ansi";
 import { stripAnsi } from "../src/list-lines";
 import { renderDocumentDetailed } from "../src/render";
 import { parseWidths } from "../scripts/sweep";
@@ -29,15 +30,40 @@ import { parseWidths } from "../scripts/sweep";
 // corpus half is the differential recorded in the WP-2d report.
 // ---------------------------------------------------------------------------
 
+// The canonical contract test for the repo's one strip. It lives here because this file
+// is where the detectors' own guarantees are pinned and because `stripAnsi` moved out of
+// `src/detectors.ts` with them; the three test files that used to keep private SGR-only
+// copies import the production function now (WP-3 of `plans/colour-policy.md`).
 describe("stripAnsi", () => {
+  const esc = String.fromCharCode(27);
+  const bel = String.fromCharCode(7);
+
   test("removes SGR sequences and leaves the text", () => {
-    const esc = String.fromCharCode(27);
     expect(stripAnsi(`${esc}[36m${esc}[4malt${esc}[24m${esc}[39m`)).toBe("alt");
   });
 
   test("leaves text that merely looks like an escape sequence alone", () => {
     // the ESC byte is the whole point — a bare "[36m" in prose is not an escape
     expect(stripAnsi("see [36m in the spec")).toBe("see [36m in the spec");
+  });
+
+  test("removes an OSC-8 hyperlink, destination and all — WP-3", () => {
+    // Before WP-3 this strip was SGR-only, so the URL counted as visible text: a
+    // 6-column label measured 40-odd columns and every layout decision downstream was
+    // wrong about it. Both terminators are pinned, because both are emitted in the wild.
+    expect(stripAnsi(`${esc}]8;;https://example.invalid/x${bel}label${esc}]8;;${bel}`)).toBe("label");
+    expect(stripAnsi(`${esc}]8;;https://example.invalid/x${esc}\\label${esc}]8;;${esc}\\`)).toBe("label");
+  });
+
+  test("removes a tmux DCS envelope, doubled ESCs and all", () => {
+    expect(stripAnsi(osc8Link("label", "https://example.invalid/x", true))).toBe("label");
+  });
+
+  test("the renderer's own sentinels are text, not sequences", () => {
+    // Code points 0 and 1 (`SENTINEL`, `TASK_STATE_SENTINEL`) travel through rendered
+    // text and are removed by their own passes, never by this one.
+    const sentinels = `${String.fromCharCode(0)}code${String.fromCharCode(1)}`;
+    expect(stripAnsi(sentinels)).toBe(sentinels);
   });
 });
 

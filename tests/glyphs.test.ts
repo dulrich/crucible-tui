@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import stringWidth from "string-width";
 import { ASCII_GLYPHS, UNICODE_GLYPHS, resolveGlyphs } from "../src/glyphs";
+// The production strip, imported rather than re-spelled: this file used to carry its own
+// SGR-only copy, one of three the repo maintained by hand (WP-3 of
+// `plans/colour-policy.md`). A test that strips differently from the renderer asserts
+// about a string the renderer never produced.
+import { stripAnsi } from "../src/list-lines";
 import { renderDocument, renderDocumentDetailed } from "../src/render";
-
-// Deliberately matching the ESC control character to strip ANSI SGR codes so
-// assertions can check plain rendered text.
-// eslint-disable-next-line no-control-regex
-const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
 
 // --- resolveGlyphs precedence ------------------------------------------------
 

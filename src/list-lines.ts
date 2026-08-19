@@ -41,18 +41,32 @@
  *
  * ## Keep it dependency-light
  *
- * The only import here is `./width`, for the `Measure` a caller passes in — that is what
- * lets `render.ts` reach these symbols without reaching anything else. Nothing in this
- * module may import `./detectors`; the dependency runs the other way.
+ * The imports here are `./width`, for the `Measure` a caller passes in, and `./ansi`, for
+ * the sequence grammar `stripAnsi` is now a derivation of (WP-3 of
+ * `plans/colour-policy.md`) — which imports nothing but `./width` itself, so the property
+ * this section is about is unchanged: `render.ts` reaches these symbols without reaching
+ * anything else. Nothing in this module may import `./detectors`; the dependency runs the
+ * other way.
  */
+import { stripSequences } from "./ansi";
 import { NARROW_MEASURE, type Measure } from "./width";
 
-// Deliberately matching the ESC control character to strip ANSI SGR codes, so a
-// detector measures the text a reader sees rather than the escape bytes.
-// eslint-disable-next-line no-control-regex
-const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
-
-export const stripAnsi = (value: string): string => value.replace(ANSI_PATTERN, "");
+/**
+ * The visible columns of a rendered line — every terminal sequence removed, so a detector
+ * or a layout pass measures the text a reader sees rather than the escape bytes.
+ *
+ * **This is a derivation of `src/ansi.ts`'s scanner since WP-3 of
+ * `plans/colour-policy.md`, and it used to be `/\x1b\[[0-9;]*m/g` — SGR only.** That
+ * regex was correct about the only sequence the renderer emitted at the time and silently
+ * wrong about the two it can emit now: an OSC-8 hyperlink and its tmux DCS wrapper both
+ * survived it intact, so every consumer of this function counted a hyperlink's
+ * destination URL as visible text. One vocabulary, in one module, in both directions —
+ * see `src/ansi.ts`'s header.
+ *
+ * The name stays `stripAnsi`: it is what six modules and three test files call it, and
+ * WP-3 renaming it would have buried a behaviour change under a mechanical diff.
+ */
+export const stripAnsi = (value: string): string => stripSequences(value);
 
 /**
  * A rendered list marker line: at least two columns of indent, a bullet or an
