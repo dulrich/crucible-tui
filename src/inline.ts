@@ -1,8 +1,6 @@
 import colors from "@colors/colors/safe";
 import ansiEscapes from "ansi-escapes";
 import * as nodeEmoji from "node-emoji";
-import supportsColor from "supports-color";
-import supportsHyperlinks from "supports-hyperlinks";
 import type { Token, Tokens } from "marked";
 import type { LayoutContext } from "./layout-context";
 
@@ -104,7 +102,7 @@ export function fixHardReturn(text: string): string {
  *   `underline` `4m`/`24m`, `yellow` `33m`/`39m`, `blue` `34m`/`39m`, `gray` `90m`/`39m`).
  *   Pinned by test rather than trusted.
  * - **Whether to emit them at all.** That is `LayoutContext.color`, and it must *not* be
- *   `@colors`' own answer — see `detectInlineColor()`.
+ *   `@colors`' own answer — it is `resolveColourPolicy`'s (`src/colour.ts`), threaded in.
  *
  * Calling `colors.bold(x)` would fuse the two: those functions consult the global
  * `colors.enabled`, so they would silently answer the enablement question with the wrong
@@ -236,54 +234,6 @@ const LINK = createStyler("blue"); // chalk.blue
 const HREF = createStyler("underline", createStyler("blue")); // chalk.blue.underline
 
 /**
- * Whether the renderer's inline styling emits SGR codes — **`supports-color`'s answer,
- * measured equal to the library's, not a hand-rolled approximation.**
- *
- * The rule that has always governed this tool's rendered output is `chalk`'s, and `chalk`'s
- * rule is not "is stdout a TTY". It is ~150 lines of stream, flag and environment
- * inspection, and a tool that reproduced only the TTY half would answer differently the
- * first time it met `--color`, `FORCE_COLOR=false`, `TERM=dumb` or a CI runner — silently,
- * with every local gate still green.
- *
- * Until WP-6 this asked `marked-terminal`: a throwaway extension was built, its `strong`
- * (which is `chalk.bold` and nothing else) was handed a probe string, and the answer was
- * whether anything came back around it. That made the decision `chalk@5.6.2`'s, made by
- * `chalk`, *by construction* — and it was the one deliberate library coupling this module
- * carried, recorded here as a debt owed an owned answer once the library went.
- *
- * **The owned answer is `supports-color`, promoted from transitive to direct**, and it is a
- * promotion in exactly the sense `@colors/colors` and `cli-highlight` already are: the
- * package is already in the runtime closure — `supports-hyperlinks@3.2.0`, a direct
- * dependency two lines above, requires `supports-color@^7.0.0` — so declaring it adds
- * **zero** packages and zero install size, and the alternative of promoting `chalk` itself
- * is what `plans/marked-terminal-replacement.md`'s decision 1 already rejected. It is also
- * the same module `chalk` is a wrapper over: `chalk@5.6.2` vendors a copy of this exact
- * library and its `level` is that copy's answer, so "ask `supports-color`" and "ask
- * `chalk`" are the same question put to two builds of one implementation.
- *
- * **Two builds is not one build, so the equality was measured rather than assumed.** The
- * two spellings were run against a 36-cell environment matrix — bare non-TTY, a real pty,
- * `FORCE_COLOR` at `0/1/2/3/true/false/empty`, `NO_COLOR`, `TERM` at
- * `dumb/vt100/linux/screen/xterm-256color`, `COLORTERM`, `CI` alone and with
- * `GITHUB_ACTIONS`/`TRAVIS`, `TEAMCITY_VERSION`, `TERM_PROGRAM`, and the `--color`,
- * `--no-color`, `--color=256/always/never` argv flags — and **agreed on all 36**. See this
- * WP's report for the matrix. One cell is worth naming because this comment used to assert
- * the opposite: under `CI=1 GITHUB_ACTIONS=1` with a non-TTY stdout **both** answer *false*,
- * because the non-TTY early return runs before the CI table is ever consulted. The old
- * "under GitHub Actions chalk still colours" claim was wrong about both libraries; it is
- * removed rather than carried forward, and the conclusion it was offered in support of —
- * do not hand-roll a TTY check — is unaffected and still the reason this is a dependency.
- *
- * Resolved at module load, like `chalk`'s level was, which is why
- * `tests/inline.test.ts`'s forced-colour case runs in a subprocess. Cheap enough to call
- * once per render (a property read), and deliberately not memoised at module scope: this
- * module holds no process state.
- */
-export function detectInlineColor(): boolean {
-  return supportsColor.stdout !== false;
-}
-
-/**
  * `insertEmojis`, `marked-terminal` `index.js:604-611`, reproduced including two
  * peculiarities that are load-bearing for parity:
  *
@@ -406,9 +356,12 @@ export function renderDel(ctx: LayoutContext, token: Tokens.Del, parseInline: Pa
  *   `chalk.blue.underline` — which is what makes the close-code re-opening in `applyStyle`
  *   fire on essentially every link in the corpus.
  *
- * `supportsHyperlinks.stdout` is the same module instance the library resolved, evaluated
- * at its own module load, so the capability answer cannot differ between the two halves of
- * a half-migrated renderer.
+ * **The capability answer is `ctx.hyperlinks`, and WP-1 of `plans/colour-policy.md` is what
+ * made it a value.** It used to be `supportsHyperlinks.stdout` — that library's own
+ * module-load answer, which no caller could influence and which carried a `FORCE_HYPERLINK`
+ * variable, two argv flag families and a pre-TTY `NETLIFY` bypass nobody here asked for. The
+ * branch list that decided it is transcribed into `resolveHyperlinks` (`src/colour.ts`);
+ * what reaches this line is the decision, already made.
  */
 export function renderLink(ctx: LayoutContext, token: Tokens.Link, parseInline: ParseInline): string {
   const href = token.href;
@@ -416,7 +369,7 @@ export function renderLink(ctx: LayoutContext, token: Tokens.Link, parseInline: 
   const hasText = Boolean(text) && text !== href;
 
   let out = "";
-  if (supportsHyperlinks.stdout) {
+  if (ctx.hyperlinks) {
     const label = text ? applyStyle(ctx, HREF, emojify(ctx, text)) : applyStyle(ctx, HREF, href);
     out = ansiEscapes.link(label, href.replace(/\+/g, "%20"));
   } else {

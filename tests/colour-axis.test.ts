@@ -24,9 +24,13 @@ import {
  * other's, for the same file at the same width.
  *
  * Everything here spawns subprocesses for the reason `tests/helpers/color.ts:15-46`
- * records: Bun's module cache is shared across a whole `bun test` run, so by the time any
- * test executes, `supports-color` has already resolved once for the process and no
- * in-process mutation of `FORCE_COLOR` can move it.
+ * records: Bun's module cache is shared across a whole `bun test` run, so a module that
+ * resolves its colour decision at load has already resolved by the time any test executes,
+ * and no in-process mutation of `FORCE_COLOR` can move it. **The renderer's own decision is
+ * no longer one of those** — WP-1 of `plans/colour-policy.md` made it a per-call
+ * resolution over an explicit input — but `cli-highlight`'s bundled `chalk` and
+ * `@colors/colors` still are, and both put styling into rendered output, so the digests
+ * this file compares still have to come from two processes. WP-2 retires the last two.
  */
 
 let dir: string;
@@ -98,43 +102,68 @@ describe("the two children resolve opposite colour modes (WP-1)", () => {
     expect(digestFor(on!, "plain.md", 80).strippedSha).toBe(digestFor(off!, "plain.md", 80).strippedSha);
   });
 
-  test("an ambient FORCE_COLOR/NO_COLOR cannot decide either child", async () => {
-    // The failure this guards is a developer or CI runner with FORCE_COLOR exported: both
+  test("an ambient FORCE_COLOR/NO_COLOR/MDVIEW_COLOR cannot decide either child", async () => {
+    // The failure this guards is a developer or CI runner with one of these exported: both
     // children would inherit it, both would resolve the same mode, and the axis would
-    // report a clean sheet forever. `colourChildEnv` sets both variables explicitly on
-    // both children, so the ambient values below must not reach either render.
-    const saved = { force: process.env.FORCE_COLOR, no: process.env.NO_COLOR };
+    // report a clean sheet forever. `colourChildEnv` decides all three on both children, so
+    // the ambient values below must not reach either render.
+    //
+    // **`MDVIEW_COLOR` joined the list at WP-1 of `plans/colour-policy.md`, and it is the
+    // most dangerous of the three**: it sits *above* `NO_COLOR`, which sits above
+    // `FORCE_COLOR`, so an ambient `MDVIEW_COLOR=never` would flatten the whole axis on its
+    // own. The assertions are on **observed rendered output**, not on the environment we
+    // intended to set.
+    const saved = {
+      force: process.env.FORCE_COLOR,
+      no: process.env.NO_COLOR,
+      mdview: process.env.MDVIEW_COLOR,
+    };
     try {
       process.env.FORCE_COLOR = "0";
       process.env.NO_COLOR = "1";
+      process.env.MDVIEW_COLOR = "never";
       const [colour] = await collectColourDigests("on", argsFor("80"));
       expect(digestFor(colour!, "plain.md", 80).hasSgr).toBe(true);
 
       process.env.FORCE_COLOR = "3";
       delete process.env.NO_COLOR;
+      process.env.MDVIEW_COLOR = "always";
       const [colourless] = await collectColourDigests("off", argsFor("80"));
       expect(digestFor(colourless!, "plain.md", 80).hasSgr).toBe(false);
     } finally {
-      if (saved.force === undefined) delete process.env.FORCE_COLOR;
-      else process.env.FORCE_COLOR = saved.force;
-      if (saved.no === undefined) delete process.env.NO_COLOR;
-      else process.env.NO_COLOR = saved.no;
+      for (const [key, value] of [
+        ["FORCE_COLOR", saved.force],
+        ["NO_COLOR", saved.no],
+        ["MDVIEW_COLOR", saved.mdview],
+      ] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 
-  test("colourChildEnv pins both variables and mutates nothing it was handed", () => {
-    const base = { PATH: "/usr/bin", FORCE_COLOR: "1", NO_COLOR: "1", MDVIEW_CORPUS_MANIFEST: "/m.json" };
+  test("colourChildEnv pins the mode and sanitizes what outranks it, mutating nothing", () => {
+    const base = {
+      PATH: "/usr/bin",
+      FORCE_COLOR: "1",
+      NO_COLOR: "1",
+      MDVIEW_COLOR: "never",
+      MDVIEW_CORPUS_MANIFEST: "/m.json",
+    };
     const on = colourChildEnv("on", base);
     const off = colourChildEnv("off", base);
     expect(on.FORCE_COLOR).toBe("3");
     expect(off.FORCE_COLOR).toBe("0");
-    expect("NO_COLOR" in on).toBe(false);
-    expect("NO_COLOR" in off).toBe(false);
+    for (const env of [on, off]) {
+      expect("NO_COLOR" in env).toBe(false);
+      expect("MDVIEW_COLOR" in env).toBe(false);
+    }
     // The corpus manifest is *not* sanitized away: the child has to resolve the same
     // population the parent did.
     expect(on.MDVIEW_CORPUS_MANIFEST).toBe("/m.json");
     expect(base.NO_COLOR).toBe("1");
     expect(base.FORCE_COLOR).toBe("1");
+    expect(base.MDVIEW_COLOR).toBe("never");
   });
 });
 

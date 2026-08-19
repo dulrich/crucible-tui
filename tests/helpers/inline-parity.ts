@@ -1,7 +1,6 @@
 import type { Token, Tokens } from "marked";
 import { UNICODE_GLYPHS } from "../../src/glyphs";
 import {
-  detectInlineColor,
   renderBr,
   renderCodespan,
   renderDel,
@@ -96,14 +95,18 @@ const YELLOW_OFF = `${ESC}[39m`;
 const BOLD_OFF = `${ESC}[22m`;
 
 /**
- * Build the whole table for one `emoji` setting.
+ * Build the whole table for one `emoji` setting and one colour decision.
  *
- * `color` is not a parameter: the owned side reads `detectInlineColor()`, which is
- * `chalk`'s own answer for this process, so both sides are gated by the same decision and
- * the comparison is meaningful whichever process it runs in.
+ * **`color` became a parameter at WP-1 of `plans/colour-policy.md`, and that is a change of
+ * kind, not of plumbing.** It used to be discovered — `detectInlineColor()`, i.e. whatever
+ * `supports-color` had already resolved for this process — so the table could only ever be
+ * built in the mode the process happened to be in, and exercising the coloured half meant
+ * spawning a subprocess with `FORCE_COLOR` set before its module graph loaded. The owned
+ * visitors take the decision off the `LayoutContext` now, so the caller states it, both
+ * halves run in one process, and the golden lookup below is keyed on the value that was
+ * actually used rather than on one re-derived from a global.
  */
-export function inlineParityCases(emoji: boolean): ParityCase[] {
-  const color = detectInlineColor();
+export function inlineParityCases(emoji: boolean, color: boolean): ParityCase[] {
   const ctx = context(emoji, color);
   const cases: ParityCase[] = [];
 
@@ -206,6 +209,6 @@ export function inlineParityCases(emoji: boolean): ParityCase[] {
 }
 
 /** Every case whose two sides disagree. Empty is the pass condition. */
-export function inlineParityFailures(emoji: boolean): ParityCase[] {
-  return inlineParityCases(emoji).filter((entry) => entry.ours !== entry.theirs);
+export function inlineParityFailures(emoji: boolean, color: boolean): ParityCase[] {
+  return inlineParityCases(emoji, color).filter((entry) => entry.ours !== entry.theirs);
 }

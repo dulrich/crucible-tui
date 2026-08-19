@@ -755,13 +755,18 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
 // ## Why this is two processes and cannot be one
 //
 // This module statically imports `renderDocumentDetailed` (the import at the top of this
-// file). `supports-color`, `cli-highlight`'s own `chalk` theme and `@colors/colors` each
-// resolve their colour decision **at module load**, once, for the life of the process.
-// So a second render inside this process cannot be in a different colour mode, and
-// mutating `FORCE_COLOR` between renders does nothing — Bun's module cache hands back
-// the module that already resolved. `tests/helpers/color.ts:15-46` records the same
-// finding from the test side, and its fix is the same one: a fresh subprocess whose
-// environment is fixed **before** its own module graph loads.
+// file). **The renderer's own colour decision is no longer one of the reasons this has to
+// be two processes** — WP-1 of `plans/colour-policy.md` made it a per-call resolution over
+// `process.env` (`src/colour.ts`), which a single process could vary between renders. Two
+// other decisions still resolve **at module load**, once, for the life of the process:
+// `cli-highlight`'s own `chalk` theme and `@colors/colors`' `enabled`. Both put styling
+// into rendered output, so a second render inside this process still cannot be in a
+// different colour mode overall, and mutating `FORCE_COLOR` between renders still does
+// nothing for them — Bun's module cache hands back the module that already resolved.
+// `tests/helpers/color.ts:15-46` records the same finding from the test side, and its fix
+// is the same one: a fresh subprocess whose environment is fixed **before** its own module
+// graph loads. WP-2 retires both remaining globals; until it does, this stays two
+// processes.
 //
 // So the parent re-execs the sweep CLI twice, once per mode, with the colour decision
 // pinned in the child's environment before any import happens. Each child renders the
@@ -779,9 +784,15 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
 // `tests/colour-axis.test.ts` asserts the two children resolve *opposite* modes from
 // their observed output rather than from the environment we intended to set.
 //
-// `NO_COLOR` is **deleted**, not set: it is honoured nowhere in this stack today
-// (`supports-color@7.2.0` contains no reference to it), and inventing a meaning for it
-// here would be a policy decision this package does not own.
+// **`NO_COLOR` and `MDVIEW_COLOR` are deleted, and `NO_COLOR`'s reason changed sign at
+// WP-1 of `plans/colour-policy.md`.** It used to be deleted because it was honoured
+// *nowhere* in this stack, so setting it would have invented a meaning this instrument does
+// not own. It is now honoured — it sits above `FORCE_COLOR` in the ratified precedence
+// table — which is exactly why an ambient one has to be cleared: inherited, it would
+// override the `FORCE_COLOR` this function sets and run the forced-colour child colourless.
+// `MDVIEW_COLOR` is deleted for the same reason and joined the list in the same package;
+// it outranks `NO_COLOR` in turn, so an ambient `MDVIEW_COLOR=never` would silently
+// flatten the whole axis.
 
 /** One end of the axis. `on` is the forced-colour child; `off` is the colourless one. */
 export type ColourAxisMode = "on" | "off";
@@ -971,11 +982,14 @@ const SWEEP_CLI_PATH = join(import.meta.dir, "sweep.ts");
 /**
  * The child environment, built explicitly rather than inherited.
  *
- * Both variables are decided here for both modes — never left to whatever the developer
- * or CI happens to export — because the whole axis is worthless if the two children can
- * resolve the same mode. `FORCE_COLOR=3` is the level `tests/helpers/color.ts` already
- * uses for the forced-colour side; `FORCE_COLOR=0` is `supports-color`'s explicit "no".
- * The child's stdout is a pipe, so it is not a TTY either way.
+ * Every variable the colour resolver reads is decided here for both modes — never left to
+ * whatever the developer or CI happens to export — because the whole axis is worthless if
+ * the two children can resolve the same mode. `FORCE_COLOR=3` is the level
+ * `tests/helpers/color.ts` already uses for the forced-colour side; `FORCE_COLOR=0` is an
+ * explicit "no" under `src/colour.ts`'s ratified reading of the variable as much as it was
+ * under `supports-color`'s. The child's stdout is a pipe, so it is not a TTY either way —
+ * which is also why hyperlinks are off in both children and this axis says nothing about
+ * them.
  */
 export function colourChildEnv(
   mode: ColourAxisMode,
@@ -986,6 +1000,10 @@ export function colourChildEnv(
     if (value !== undefined) env[key] = value;
   }
   delete env.NO_COLOR;
+  delete env.MDVIEW_COLOR;
+  // `FORCE_COLOR` needs no `delete` of its own: the assignment below overwrites whatever
+  // was inherited, unconditionally, on both children. All three variables the resolver
+  // reads are therefore decided here and none is left to the machine.
   env.FORCE_COLOR = mode === "on" ? "3" : "0";
   return env;
 }

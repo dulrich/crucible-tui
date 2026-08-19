@@ -335,3 +335,63 @@ describe("defect 3 — a nested mapping at depth >= 1 respects targetWidth", () 
     });
   }
 });
+
+/**
+ * The metadata block's dim, under the one colour decision (WP-1 of
+ * `plans/colour-policy.md`).
+ *
+ * **This module dimmed unconditionally for its whole life, and that is the behaviour these
+ * cases replace.** Every key, every parse diagnostic and every raw echo went out wrapped in
+ * `2m`/`22m` at every colour level, including `mdview file.md > out.txt` — which is why the
+ * colour axis's colourless side carried SGR on every frontmatter-bearing fixture, and why
+ * the ratified "default non-TTY stdout emits zero tool-generated escape bytes" could not
+ * hold on any document that has frontmatter at all. The bytes are unchanged; whether they
+ * are emitted is now something this module is told rather than something it decides.
+ */
+describe("the metadata block emits its dim only when the colour decision says so", () => {
+  const ESC = "\u001b";
+  const META = "title: Example\ncreated: 2026-07-06\n";
+
+  test("colour on emits the same dim pair it always did", () => {
+    const out = formatMetaBlock(META, 80, undefined, true);
+    expect(out).toContain(`${ESC}[2mtitle  ${ESC}[22m: Example`);
+  });
+
+  test("colour off emits no escape at all, and the same visible text", () => {
+    const off = formatMetaBlock(META, 80, undefined, false);
+    expect(off).not.toContain(ESC);
+    expect(stripAnsi(formatMetaBlock(META, 80, undefined, true))).toBe(off);
+  });
+
+  test("the default is off — an unstated destination gets no escapes", () => {
+    // The direction is deliberate and is the opposite of the historical behaviour: a caller
+    // that has not thought about colour has not established that its destination can take
+    // escape sequences.
+    expect(formatMetaBlock(META, 80)).not.toContain(ESC);
+  });
+
+  test("the em dash for an empty mapping is dimmed on the same decision", () => {
+    expect(formatMetaBlock("", 80, undefined, true)).toContain(`${ESC}[2m`);
+    expect(formatMetaBlock("", 80, undefined, false)).not.toContain(ESC);
+  });
+
+  test("the degraded paths obey it too — diagnostic and raw echo alike", () => {
+    // A block that parses to a non-mapping takes the echo path; an unparseable one takes the
+    // diagnostic-plus-echo path. Both used to dim unconditionally.
+    const notAMapping = "just: a\n- list\n";
+    const unparseable = "title: [unterminated\n";
+    for (const meta of [notAMapping, unparseable]) {
+      expect(formatMetaBlockDetailed(meta, 80, undefined, false).text).not.toContain(ESC);
+      expect(formatMetaBlockDetailed(meta, 80, undefined, true).text).toContain(`${ESC}[2m`);
+    }
+  });
+
+  test("the verbatim ranges do not move with the colour decision", () => {
+    // The ranges are line spans over the same text; a decision about escapes must not change
+    // which lines `--check` exempts.
+    const unparseable = "title: [unterminated\n";
+    expect(formatMetaBlockDetailed(unparseable, 80, undefined, true).verbatimRanges).toEqual(
+      formatMetaBlockDetailed(unparseable, 80, undefined, false).verbatimRanges,
+    );
+  });
+});

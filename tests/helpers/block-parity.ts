@@ -1,7 +1,6 @@
 import type { Tokens } from "marked";
 import { renderCode, renderHr, renderHtml } from "../../src/blocks";
 import { UNICODE_GLYPHS } from "../../src/glyphs";
-import { detectInlineColor } from "../../src/inline";
 import { createLayoutContext, type LayoutContext } from "../../src/layout-context";
 import { NARROW_MEASURE } from "../../src/width";
 import { BLOCK_PARITY_GOLDEN } from "./block-parity-golden";
@@ -84,8 +83,7 @@ function context(color: boolean): LayoutContext {
  */
 const ASCII_RULE = "-".repeat(WIDTH - 1);
 
-export function blockParityCases(): BlockParityCase[] {
-  const color = detectInlineColor();
+export function blockParityCases(color: boolean): BlockParityCase[] {
   const ctx = context(color);
 
   const cases: BlockParityCase[] = [];
@@ -137,6 +135,6 @@ export function blockParityCases(): BlockParityCase[] {
 }
 
 /** Every case whose two sides disagree. Empty is the pass condition. */
-export function blockParityFailures(): BlockParityCase[] {
-  return blockParityCases().filter((entry) => entry.ours !== entry.theirs);
+export function blockParityFailures(color: boolean): BlockParityCase[] {
+  return blockParityCases(color).filter((entry) => entry.ours !== entry.theirs);
 }

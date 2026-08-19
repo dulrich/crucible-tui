@@ -10,10 +10,10 @@ import {
   renderParagraph as renderBlockParagraph,
 } from "./blocks";
 import { formatMetaBlockDetailed, splitFrontmatter } from "./frontmatter";
+import { resolveColourPolicy, type ColourPolicy } from "./colour";
 import { wrapAnsi } from "./wrap";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
 import {
-  detectInlineColor,
   renderBr,
   renderCodespan,
   renderDel,
@@ -725,6 +725,30 @@ function stripEmojiTrailingSpace(body: string, codeRanges: ReadonlyArray<readonl
 }
 
 /**
+ * The policy a caller that passes none gets.
+ *
+ * **This is the one deliberate impurity in the threading, and it is the same impurity that
+ * was here before WP-1 of `plans/colour-policy.md` — moved, named, and made per-call.**
+ * `detectInlineColor()` used to be called from inside this function, and its answer was a
+ * `supports-color` module global resolved once for the whole process, before the first
+ * argument was ever parsed. This reads the environment *now*, at the call, through the one
+ * resolver, and any caller that wants determinism passes a policy instead.
+ *
+ * Keeping the default environment-derived rather than a flat `{color: false}` is load-bearing
+ * for exactly one consumer: the colour axis (`scripts/corpus.ts`) re-execs the sweep twice
+ * with the colour mode pinned in the child's environment and joins the two digest streams.
+ * A default that ignored the environment would make both children render identically — a
+ * gate that cannot fail, which is the shape the root `AGENTS.md` forbids by name.
+ */
+function defaultColourPolicy(): ColourPolicy {
+  return resolveColourPolicy({
+    env: process.env,
+    isTTY: process.stdout.isTTY === true,
+    platform: process.platform,
+  });
+}
+
+/**
  * Render a markdown document to ANSI for the terminal: the frontmatter block (when
  * present) as a readable metadata block, followed by the rendered prose body. Wires
  * `marked` as the lexer. **No renderer method here is `marked-terminal`'s, and neither is
@@ -781,6 +805,7 @@ export function renderDocumentDetailed(
   measure: Measure = NARROW_MEASURE,
   emojiOverride?: boolean,
   resolveFenceLanguageFor: FenceLanguageResolver = resolveFenceLanguage,
+  policy: ColourPolicy = defaultColourPolicy(),
 ): RenderResult {
   const { meta, body } = splitFrontmatter(source);
   // The divider is appended *into* `metaBlock` itself, before `metaLineOffset` below is
@@ -790,7 +815,8 @@ export function renderDocumentDetailed(
   // Matches the same rule text a `---` in the body would produce at this width/tier
   // (`renderRule`, shared with the `hr` override below) — present only when frontmatter
   // is present, so a document with none renders byte-identical to before this WP.
-  const metaResult = meta !== null ? formatMetaBlockDetailed(meta, targetWidth, measure) : null;
+  const metaResult =
+    meta !== null ? formatMetaBlockDetailed(meta, targetWidth, measure, policy.color) : null;
   const metaBlock =
     metaResult !== null ? `${metaResult.text}\n${renderRule(glyphs, targetWidth, measure)}\n\n` : "";
 
@@ -846,19 +872,24 @@ export function renderDocumentDetailed(
   // fence-language resolver as a seam, whether shortcode substitution runs, and whether
   // inline styling emits SGR codes at all.
   //
-  // `detectInlineColor()` is called once per render rather than once per style, and it
-  // asks the library rather than re-deriving `chalk`'s rule; see its doc comment for why a
-  // hand-rolled TTY check would have silently stopped colouring under CI. It is
-  // deliberately *not* `@colors/colors`' own `enabled` flag, which `src/table.ts` keeps
-  // for itself: two enablement rules in one binary is the existing, deliberate state, and
-  // unifying them here would change table output.
+  // The colour decision is `policy`'s, resolved by `src/colour.ts` from inputs handed in
+  // explicitly, and this is the only place it enters the render. It used to be
+  // `detectInlineColor()`, called here, re-deriving a `supports-color` module global that
+  // had already resolved — argv sniff included — before this function ever ran.
+  //
+  // It is still deliberately *not* `@colors/colors`' own `enabled` flag, which
+  // `src/table.ts` keeps for itself, nor `cli-highlight`'s bundled `chalk` level. Those are
+  // two remaining authorities that this decision cannot reach, and WP-2 of
+  // `plans/colour-policy.md` is what retires them; unifying them from here would change
+  // table output as a side effect of a threading change.
   const layout = createLayoutContext({
     width: targetWidth,
     glyphs,
     measure,
     resolveFenceLanguage: resolveFenceLanguageFor,
     emoji,
-    color: detectInlineColor(),
+    color: policy.color,
+    hyperlinks: policy.hyperlinks,
   });
 
   // **The extension object, owned** (WP-6 of `plans/marked-terminal-replacement.md`).
@@ -1471,6 +1502,15 @@ export function renderDocument(
   measure: Measure = NARROW_MEASURE,
   emojiOverride?: boolean,
   resolveFenceLanguageFor?: FenceLanguageResolver,
+  policy?: ColourPolicy,
 ): string {
-  return renderDocumentDetailed(source, targetWidth, glyphs, measure, emojiOverride, resolveFenceLanguageFor).text;
+  return renderDocumentDetailed(
+    source,
+    targetWidth,
+    glyphs,
+    measure,
+    emojiOverride,
+    resolveFenceLanguageFor,
+    policy,
+  ).text;
 }

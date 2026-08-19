@@ -8,6 +8,7 @@ crucible\-tui \- terminal markdown viewer (installed command: \fBmdview\fR)
 [\fB\-\-no\-pager\fR]
 [\fB\-\-check\fR]
 [\fB\-\-ascii\fR|\fB\-\-unicode\fR]
+[\fB\-\-color\fR[=\fIWHEN\fR]]
 [\fB\-\-help\fR]
 .br
 .B mdview view
@@ -154,6 +155,23 @@ Ignored, with a notice on standard error, when the ambiguous\-width setting is
 .B MDVIEW_AMBIGUOUS
 under ENVIRONMENT for why the Unicode tier cannot be laid out in that case.
 .TP
+.BR \-\-color [= \fIWHEN\fR ]
+When to emit colour:
+.BR auto " (the default), " always " or " never .
+A bare
+.B \-\-color
+means
+.BR \-\-color=always .
+Given more than once, the last occurrence wins. An unrecognized
+.I WHEN
+is an error, unlike the same value in
+.B MDVIEW_COLOR
+\(em a typo on the command line can be corrected now, where a typo in an
+exported variable would otherwise refuse every document for the rest of that
+shell's life. See
+.B MDVIEW_COLOR
+under ENVIRONMENT for the full resolution order.
+.TP
 .B \-\-probe
 Run the terminal ambiguous\-width diagnostic and exit, exactly as
 .B mdview probe
@@ -176,9 +194,16 @@ for one subcommand's own usage.
 .B XDG_CONFIG_HOME
 is unset,
 .IR ~/.config/mdview/config.json )
-User configuration, a JSON object. Currently one key of interest to normal
-use:
+User configuration, a JSON object. Two keys of interest to normal use:
 .RS
+.TP
+.B color
+.RB ( auto ", " always " or " never )
+A standing colour preference, below both
+.B \-\-color
+and
+.B MDVIEW_COLOR
+in the order given under ENVIRONMENT.
 .TP
 .B highlightAs
 An object mapping a fence language to a highlighter language, written by
@@ -251,6 +276,52 @@ were allocated for, and no re\-allocation can recover it. Every ASCII
 substitute is unambiguously one column. Set
 .B MDVIEW_AMBIGUOUS=narrow
 to get the box drawing back and accept the overflow.
+.TP
+.B MDVIEW_COLOR
+.RB ( auto ", " always " or " never )
+Whether to emit colour. An unrecognized or empty value is ignored with one
+line on standard error rather than rejected, exactly as for
+.BR MDVIEW_GLYPHS .
+.IP
+Resolution order, highest first:
+.BR \-\-color ;
+this variable;
+.BR NO_COLOR ;
+.BR FORCE_COLOR ;
+the config file's
+.B color
+key; and finally whether standard output is a terminal. Piped output is
+therefore colourless unless colour is asked for explicitly.
+.TP
+.B NO_COLOR
+Present at all \(em including set to an empty string \(em means never emit
+colour. See
+.IR https://no-color.org .
+It outranks
+.BR FORCE_COLOR ,
+deliberately: an exported
+.B NO_COLOR
+is a statement about this machine, where a
+.B FORCE_COLOR
+inherited from a parent process is not.
+.TP
+.B FORCE_COLOR
+.BR 0 " and " false
+mean never;
+an empty value,
+.BR true ", and " 1 " to " 3
+mean always. Any other value decides nothing and the next rule in the order
+above applies.
+.TP
+.B MDVIEW_HYPERLINKS
+.RB ( auto ", " always " or " never )
+Whether to emit OSC\-8 hyperlinks, which are an axis of their own: they are
+never emitted when standard output is not a terminal, whatever this or any
+colour setting says, and
+.B NO_COLOR
+does not affect them. On a terminal,
+.B auto
+(the default) asks what the terminal advertises.
 .TP
 .B MDVIEW_GLYPHS
 .RB ( ascii " or " unicode )

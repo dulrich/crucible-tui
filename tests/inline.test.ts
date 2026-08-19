@@ -2,7 +2,6 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { UNICODE_GLYPHS } from "../src/glyphs";
 import {
-  detectInlineColor,
   renderBr,
   renderCodespan,
   renderDel,
@@ -14,7 +13,7 @@ import {
 } from "../src/inline";
 import { createLayoutContext, type LayoutContext } from "../src/layout-context";
 import { NARROW_MEASURE } from "../src/width";
-import { inlineParityFailures, type ParityCase } from "./helpers/inline-parity";
+import { inlineParityCases, inlineParityFailures, type ParityCase } from "./helpers/inline-parity";
 
 const ESC = "\u001b";
 
@@ -48,49 +47,46 @@ const withChildren = (fields: Record<string, unknown>, text: string): Record<str
 });
 
 describe("inline visitors — byte parity with the marked-terminal methods they replaced", () => {
-  // `bun test` is never a TTY, so `chalk` is at level 0 here and both sides emit plain
-  // text. That half is real but blind to styling; the subprocess test below is the one
-  // that sees escape sequences. Running both is the point — see `tests/helpers/color.ts`.
+  // **All four combinations run in this process, and WP-1 of `plans/colour-policy.md` is
+  // what made that possible.** The coloured half used to need a fresh subprocess with
+  // `FORCE_COLOR` set before its module graph loaded, because the colour decision was a
+  // `supports-color` module global and nothing in-process could move it. It is a parameter
+  // now, so the table is built at the setting the test names and the two halves cost one
+  // process between them. (`tests/helpers/color.ts:15-46` still records the subprocess
+  // finding — it is still true for `cli-highlight`'s bundled `chalk`, which is WP-2's.)
   test("every case matches, colour off, shortcodes on", () => {
-    expect(detectInlineColor()).toBe(false);
-    expect(inlineParityFailures(true)).toEqual([]);
+    expect(inlineParityFailures(true, false)).toEqual([]);
   });
 
   test("every case matches, colour off, shortcodes off", () => {
-    expect(inlineParityFailures(false)).toEqual([]);
+    expect(inlineParityFailures(false, false)).toEqual([]);
   });
 
-  test("every case matches with colour forced on, in a fresh subprocess", async () => {
-    const helper = resolve(import.meta.dir, "helpers/inline-parity.ts");
-    const inlineModule = resolve(import.meta.dir, "../src/inline.ts");
-    const child = `
-      const argv = process.argv;
-      const { inlineParityFailures } = await import(argv[argv.length - 2]);
-      const { detectInlineColor } = await import(argv[argv.length - 1]);
-      process.stdout.write(JSON.stringify({
-        color: detectInlineColor(),
-        emojiOn: inlineParityFailures(true),
-        emojiOff: inlineParityFailures(false),
-      }));
-    `;
-    const proc = Bun.spawn(["bun", "-e", child, "--", helper, inlineModule], {
-      env: { ...process.env, FORCE_COLOR: "3" },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const exitCode = await proc.exited;
-    expect(exitCode, `subprocess stderr: ${stderr}`).toBe(0);
+  test("every case matches with colour on, shortcodes on", () => {
+    expect(inlineParityFailures(true, true)).toEqual([]);
+  });
 
-    const parsed = JSON.parse(stdout) as { color: boolean; emojiOn: ParityCase[]; emojiOff: ParityCase[] };
-    // If this is false the whole test is vacuous: the library emits no escape sequences
-    // at level 0, so a colour-blind comparison would pass whatever the owned emitters do.
-    expect(parsed.color).toBe(true);
-    expect(parsed.emojiOn).toEqual([]);
-    expect(parsed.emojiOff).toEqual([]);
+  test("every case matches with colour on, shortcodes off", () => {
+    expect(inlineParityFailures(false, true)).toEqual([]);
+  });
+
+  test("the colour-on table really is coloured — the two above are not vacuous", () => {
+    // The library emitted nothing at level 0, so a colour-blind comparison would pass
+    // whatever the owned emitters do. This is the assertion the old subprocess made with
+    // `detectInlineColor()`; it is made on the observed bytes now, which is stronger.
+    // `strong/plain` deliberately, not "some case": several inputs in this table carry an
+    // authored escape of their own (the nested-style cases hand a visitor an already-styled
+    // child on purpose), so "any case contains ESC" is true at both settings and would be a
+    // pin that cannot fail. This case's input is the four letters of the word.
+    const find = (cases: ParityCase[]): ParityCase => {
+      const entry = cases.find((candidate) => candidate.name === "strong/plain");
+      if (entry === undefined) throw new Error("the parity table lost its strong/plain case");
+      return entry;
+    };
+    const coloured = find(inlineParityCases(true, true));
+    expect(coloured.ours).toContain(ESC);
+    expect(coloured.theirs).toContain(ESC);
+    expect(find(inlineParityCases(true, false)).ours).not.toContain(ESC);
   });
 });
 
@@ -227,95 +223,66 @@ describe("inline visitors — the library behaviours that must not be tidied up"
     expect(literal).toContain(":rocket:");
   });
 });
-
-describe("detectInlineColor — the renderer's own enablement rule", () => {
-  test("it is off under a non-TTY test run, where chalk is at level 0", () => {
-    expect(detectInlineColor()).toBe(false);
-  });
-
-  test("it does not consult @colors/colors, which answers differently here", async () => {
-    // `src/table.ts` deliberately keeps `@colors`' environment-only rule, which says yes
-    // in this very process. If the two ever agreed by construction this assertion would
-    // be pointless; they do not, which is exactly why the decision is carried as a value.
-    const colors = (await import("@colors/colors/safe")).default as unknown as { enabled: boolean };
-    expect(colors.enabled).toBe(true);
-    expect(detectInlineColor()).toBe(false);
-  });
-
-  test("it is on in a subprocess with FORCE_COLOR set before module load", async () => {
-    const modulePath = resolve(import.meta.dir, "../src/inline.ts");
-    const proc = Bun.spawn(
-      [
-        "bun",
-        "-e",
-        `const { detectInlineColor } = await import(process.argv[process.argv.length - 1]);
-         process.stdout.write(String(detectInlineColor()));`,
-        "--",
-        modulePath,
-      ],
-      { env: { ...process.env, FORCE_COLOR: "3" }, stdout: "pipe", stderr: "pipe" },
-    );
-    const stdout = await new Response(proc.stdout).text();
-    expect(await proc.exited).toBe(0);
-    expect(stdout).toBe("true");
-  });
-});
-
 /**
- * The colour decision, pinned by behaviour rather than by implementation.
+ * The colour decision is no longer discovered here, and this is what replaced the two
+ * describes that used to discover it.
  *
- * WP-6 moved `detectInlineColor` off `marked-terminal`'s `chalk` probe and onto
- * `supports-color`, the library `chalk` is a wrapper over, on the evidence of a 36-cell
- * environment matrix the two agreed on completely (see `src/inline.ts`). These four cases
- * are the part of that matrix a test can run without a pty, and they are chosen for one
- * property: **each one fails if the rule is ever replaced by a TTY check.** A hand-rolled
- * `process.stdout.isTTY` answers *false* for all four, so a reimplementation that "looked
- * fine locally" cannot pass them. Each runs in a fresh subprocess because the answer is
- * resolved at module load, exactly as `chalk`'s level was.
+ * Until WP-1 of `plans/colour-policy.md` this file ended with `detectInlineColor` — one
+ * block asserting it was false under `bun test` and disagreed with `@colors/colors`, and
+ * one running five environment cases through fresh subprocesses because the answer
+ * resolved at module load and could not be varied in-process. That function is gone; the
+ * behaviour those cases covered is `tests/colour.test.ts`'s, where it is a pure function
+ * over an environment record and needs no subprocess for any of it.
+ *
+ * What stays here is the part that is about **this module**: nothing in it reads a global
+ * to decide anything, so a flag on the command line cannot change what a visitor emits.
  */
-describe("detectInlineColor — the environment cases a TTY check would get wrong", () => {
-  const ask = async (env: Record<string, string>, argv: string[] = []): Promise<string> => {
-    const modulePath = resolve(import.meta.dir, "../src/inline.ts");
+describe("the inline visitors take the colour decision and read nothing else", () => {
+  test("a --color flag in the wrapper argv is inert — the decision comes from the context", async () => {
+    // `supports-color@7.2.0` scanned the whole of `process.argv` for `--color` through
+    // `has-flag`, so **this exact invocation used to render styled output**: a flag aimed at
+    // `bun`, or at nothing at all, silently turned styling on inside the renderer. That
+    // sniff is what WP-1 deleted, and this is its regression pin. It is a subprocess because
+    // argv is the thing under test and this process's own argv belongs to the test runner.
+    const glyphsPath = resolve(import.meta.dir, "../src/glyphs.ts");
+    const inlinePath = resolve(import.meta.dir, "../src/inline.ts");
+    const contextPath = resolve(import.meta.dir, "../src/layout-context.ts");
+    const child = `
+      const argv = process.argv;
+      const { UNICODE_GLYPHS } = await import(argv[argv.length - 3]);
+      const { renderStrong } = await import(argv[argv.length - 2]);
+      const { createLayoutContext } = await import(argv[argv.length - 1]);
+      const ctx = createLayoutContext({
+        width: 80,
+        glyphs: UNICODE_GLYPHS,
+        measure: Object.assign((text) => text.length, { ambiguous: "narrow" }),
+        resolveFenceLanguage: (raw) => raw,
+        emoji: false,
+        color: false,
+      });
+      const inner = { type: "text", raw: "loud", text: "loud" };
+      const token = { type: "strong", raw: "loud", text: "loud", tokens: [inner] };
+      const parse = (tokens) => tokens.map((entry) => entry.text ?? "").join("");
+      process.stdout.write(renderStrong(ctx, token, parse));
+    `;
     const proc = Bun.spawn(
-      [
-        "bun",
-        "-e",
-        `const { detectInlineColor } = await import(process.argv[process.argv.length - 1]);
-         process.stdout.write(String(detectInlineColor()));`,
-        // After the `--`, deliberately: `bun -e` consumes anything flag-shaped before it,
-        // so a flag placed earlier never reaches the child's `process.argv` and the case
-        // would pass or fail for a reason that has nothing to do with the rule under test.
-        "--",
-        ...argv,
-        modulePath,
-      ],
-      { env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" },
+      // After the `--`, deliberately: `bun -e` consumes anything flag-shaped before it, so a
+      // flag placed earlier never reaches the child's `process.argv` at all and the case
+      // would pass for a reason that has nothing to do with the rule under test.
+      ["bun", "-e", child, "--", "--color", glyphsPath, inlinePath, contextPath],
+      { stdout: "pipe", stderr: "pipe" },
     );
-    const stdout = await new Response(proc.stdout).text();
-    expect(await proc.exited).toBe(0);
-    return stdout;
-  };
-
-  test("FORCE_COLOR=1 turns it on with no TTY anywhere", async () => {
-    expect(await ask({ FORCE_COLOR: "1" })).toBe("true");
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    expect(await proc.exited, `subprocess stderr: ${stderr}`).toBe(0);
+    expect(stdout).toBe("loud");
+    expect(stdout).not.toContain(ESC);
   });
 
-  test("FORCE_COLOR=false turns it off, and is not read as the truthy string it is", async () => {
-    expect(await ask({ FORCE_COLOR: "false" })).toBe("false");
-  });
-
-  test("a --color flag on the command line turns it on", async () => {
-    expect(await ask({}, ["--color"])).toBe("true");
-  });
-
-  test("an empty FORCE_COLOR still means on — presence is the signal, not the value", async () => {
-    expect(await ask({ FORCE_COLOR: "" })).toBe("true");
-  });
-
-  test("--no-color turns it off, and loses to an explicit FORCE_COLOR", async () => {
-    expect(await ask({}, ["--no-color"])).toBe("false");
-    // Measured, not assumed, and it is the order the replaced `chalk` probe also had:
-    // the environment variable is consulted first and short-circuits the flag sniff.
-    expect(await ask({ FORCE_COLOR: "1" }, ["--no-color"])).toBe("true");
+  test("the same visitor with the decision set the other way does emit, so the pin is not vacuous", () => {
+    const token = asToken(withChildren({ type: "strong" }, "loud"));
+    expect(renderStrong(context({ color: true }), token, parse)).toBe(`${ESC}[1mloud${ESC}[22m`);
   });
 });
