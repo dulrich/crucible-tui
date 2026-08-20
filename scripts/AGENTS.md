@@ -523,12 +523,17 @@ the coloured side moves). **G2 since WP-5 is the same check, restated exactly**:
 (hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `src/frontmatter.ts`'s
 `DIM_START`/`DIM_END`, both unconditional. The second went behind the policy at WP-1,
 taking the measured number to **5** — `simple.md`'s wiki-link alone — and WP-4 took the
-first, closing the mechanism entirely. The wiki-link's label is marked through the lexer by
-carrier control characters (`src/wikilink.ts`) and styled after the walk through
-`src/style.ts` under the resolved policy; the colourless render of `simple.md` lost exactly
-those four escape codes and not one visible character, at every width and both tiers. **G1
-since WP-5 is what would have caught either mechanism directly**, on the `default` child,
-without needing a colourless-render side-channel to notice.
+first, closing the mechanism entirely. At that point the wiki-link's label was marked
+through the lexer by carrier control characters (`src/wikilink.ts`) and styled after the
+walk through `src/style.ts` under the resolved policy; the colourless render of
+`simple.md` lost exactly those four escape codes and not one visible character, at every
+width and both tiers. **The carrier pair itself is gone now too** — WP-2 of
+`plans/wiki-link-tokenizer.md` (`ab3518e`) retired it, moving recognition into the lexer as
+an inline tokenizer extension and styling the label at emission instead of after the walk —
+so there is no post-walk pass left to describe here at all; see `src/AGENTS.md`, "The
+wiki-link carrier defect", for that closure. **G1 since WP-5 is what would have caught
+either of the two retired mechanisms directly**, on the `default` child, without needing a
+colourless-render side-channel to notice.
 
 **OSC-8 used to be outside what this can see, and WP-3 brought it inside; WP-5's wire
 record is what makes it a first-class gate input.** `stripAnsi` (`src/list-lines.ts`)
@@ -579,7 +584,7 @@ is keyed to `full`; the hue/format split itself is applied once, by style name, 
 | `src/blocks.ts:151,195,213,426,457,518` | its block call sites — code, hr, html, heading, paragraph, blockquote | via `applyStyle` |
 | `src/lists.ts:380` | its list-item call site | via `applyStyle` |
 | `src/inline.ts`'s `renderLink`, through `src/ansi.ts`'s `link` | **OSC-8**, not SGR, plus the tmux DCS envelope | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken. The *emitter* was `ansiEscapes.link` until WP-3 of the same plan; it is this repo's transcription now, and the href is sanitized at emission |
-| `src/wikilink.ts` (`styleWikiLinkCarriers`) | the wiki-link label's cyan+underline, applied **after the walk** over a balanced carrier pair; under `formats` the cyan drops and the underline stays — the only two-link chain here with one link of each class | **yes** — via `applyStyle` under the resolved policy, since WP-4 of `plans/colour-policy.md`. It was `src/render.ts:62-65`'s `styleWikiLink`: a hardcoded `[36m[4m…` injected **before the lexer**, at every colour level, obeying nothing — the last row in this table that answered **no**, and the last tool-generated escape entering the lexer's input |
+| `src/wikilink.ts` (`styleWikiLabel`) | the wiki-link label's cyan+underline, applied **at emission** — the tokenizer extension lexes the label into child tokens and the prose visitor styles the rendered result through `src/style.ts`'s shared `applyStyleChain`; under `formats` the cyan drops and the underline stays — the only two-link chain here with one link of each class | **yes** — via `applyStyleChain` → `applyStyle` under the resolved policy. Two mechanisms preceded this one, both retired, both left the same trail: it was `src/render.ts:62-65`'s `styleWikiLink` (hardcoded `[36m[4m…` injected **before the lexer**, at every colour level, obeying nothing — the last row in this table that ever answered **no**) until WP-4 of `plans/colour-policy.md` replaced it with a carrier pair styled **after the walk**; WP-2 of `plans/wiki-link-tokenizer.md` (`ab3518e`) then retired the carrier pair too, moving recognition into the lexer itself, so there is no longer a post-walk pass or a carrier to account for |
 | `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit argument since WP-1 (`color`, widened to `sgr` at WP-2 of `plans/colour-modes.md`), through `src/style.ts`'s plain wrap since WP-2 of `plans/colour-policy.md`; it was two hardcoded constants and no decision at all. `dim` is **format**-class, so a metadata block renders identically under `full` and `formats` |
 | `src/table.ts` (`styleBorder`/`styleHead`) | `grey`/`bold` for borders and headers | **yes** — `renderTable`'s `sgr` argument (`color` until WP-2 of `plans/colour-modes.md`); it was `@colors/colors`' own module-load answer, which did not consult `isTTY`. It is the producer the mode split divides: **bold heads survive `formats`, grey borders do not** |
 | `src/blocks.ts`'s `highlightCode` | the syntax theme inside fences | **yes, and at a narrower threshold than every other row** — `ctx.sgr !== "full"` returns raw code (WP-2 of `plans/colour-modes.md`, Decision 3's named producer exception), where it was `ctx.color` from WP-2 of `plans/colour-policy.md` and `cli-highlight`'s bundled `chalk` level, decided at module load, before that. **This is the one site in the renderer where provenance rather than style class decides**, and it is why a `formats` render's fences are byte-identical to a `none` render's |

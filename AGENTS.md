@@ -92,17 +92,22 @@ src/render.ts       marked lexer wiring, the owned renderer object, the two
                     and the post-compose list wrap
 src/walk.ts         the owned token walk — TokenWalker, which replaced marked's
                     Parser as the tree walker (WP-2 of plans/own-the-token-walk.md);
-                    the whole Parser contract, cited site by site, in its header
+                    the whole Parser contract, cited site by site, in its header;
+                    since WP-2 of plans/wiki-link-tokenizer.md it also dispatches one
+                    repo-local token type (wikilink) that marked's own Parser never
+                    had a row for
 src/layout-context.ts  the one immutable per-render value the visitors read —
                     width, glyph tier, Measure, prefix stack, fence-language
                     resolver, emoji and colour (WP-2)
 src/inline.ts       the owned inline visitors, the emoji pass and the colon
                     sentinel (WP-2)
-src/wikilink.ts     wiki-link recognition (frozen), the carrier pair (code points
-                    2/3) that marks a label through the lexer and the walk, and the
-                    post-walk pass that styles each balanced pair through
-                    src/style.ts and strips every carrier; replaced styleWikiLink's
-                    pre-lexer SGR (WP-4 of plans/colour-policy.md)
+src/wikilink.ts     wiki-link recognition — the inline tokenizer extension marked's
+                    lexer dispatches inside its own lexing pass, the WikiLinkToken it
+                    produces, and the prose visitor (styleWikiLabel) that styles a
+                    label at emission through src/style.ts's applyStyleChain;
+                    replaced the carrier-pair pre-lexer/post-walk mechanism (WP-2 of
+                    plans/wiki-link-tokenizer.md), which had itself replaced
+                    styleWikiLink's pre-lexer SGR (WP-4 of plans/colour-policy.md)
 src/colour.ts       the one colour/hyperlink decision — resolveColourPolicy over
                     the ratified precedence matrix, and owned OSC-8 terminal
                     detection; reads no process state at all (WP-1 of
@@ -425,13 +430,30 @@ violated all three halves of the rule at once: it decided (nothing gated it), it
 (bytes no committed table authorized), and it put tool-generated escapes into the one input
 every downstream claim is about. `src/wikilink.ts` replaced it with a **carrier pair** —
 control code points 2 and 3, the same idiom the two existing sentinels use — marking the
-label through the lexer and the walk; a pass over the finished document styles each balanced
-pair through `src/style.ts` under the resolved policy and removes every carrier, balanced or
-not. **No ESC byte this tool generates now enters the lexer** (asserted directly, by
-comparing authored-ESC positions and counts across `preprocessBody` rather than by demanding
-ESC absence, which Decision 1's fidelity rule for authored escapes forbids). The colour axis
-over the fixed gate corpus reads `sgrAny` **5 → 0** with `charDiff=0` held, and the
-forced-colour render did not move a byte in any of the 84 colour-on combos measured.
+label through the lexer and the walk; a pass over the finished document styled each balanced
+pair through `src/style.ts` under the resolved policy and removed every carrier, balanced or
+not. The colour axis over the fixed gate corpus read `sgrAny` **5 → 0** with `charDiff=0`
+held, at that WP-4-of-`plans/colour-policy.md` cutover, and the forced-colour render did not
+move a byte in any of the 84 colour-on combos measured then.
+
+**That carrier pair is itself gone now, and the invariant it served got stronger rather than
+merely surviving the change.** WP-2 of `plans/wiki-link-tokenizer.md` (`ab3518e`) moved
+recognition into marked's own lexing pass, as an inline **tokenizer extension**
+(`wikiLinkExtension`, `src/wikilink.ts`), so a `WikiLinkToken`'s label is lexed into child
+tokens at tokenize time and styled at emission — `styleWikiLabel` over the shared
+`applyStyleChain` (`src/style.ts`), the same authority every other styled span already
+uses — with nothing left to carry between the source and the walk. **No ESC byte this tool
+generates enters the lexer** (asserted directly, by comparing authored-ESC positions and
+counts across `preprocessBody` rather than by demanding ESC absence, which Decision 1's
+fidelity rule for authored escapes forbids), and that claim no longer rests on carrier
+accounting at all: **no tool-generated carrier byte exists any more**, because the tokenizer
+is simply never offered a position inside a `code` token, a block `html` token, a formed
+codespan, or a link/image destination or title — there is nothing to strip because nothing
+is ever written. The gate corpus did not move a byte across that cutover either, verified by
+three env-pinned render-diff runs against the pre-cutover commit (`9c19997`):
+`combos=280 diffed=0 ok=true`, under `FORCE_COLOR=0`, `FORCE_COLOR=3`, and
+`MDVIEW_COLOR=never`. See `src/AGENTS.md`, "The wiki-link carrier defect", for the full
+record.
 
 **And the same module is what layout reads.** The dependency-ownership rule is about who
 *decides* and who *emits*; WP-3 added the third question — what layout can *see* — because
