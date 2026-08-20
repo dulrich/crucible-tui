@@ -909,3 +909,204 @@ describe("witness: WP-14 -- inline markup inside a list item (tests/fixtures/wit
     for (const line of lines) expect(stringWidth(stripAnsi(line))).toBeLessThanOrEqual(80);
   });
 });
+
+/**
+ * **The task-state surface is user-withheld ground, and this block is the fence around it**
+ * — grant C1 of `plans/wiki-link-tokenizer.md`, enforcing the boundary at WP-1 so WP-2
+ * cannot cross it by accident.
+ *
+ * The wiki-link fix carries a **class-C exception**: it is allowed to change rendered bytes
+ * inside recorded `codeRanges`, because a verbatim context losing its authored brackets is
+ * the defect being repaired. The task-state pre-pass shares a mechanism with it — both are
+ * unguarded pre-lexer substitutions in `preprocessBody` reaching indented code — and its
+ * *own* class-C exception was requested at WP-4 of `plans/renderer-deferred-work.md` and
+ * **the user withheld it** (`src/render.ts:186-213`; `src/AGENTS.md`, "The task-state
+ * pre-pass"). The two defects are independently dispositioned: repairing one does not
+ * authorize repairing the other, and **any task-state byte that moves anywhere is a
+ * defect**, not a side effect the wiki-link grant covers.
+ *
+ * So these pin the *output* of a surface no package in this plan may edit, across the full
+ * axis the grant names — **Unicode/ASCII x `none`/`formats`/`full`** (cycle-3 f5) — with
+ * task states adjacent to wiki-links on the same line, on neighbouring lines, and in the
+ * fenced, blockquoted, ordered and indented-code variants that reach the pre-pass by
+ * different routes. **WP-2 holds them unmodified.** If one fails at WP-2, the cutover has
+ * moved a task-state byte and the correct response is to stop, not to re-pin.
+ *
+ * The last case is the sharp one: `    - [ ] indented [[note]]` is a line inside a recorded
+ * `codeRange` where **both** pre-passes fire — the task-state rewrite (`[ ]` to the glyph,
+ * the 84-line class-C defect this repo carries deliberately) and the wiki-link
+ * substitution. WP-2 repairs the wiki-link half of that line under C1 and must leave the
+ * task-state half exactly as it is, which is a distinction only a byte-exact pin can hold.
+ */
+describe("task-state adjacency — held unmodified through the tokenizer cutover", () => {
+  const ESC = String.fromCharCode(27);
+  const NONE = { sgr: "none", hyperlinks: false, tmux: false } as const;
+  const FORMATS = { sgr: "formats", hyperlinks: false, tmux: false } as const;
+  const FULL = { sgr: "full", hyperlinks: false, tmux: false } as const;
+  const POLICIES = [
+    ["none", NONE],
+    ["formats", FORMATS],
+    ["full", FULL],
+  ] as const;
+
+  /** `none`, `formats`, `full` — in that order, matching `POLICIES`. */
+  type ByMode = readonly [string, string, string];
+
+  interface AdjacencyCase {
+    readonly name: string;
+    readonly source: string;
+    readonly unicode: ByMode;
+    readonly ascii: ByMode;
+    readonly codeRanges: Array<[number, number]>;
+  }
+
+  const cases: AdjacencyCase[] = [
+    {
+      name: "GFM states on the same line as a wiki-link",
+      source: "- [ ] todo with [[note]]\n- [x] done with [[note]]\n",
+      unicode: [
+        "    • ○ todo with note\n    • ✓ done with note\n\n",
+        `    • ${ESC}[0m○ todo with ${ESC}[4mnote${ESC}[24m${ESC}[0m\n    • ${ESC}[0m✓ done with ${ESC}[4mnote${ESC}[24m${ESC}[0m\n\n`,
+        `    • ${ESC}[0m○ todo with ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n    • ${ESC}[0m✓ done with ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n\n`,
+      ],
+      ascii: [
+        "    - [ ] todo with note\n    - [x] done with note\n\n",
+        `    - ${ESC}[0m[ ] todo with ${ESC}[4mnote${ESC}[24m${ESC}[0m\n    - ${ESC}[0m[x] done with ${ESC}[4mnote${ESC}[24m${ESC}[0m\n\n`,
+        `    - ${ESC}[0m[ ] todo with ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n    - ${ESC}[0m[x] done with ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n\n`,
+      ],
+      codeRanges: [],
+    },
+    {
+      name: "a custom Obsidian state on the same line as a wiki-link",
+      // `[/]` is invisible to GFM's tasklist regex, so the pre-pass is the *only* thing
+      // rendering it as a glyph — the branch that makes the pass irreplaceable.
+      source: "- [/] partial with [[note]]\n",
+      unicode: [
+        "    • ◐ partial with note\n\n",
+        `    • ${ESC}[0m◐ partial with ${ESC}[4mnote${ESC}[24m${ESC}[0m\n\n`,
+        `    • ${ESC}[0m◐ partial with ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n\n`,
+      ],
+      ascii: [
+        "    - [/] partial with note\n\n",
+        `    - ${ESC}[0m[/] partial with ${ESC}[4mnote${ESC}[24m${ESC}[0m\n\n`,
+        `    - ${ESC}[0m[/] partial with ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n\n`,
+      ],
+      codeRanges: [],
+    },
+    {
+      name: "task items on the lines either side of a wiki-link item",
+      source: "- [ ] plain todo\n- see [[note]]\n- [x] plain done\n",
+      unicode: [
+        "    • ○ plain todo\n    • see note\n    • ✓ plain done\n\n",
+        `    • ${ESC}[0m○ plain todo${ESC}[0m\n    • ${ESC}[0msee ${ESC}[4mnote${ESC}[24m${ESC}[0m\n    • ${ESC}[0m✓ plain done${ESC}[0m\n\n`,
+        `    • ${ESC}[0m○ plain todo${ESC}[0m\n    • ${ESC}[0msee ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n    • ${ESC}[0m✓ plain done${ESC}[0m\n\n`,
+      ],
+      ascii: [
+        "    - [ ] plain todo\n    - see note\n    - [x] plain done\n\n",
+        `    - ${ESC}[0m[ ] plain todo${ESC}[0m\n    - ${ESC}[0msee ${ESC}[4mnote${ESC}[24m${ESC}[0m\n    - ${ESC}[0m[x] plain done${ESC}[0m\n\n`,
+        `    - ${ESC}[0m[ ] plain todo${ESC}[0m\n    - ${ESC}[0msee ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n    - ${ESC}[0m[x] plain done${ESC}[0m\n\n`,
+      ],
+      codeRanges: [],
+    },
+    {
+      name: "a fenced task line beside a real one — the fence toggle guards both pre-passes",
+      source: "```\n- [ ] fenced [[note]]\n```\n\n- [ ] real [[note]]\n",
+      unicode: [
+        "    - [ ] fenced [[note]]\n\n    • ○ real note\n\n",
+        `    - [ ] fenced [[note]]\n\n    • ${ESC}[0m○ real ${ESC}[4mnote${ESC}[24m${ESC}[0m\n\n`,
+        `    - [ ] fenced ${ESC}[31m[[note]]${ESC}[39m\n\n    • ${ESC}[0m○ real ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n\n`,
+      ],
+      ascii: [
+        "    - [ ] fenced [[note]]\n\n    - [ ] real note\n\n",
+        `    - [ ] fenced [[note]]\n\n    - ${ESC}[0m[ ] real ${ESC}[4mnote${ESC}[24m${ESC}[0m\n\n`,
+        `    - [ ] fenced ${ESC}[31m[[note]]${ESC}[39m\n\n    - ${ESC}[0m[ ] real ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n\n`,
+      ],
+      // The `31m` on the fenced brackets is the syntax highlighter's own guess over the
+      // code range's content, not this tool styling a wiki-link — the fence keeps both
+      // pre-passes off that line, which is why the brackets are still there to highlight.
+      codeRanges: [[1, 1]],
+    },
+    {
+      name: "a task item inside a blockquote — the position the line-anchored regex cannot reach",
+      source: "> - [ ] quoted [[note]]\n",
+      unicode: [
+        "        • ○ quoted note\n\n",
+        `${ESC}[3m        • ${ESC}[0m○ quoted ${ESC}[4mnote${ESC}[24m${ESC}[0m${ESC}[23m\n\n`,
+        `${ESC}[90m${ESC}[3m        • ${ESC}[0m○ quoted ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m${ESC}[23m${ESC}[39m\n\n`,
+      ],
+      ascii: [
+        "        - [ ] quoted note\n\n",
+        `${ESC}[3m        - ${ESC}[0m[ ] quoted ${ESC}[4mnote${ESC}[24m${ESC}[0m${ESC}[23m\n\n`,
+        `${ESC}[90m${ESC}[3m        - ${ESC}[0m[ ] quoted ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m${ESC}[23m${ESC}[39m\n\n`,
+      ],
+      codeRanges: [],
+    },
+    {
+      name: "a task item in an ordered list — the other position `renderTaskState` covers",
+      source: "1. [ ] ordered [[note]]\n",
+      unicode: [
+        "    1. ○ ordered note\n\n",
+        `    1. ${ESC}[0m○ ordered ${ESC}[4mnote${ESC}[24m${ESC}[0m\n\n`,
+        `    1. ${ESC}[0m○ ordered ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n\n`,
+      ],
+      ascii: [
+        "    1. [ ] ordered note\n\n",
+        `    1. ${ESC}[0m[ ] ordered ${ESC}[4mnote${ESC}[24m${ESC}[0m\n\n`,
+        `    1. ${ESC}[0m[ ] ordered ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m\n\n`,
+      ],
+      codeRanges: [],
+    },
+    {
+      name: "both pre-passes firing on one line inside a recorded codeRange",
+      // The sharp case. `[ ]` becomes the tier's glyph here *inside* a code range — the
+      // 84-line class-C defect this repo carries on purpose — and the wiki-link
+      // substitution corrupts the same line beside it. WP-2 repairs the second half under
+      // C1 and must leave the first byte-for-byte.
+      source: "Intro.\n\n    - [ ] indented [[note]]\n",
+      unicode: [
+        "Intro.\n\n    - ○ indented note\n\n",
+        `${ESC}[0mIntro.${ESC}[0m\n\n    - ○ indented ${ESC}[4mnote${ESC}[24m\n\n`,
+        `${ESC}[0mIntro.${ESC}[0m\n\n    - ○ indented ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m\n\n`,
+      ],
+      ascii: [
+        "Intro.\n\n    - [ ] indented note\n\n",
+        `${ESC}[0mIntro.${ESC}[0m\n\n    - [ ] indented ${ESC}[4mnote${ESC}[24m\n\n`,
+        `${ESC}[0mIntro.${ESC}[0m\n\n    - [ ] indented ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m\n\n`,
+      ],
+      codeRanges: [[3, 3]],
+    },
+  ];
+
+  for (const entry of cases) {
+    for (const [tier, glyphs, expected] of [
+      ["unicode", UNICODE_GLYPHS, entry.unicode] as const,
+      ["ascii", ASCII_GLYPHS, entry.ascii] as const,
+    ]) {
+      POLICIES.forEach(([mode, policy], index) => {
+        // noUncheckedIndexedAccess: `ByMode` is a fixed triple and `POLICIES` is the same
+        // length, so the index is total — the local is what says so to the compiler.
+        const want = expected[index] as string;
+        test(`${entry.name} (${tier}, ${mode})`, () => {
+          const result = renderDocumentDetailed(
+            entry.source,
+            80,
+            glyphs,
+            undefined,
+            undefined,
+            undefined,
+            policy,
+          );
+          expect(result.text).toBe(want);
+          expect(result.codeRanges).toEqual(entry.codeRanges);
+        });
+      });
+    }
+  }
+
+  test("the axis is the full one the grant names — 7 shapes x 2 tiers x 3 modes", () => {
+    // A guard on the guard: shrinking the axis is how a fence like this goes quietly
+    // inert, and cycle-3 f5 added the colour axis precisely because it was missing.
+    expect(cases.length).toBe(7);
+    expect(POLICIES.length).toBe(3);
+  });
+});
