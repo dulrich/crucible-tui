@@ -3,9 +3,10 @@
 A terminal markdown viewer built for reading the documents a working repo actually
 produces — long plans, execution briefs, `INITIATIVE.md` files — rather than for
 rendering a blog post. Frontmatter becomes a labelled metadata block instead of being
-stripped or dumped as raw YAML; wide tables are wrapped losslessly, columns shrinking
-proportionally to a floor rather than overflowing the terminal or truncating a cell;
-prose and lists reflow ANSI-safely at the target width, correctly at every nesting
+stripped or dumped as raw YAML; wide tables are wrapped losslessly — no cell is ever
+truncated, and columns shrink proportionally to a floor — though a table too wide even
+at that floor emits at its minimum feasible width and can still exceed the terminal
+width; prose and lists reflow ANSI-safely at the target width, correctly at every nesting
 depth, in both tight and loose Markdown list styles; fenced code always passes through
 byte-for-byte, so a pasted command stays pasteable.
 
@@ -40,15 +41,16 @@ bun run src/cli.ts <file.md>
 ```
 
 A roff man page ships at `man/crucible-tui.1`; `bun run install:man` symlinks it in as
-`mdview.1` so `man mdview` resolves.
+both `mdview.1` and `crucible-tui.1`, so `man mdview` and `man crucible-tui` both
+resolve.
 
 ## Usage
 
 ```bash
-mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--help] [--licenses]
+mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--probe] [--help] [--licenses]
 mdview view <file.md> [options...]        # spelled-out form of the bare invocation above
 mdview highlight-as <fence> <language>    # map a fence's declared language to a highlighter language
-mdview probe [--refresh]                  # how does this terminal draw ambiguous-width characters?
+mdview probe [--refresh] [--no-cache] [--timeout MS]  # how does this terminal draw ambiguous-width characters?
 mdview help [subcommand]
 ```
 
@@ -64,6 +66,13 @@ straight through to it.
   Mutually exclusive.
 - `--color[=auto|always|never]` — when to emit colour (below). Bare `--color` means
   `--color=always`; repeated, the last one wins; an unrecognized value is an error.
+- `--no-color` — alias for `--color=never`.
+- `--plain` — emit nothing of this tool's own: no SGR colour codes, no OSC-8
+  hyperlinks. Absolute — it overrides every other colour and hyperlink input, including
+  a malformed `MDVIEW_COLOR` or `MDVIEW_HYPERLINKS`, neither of which is even read under
+  `--plain` (so no warning about either is printed).
+- `--hyperlinks[=auto|always|never]` — when to emit OSC-8 hyperlinks (below). Same
+  conventions as `--color`.
 - `--probe` — run the ambiguous-width diagnostic (below) and exit; the flag spelling of
   `mdview probe`. Takes no file argument.
 - `--help`, `-h` — print usage (top-level, or a subcommand's own) and exit.
@@ -80,19 +89,31 @@ producing an unhighlighted fence later. `dataviewjs` → `javascript` and `datav
 ### Config
 
 JSON at `$XDG_CONFIG_HOME/mdview/config.json` (or `~/.config/mdview/config.json` if
-`XDG_CONFIG_HOME` is unset). Two keys of interest to normal use:
+`XDG_CONFIG_HOME` is unset). Five keys:
 
 ```json
 {
   "highlightAs": {
     "dataviewjs": "javascript"
   },
-  "color": "auto"
+  "emoji": true,
+  "color": "auto",
+  "hyperlinks": "auto"
 }
 ```
 
-`color` is `"auto"`, `"always"` or `"never"` — a standing preference that loses to both
-`--color` and `MDVIEW_COLOR` (see "Colour" below).
+- `highlightAs` — fence-language aliases, layered over the built-in `dataviewjs` →
+  `javascript` and `dataview` → `sql` map; written by `mdview highlight-as` (above).
+- `emoji` — `true` or `false`, overriding the glyph-tier default for `:shortcode:`
+  substitution (Unicode substitutes a glyph, ASCII keeps the literal shortcode); unset
+  follows the tier.
+- `color` — `"auto"`, `"always"` or `"never"` — a standing preference that loses to both
+  `--color` and `MDVIEW_COLOR` (see "Colour" below).
+- `hyperlinks` — `"auto"`, `"always"` or `"never"` — its own axis, independent of
+  `color`; loses to both `--hyperlinks` and `MDVIEW_HYPERLINKS`, and outranks terminal
+  detection (see "Colour" below).
+- `corpusManifest` — developer tooling: points the corpus sweep (`scripts/sweep.ts`) at
+  a manifest file. Not consulted by normal rendering.
 
 Reading is lenient — a missing file is normal, and a malformed one degrades to
 defaults with a one-line notice on stderr rather than a stack trace, still rendering
@@ -120,21 +141,69 @@ terminal would have shown.
 
 Resolution order, highest precedence first:
 
-1. `--color=auto|always|never` (bare `--color` = `always`).
-2. `MDVIEW_COLOR=auto|always|never`. An unrecognized value is ignored with one line on
+1. `--plain` — absolute. Nothing below is even consulted under it, so a malformed
+   `MDVIEW_COLOR` produces no warning either; see "What `never` still emits" below for
+   what it silences that a `never` directive does not.
+2. `--color=auto|always|never` (bare `--color` = `always`).
+3. `MDVIEW_COLOR=auto|always|never`. An unrecognized value is ignored with one line on
    stderr, never an error — the same contract as `MDVIEW_GLYPHS`.
-3. `NO_COLOR` — **present at all, even empty, means never** ([no-color.org][no-color]).
-4. `FORCE_COLOR` — `0` and `false` mean never; empty, `true` and `1`–`3` mean always;
+4. `NO_COLOR` — **present at all, even empty, means never** ([no-color.org][no-color]).
+5. `FORCE_COLOR` — `0` and `false` mean never; empty, `true` and `1`–`3` mean always;
    any other value decides nothing and the next rule applies.
-5. The config file's `color` key.
-6. Whether stdout is a terminal.
+6. The config file's `color` key.
+7. Whether stdout is a terminal.
 
 [no-color]: https://no-color.org
 
-**OSC-8 hyperlinks are a separate axis.** They are never emitted off a terminal, whatever
-the colour setting says — a pipe cannot render one. On a terminal,
-`MDVIEW_HYPERLINKS=auto|always|never` decides, and `auto` (the default) asks what the
-terminal advertises. `NO_COLOR` does not turn hyperlinks off.
+#### What `never` still emits
+
+An explicit `never` directive — `--color=never`, `--no-color`, `MDVIEW_COLOR=never`, or
+config `"color": "never"` — is not the same as byte-silence. It means *no hue*: bold,
+dim, italic, underline and strikethrough are still emitted; only the seven colour codes
+are dropped. True byte-silence — nothing of this tool's own emitted at all — comes only
+from a kill-switch (`NO_COLOR` present, `FORCE_COLOR=0`), a non-terminal destination, or
+`--plain`.
+
+One consequence follows directly: fenced-code syntax highlighting runs under full colour
+only, so under any `never` directive a code fence renders with no highlighting at all —
+the same bytes a fence gets under true colourless output, even though the rest of the
+page still carries its bold, dim, italic, underline and strikethrough formatting.
+
+**OSC-8 hyperlinks are a separate axis.** What gets hyperlinked is markdown links
+(`[text](url)`), wrapped as an OSC-8 escape sequence and DCS-wrapped when running inside
+tmux so the sequence survives the multiplexer. They are never emitted off a terminal,
+whatever the colour setting says — a pipe cannot render one — and `--plain` turns them
+off absolutely. On a terminal, resolution order is `--hyperlinks=auto|always|never`
+(bare `--hyperlinks` = `always`), then `MDVIEW_HYPERLINKS=auto|always|never`, then the
+config file's `hyperlinks` key, then terminal detection: `auto` (the default) asks what
+the terminal advertises. `NO_COLOR` does not turn hyperlinks off.
+
+### Wiki-links
+
+Obsidian-style `[[slug]]` syntax is recognized in the lexer's own pass, not bolted on
+afterward. Four forms:
+
+- `[[slug]]` — renders `slug` as the label.
+- `[[slug|Alias]]` — renders `Alias` as the label; inline markup inside the label is
+  itself rendered, because the label is lexed the same way any other inline content is.
+- `[[slug#fragment|Alias]]` — the same, with the fragment discarded from the rendered
+  label.
+- `![[target]]` — an embed, rendered as `embed: target`.
+
+The label renders cyan and underlined under the resolved colour policy (`formats` keeps
+the underline and drops the cyan; `none` emits neither). A URL-shaped slug emits a
+well-formed OSC-8 hyperlink under the same conditions a markdown link does.
+
+Because recognition happens inside the lexer's own pass, verbatim contexts are literal
+by construction: fenced and indented code, block HTML, a formed codespan (`` `[[note]]` ``
+stays literal text), and a link or image destination or title never turn `[[…]]` into a
+wiki-link. Inside a table cell, a wiki-link's label is styled and whitespace-normalized
+like any other cell text; an unescaped `|` inside `[[…]]` splits the cell per GFM table
+rules, so the authored-correct form when a label needs a literal pipe is `\|`.
+
+Two scoped, deliberate losses: a `[[…]]` written inside a markdown link's label, or
+inside an image's alt text, no longer forms the outer link or image — the wiki-link wins
+and the outer construct does not form.
 
 ### Glyph tier
 

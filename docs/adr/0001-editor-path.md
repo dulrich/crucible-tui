@@ -5,6 +5,21 @@ Status: accepted. Recorded 2026-07-28 (WP-6b), from the field-position research 
 paragraph, `plans/crucible-tui-launch.md:22`), so the OpenTUI/document-model direction
 below is not re-derived the next time this comes up.
 
+Context historicized 2026-08-19: `marked-terminal` and `cli-table3`, both named in the
+Context below, have since been removed from the tree — the prose/list/table rendering
+they did, and the border/cell assembly `cli-table3` did, are this repo's own code now.
+Item 1's token → styled-span renderer is still open work, but its *first* half —
+replacing marked's own `Parser` as the tree walker, so the renderer's methods are no
+longer callbacks a third-party walker invokes — landed at WP-2 of
+`plans/own-the-token-walk.md`; the renderer methods themselves still return a bare
+`string` (`marked.d.ts`'s callback type is unchanged), so the widened
+`{ text, style, sourceStart, sourceEnd }` return type this ADR's Decision 1 describes
+remains the open successor work. What "mdview's own renderer overrides" (Decision 4)
+means has also changed shape: it is no longer `src/render.ts` alone but is spread across
+`src/inline.ts`, `src/blocks.ts`, `src/lists.ts` and `src/table.ts`. The decision text
+below — the OpenTUI recommendation, the Ink rejection, the source-mapping analysis —
+stands untouched; this note records what has moved since it was written.
+
 ## Context
 
 mdview's whole rendering pipeline is: parse Markdown with `marked`, render each node to
