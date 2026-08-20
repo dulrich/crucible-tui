@@ -1,26 +1,42 @@
 # mdview — `src/`
 
 Renderer internals for the `mdview` command: **what the owned renderer must do and the
-measured defect that established each requirement**, the sentinels, the glyph tier, the
-command-line surface, ambiguous-width resolution and the probe, the rendering policy, the
-parity classes, and the `emoji` re-decision. **The root `AGENTS.md` is the parent document
-— read it first**; identity, the two-names decision, the Stack, the Layout tree, the
-Run/verify contract, Conventions and the dependency record live there.
+measured defect that established each requirement**, the sentinels, the task-state surface,
+the glyph tier, the command-line surface, the rendering policy, the parity classes, and the
+`emoji` re-decision. **The root `AGENTS.md` is the parent document — read it first**;
+identity, the two-names decision, the Stack, the Layout tree, the Run/verify contract,
+Conventions and the live dependency rules live there.
+
+**Four deep records moved out of this file at WP-4 of `plans/docs-and-memory-curation.md`**
+— the list pipeline, the wiki-link carrier defect, colour, and ambiguous width — into
+`docs/agents/`, indexed below. They are **on-demand reads with no `CLAUDE.md` symlink**, on
+purpose: a session editing `src/` loads this contract every time and opens a reference file
+only when it is working on that subsystem. Nothing was rewritten in the move, every section
+title is unchanged, and each moved section leaves a pointer where it used to be.
 
 | Section | What it settles |
 |---|---|
 | How to read this file | the two conventions, including what a `index.js:NNN` citation means |
 | Why the renderer is owned at all | the three structural facts and what the removal measured |
 | What each renderer method must do | the requirement table, and the four unassigned methods |
+| The walk is this repo's | what `Parser` was doing, what `marked.use()` supplied, and why owning the walk was the only way past the `=> string` interface |
 | Parity: four classes | A/B/C/D, and why class C is a content hash rather than a gate |
-| The list pipeline | composition, the two wrap paths, the de-drift, the claim domains, the retained passes |
 | The sentinels | two control characters, one literal, the retired wiki-link carrier pair, and why the walks differ |
 | The task-state pre-pass | the 84 lines it still corrupts, why the "indented code" follow-up is retired, and the re-tokenisation that blocks its removal |
 | Colourless gates cannot see colour-only defects | three measurements, one mechanism, the rule it earns, and the WP-3 closure (`charDiff` 31 → 0) |
-| Glyph tier · Ambiguous width | the tier, the probe, and why `wide` forces ASCII |
-| Command-line surface · Colour | the CLI shape, config asymmetry, and the one owned colour/hyperlink policy |
+| Glyph tier | the tier, and the precedence that puts resolved `wide` above every flag |
+| Command-line surface | the CLI shape, the config asymmetry, and the resolver-as-value |
 | Rendering policy · The `emoji` re-decision | the unqualified rules, and the tier-follows decision |
 
+**The reference files — read the one you are working in.**
+
+| File | Carries |
+|---|---|
+| `docs/agents/list-pipeline.md` | composition, the two wrap paths, the de-drift, the claim domains, and the retained passes |
+| `docs/agents/wiki-link-record.md` | the wiki-link carrier defect and its fix: context table, precedence matrix, the three further defects, the three failed fix designs, and witness ownership |
+| `docs/agents/colour.md` | the one owned colour/hyperlink decision, `SgrMode`'s three levels, the reader inventory, and the resolution history |
+| `docs/agents/ambiguous-width.md` | the ambiguous-width question, the probe and its cache identity, why `wide` forces ASCII, and the table-emitter residual |
+| `docs/agents/dependency-history.md` | the forensic record of every dependency removal (the live rules are the root `AGENTS.md`'s) |
 ### How to read this file
 
 Two conventions run through it, and both are load-bearing.
@@ -159,6 +175,38 @@ return, is deliberately **not** reproduced: its target was marked's HTML default
 method here is typed `=> string`, and its companion falsy-to-`''` coercion is the identity
 on every string. **Nothing about a visitor's body or its `this` changed.**
 
+**What `Parser` was doing, and why the walk was taken — merged in from the root `AGENTS.md`'s
+Stack bullet at WP-4 of `plans/docs-and-memory-curation.md`.** The root told this story a
+second time and at more length than a Stack bullet can carry; it is relocated here whole, so
+this section is the one owning home, and the root keeps a three-line summary and a pointer.
+Read it as history, in the same register as this file's `index.js:NNN` citations.
+
+*What was true.* `src/render.ts` called `instance.use({ renderer })` and then
+`instance.parse(processedBody, { async: false })`, so **marked's `Parser` was the tree
+walker** and the sixteen owned methods were callbacks it invoked, re-entering it **9 times**
+via `this.parser.parse(tokens, top)` and `this.parser.parseInline(tokens)`. **`Parser` was
+not a bare dispatcher**, and a plan that assumed it was got that wrong twice: it coalesces
+consecutive block `text` tokens with `\n`, consuming the loop index, and at `top` wraps the
+result in a **synthesized `paragraph` token** whose `tokens` array is fabricated; it routes
+`escape` to `renderer.text`; `space` had no owned method and fell through to marked's
+default (`''`); an unknown type **throws**; `parseInline` takes an optional renderer
+override; and `marked.use()` bound the receiver — the source of `this.parser` — fell back to
+the previous renderer on a `false` return, and coerced every falsy return to `''`.
+
+*What replaced it, and why.* `src/walk.ts`'s `TokenWalker` reproduces that whole contract —
+see its header table, which cites every `marked.cjs` site, and `tests/walk.test.ts`, which
+tests each row directly plus a 32-case differential against `Parser` itself. `render.ts` now
+calls `instance.lexer(...)` for tokens and `walker.parse(...)` for the walk. **The reason is
+a hard interface constraint that only walk ownership could remove**: marked's renderer
+callbacks are typed `=> string` (`marked.d.ts:349-365`, `parseInline` at `:226`/`:234`), so
+**a callback cannot return anything but a string** — no styled spans, no source ranges — and
+any work that needs a richer return type (the style-last direction, or
+`docs/adr/0001-editor-path.md`'s `{text, style, sourceStart, sourceEnd}`) was blocked behind
+it. The lexer is the part worth keeping and was kept untouched. **The method signatures are
+still `=> string`**: that package changed who calls them, nothing else, and landed
+byte-identical across 440 combos in both colour modes. Widening the return type is the
+successor's.
+
 ### Parity: four classes, and why class C is a content hash
 
 Every package of the renderer replacement declared which class of difference it was allowed
@@ -224,591 +272,19 @@ At every package, additionally: the three detector counts (`findListOrphans`,
 named regression fixtures — `loose-list.md`, `nested-list.md`, `fenced-list.md`,
 `blockquote-list.md`, `wide-table.md` — must hold.
 
-### The list pipeline
-
-Four defects live in this family, all of them variations on one theme — *a line has to be
-laid out at the width it will actually occupy, and only composition knows that width* —
-and the passes below are what closed them. Since WP-5, **composition owns the marker, the
-indent, the per-item budget and the de-drift**; `src/render.ts` owns the seams that wrap
-prose and the two post-compose passes that cannot move.
-
-#### Composition pushes the item's **exact** marker width, per item
-
-`src/lists.ts`'s `composeItem` pushes `{ columns: markerWidth, list: false }` onto the
-`LayoutContext`'s prefix stack for the duration of that item's own parse — `"* "` is 2,
-`"7. "` is 3, `"12. "` is 4 — so `paragraph`, `text`, `heading` and `html` all wrap at the
-columns *this item* actually owes.
-
-**The widest-marker estimate this replaced is deleted, and its rationale with it.** Until
-WP-5 the level pushed one `4 + widest` entry for every item, where "widest" was computed
-from the level's whole subtree (`listMarkerWidth`, `markerLineCount`,
-`nestedMarkerLineCount`, all gone). That over-narrowed items 1–9 of a ten-item ordered list
-by a column (family B1) and, because the estimate counted *nested* lists' markers too,
-over-narrowed every item of an ordered list containing one (family B2). The older claim
-that an item's index is not reachable at wrap time was true only while the library composed
-items; `composeItem` **is** the item, and it knows its own number.
-
-That entry is `list: false` deliberately: the level's own four columns are the `list: true`
-entry `src/render.ts` pushes, and a second `list: true` here would double `listDepth()` and
-break `substituteBullets`' outermost-list gate.
-
-**Neutered and re-measured, so it is not a vacuous claim:** replacing the per-item budget
-with the old estimate produces **3,954 diffs and 6 class-C violations**.
-
-#### Loose items are wrapped by `paragraph`, at the item's own budget
-
-`marked`'s lexer stamps `loose = true` on a whole list if any item ends with a blank line
-(`marked/lib/marked.cjs:557-561`). A loose item's text is wrapped by the `paragraph`
-renderer, **before** the composer glues on the marker and the blanket indent. Wrapping it at
-the full target width
-is what produced the orphaned-line defect: the text came back 6+ columns over budget and
-the post-compose wrap reflowed it a second time, shearing the tail word onto a line of its
-own.
-
-The rule: **`paragraph` wraps at the width its text will actually occupy.** It reads
-`targetWidth - prefix.width()` off the stack, and the wrap happens inside
-`renderBlockParagraph` (`src/blocks.ts`) with `wrapAnsi` and `Measure` — not by
-constructing a second renderer, which is what this cost until WP-3.
-
-**How a loose item reaches `paragraph` at all was misdescribed here until WP-2 of
-`plans/own-the-token-walk.md`, and the correction matters to anyone reading the walk.** This
-section, `src/render.ts`'s `text` seam and that plan's own contract table all said the
-lexer gives a loose item **`paragraph` children**. It does not. `Tokenizer.prototype.list`
-(`marked.cjs:550-561`) lexes every item's body with `state.top = false` and then only
-*stamps* `loose`; it never re-lexes, so a loose item's children are `text` tokens exactly
-like a tight item's. Measured at `marked@14.1.4`, `- one\n\n- two\n` gives
-`loose = true` with `items[n].tokens` of `["text"]`.
-
-What routes a loose item to `paragraph` is the **`top` argument**: `src/lists.ts` dispatches
-each item through `parse(item.tokens, !!item.loose)`, and at `top === true` the block `text`
-case *synthesizes* a paragraph token around the rendered body. So the fabricated token from
-the walk's contract is not a top-level curiosity — **it is on the path of every loose list
-item in the corpus**, which is why `src/walk.ts` reproduces its shape exactly, down to the
-inner text token carrying no `tokens` key. A traced loose item dispatches
-`text(hasTokens=true)` → `paragraph(tokens=["text"])` → `text(hasTokens=false)`; a tight one
-dispatches `text(hasTokens=true)` and stops. A `space` token between two paragraphs inside
-one loose item terminates the coalescing run, so that item yields two synthesized paragraphs
-rather than one. All of this is pinned in `tests/walk.test.ts`.
-
-**The gate is the stack's total, not "are we inside a list."** It read `listDepth()` until
-WP-2g, which left quoted prose four columns over budget at every width — see "A blockquote
-owes columns exactly like a list" below for why that only ever looked fine.
-
-Three things that must not be simplified away:
-
-- **The marker width is derived, never hardcoded**, and since WP-5 it is the item's exact
-  marker rather than a level-wide estimate. `"* "` is 2 columns, `"10. "` is 4.
-- **Do not "coalesce and re-wrap" a paragraph result instead.** By the time this seam has a
-  rendered paragraph, reflow has rendered its own wraps and an author's hard break as the
-  same bare `\n`, and has hard-split any word longer than the width with no marker — so
-  rejoining lines destroys authored breaks and corrupts long URLs and paths. (This is the
-  WP-2b failure mode, and it is exactly what makes the *tight* path's coalescing safe: see
-  below. Do not carry either conclusion across.)
-- **A continuation line may not be allowed to start with `*` or `N.`.** `isPointedLine`
-  takes any such line for a marker line — a continuation line is still at column 0 when it
-  runs — and in an *ordered* list the numbering pass then hands it that item's number and
-  rewrites the first `"* "` anywhere in it. The item's text is corrupted and every later
-  item is renumbered. Since this seam chooses where lines break, it also chooses whether
-  that fires: a colliding continuation is re-wrapped a column narrower and given one
-  leading space, which `isPointedLine`'s exact-multiple-of-four indent group cannot match.
-  Measured: **one occurrence in a 1,000-file corpus sample before the guard, none after.**
-
-**Two shapes are guarded, not one** (WP-3): `MARKER_SHAPED_LINE` and the detectors' broader
-`COLUMN_ZERO_MARKER`, united as `isGuardShapedLine` in `src/list-lines.ts`. The second was
-added because the harness's detector ratchet caught WP-3 raising `findColumnZeroMarkers` by
-exactly one — a top-level prose line that re-wrapped onto `+ sources` immediately above an
-indented list. `isPointedLine` does not recognise `+`, so that line was never a renumbering
-hazard; it was a line that reads as a bullet nobody wrote, which is what that detector is
-for. **And the guard runs at every budget now**, where it used to run only inside a list or
-blockquote: the old override took an early return at prefix width 0 and the guard sat below
-it, so a top-level paragraph never got one — and the regression above *was* a top-level
-paragraph. At column 0 the renumbering half of the hazard genuinely does not apply; the
-legibility half does, and the cost is one paragraph re-wrapped a column narrower.
-
-**No width gate can see the defect this closes**: an orphaned line is *under* the target
-width. It is covered by the orphan metric in `tests/render.test.ts` against
-`tests/fixtures/loose-list.md`, by the detector ratchet in the parity harness, and by
-nothing else.
-
-#### Tight items are parsed by `text` — and wrapped on **two different paths**
-
-The mirror image of the loose case, and a **different seam**. A *tight* item is never
-wrapped in a paragraph token, so `Parser.parse(item.tokens, false)` dispatches its block
-`text` token straight to the `text` renderer. The library's `text` (`index.js:84-89`)
-returned the raw `token.text` through an `identity` option and **never dispatched
-`token.tokens`**, so nothing reflowed it *and* nothing parsed it: the author's own line
-breaks arrived verbatim, and `**bold**` and `[label](url)` reached the terminal literally.
-A **tight list item was the only container in the whole renderer that reached the terminal
-as raw markdown** — `heading` (`:116-119`), `paragraph` (`:201-211`) and `tablecell`
-(`:260-265`) all called `parser.parseInline(token.tokens)`.
-
-`src/inline.ts`'s `renderInlineText` is that one-line function today; the wrapper in
-`src/render.ts` is where the work is. Three independent conditions identify a tight item's
-own text, and any one failing means the raw text is returned untouched:
-
-1. `listDepth() > 0` — inside a list;
-2. `inlineDepth === 0` — **not** inside a renderer that dispatches inline tokens
-   (`paragraph` and `heading` bracket themselves with that counter);
-3. the token carries `tokens` — block text tokens do, inline ones do not.
-
-**Condition 3 is load-bearing, not decorative.** Over 600 corpus files this seam saw
-**11,443 tight-item block text tokens and 413 inline text tokens inside lists, 242 of them
-multi-line** — a loose item's source lines. Coalescing those is precisely the WP-2b failure
-mode, and only `tokens` separates them.
-
-**The wrap is split across two paths, and the split is deliberate — state it explicitly.**
-
-- **Coalesced items** — where a multi-line item's soft-wrapped source lines were joined back
-  into one logical line per hard-break-delimited segment — **are wrapped here**, at
-  `targetWidth - prefix.width()`, with the same marker-shaped-line guard the loose path uses
-  — **always fired on this path, and sized so the guarded line misses the four-column grid**
-  (see below; it was one space unconditionally, the coalesced path's own pre-WP-5 rule kept
-  byte-for-byte, until WP-1 of `plans/renderer-deferred-work.md`).
-- **Uncoalesced items** — a single authored line, or segments separated by genuine hard
-  breaks, which is *most* tight items — are **left to `rewrapListBody` after composition**,
-  on purpose. `marked`'s inline lexer hands this seam `&#39;`-spelled entities, and
-  `transform` (`src/blocks.ts`) decodes them **during composition, after the seam** — so a
-  wrap decided here measures `&#39;` at five columns where the terminal shows one, and moves
-  the wrap point of nearly every apostrophe-carrying item. The post-compose pass sees decoded
-  bytes; this seam does not. (The coalesced path accepts that skew deliberately: it always
-  has, its bytes are pinned by the parity gate, and re-ordering it would move every
-  soft-wrapped item in the corpus.)
-
-**The two paths guard differently, and that asymmetry is load-bearing — do not "unify" it.**
-Both seams give a continuation line a leading space when it would otherwise begin `*` or
-`12.`, and both re-wrap a column narrower first so the space costs no width. What differs is
-*when* the guard may be skipped and *how wide* it is, because the two seams hand their lines
-to different downstream passes:
-
-- **`rewrapListBody` (uncoalesced) skips the guard off-grid**, gated on `onGrid`
-  (`src/render.ts`). Its lines are already composed and carry their prefix as literal spaces,
-  so the only pass left that can claim a marker-shaped continuation is `substituteBullets`,
-  whose `UNORDERED_MARKER_LINE` is anchored on the four-column grid. An off-grid line —
-  `"    1. "` is seven columns — is claimed by nothing and needs no guard. Its comment records
-  that the *unconditional* form was measured causing a collision at width 55 on
-  `fenced-list.md`, where the guard space moved a line from column 7 onto the grid at 8.
-- **The coalesced seam always fires the guard, and varies its width instead.** Its lines are
-  *pre*-composition, still at column 0, and `claimLine`/`isPointedLine` (`src/lists.ts`) is
-  grid-blind: it claims a column-0 `*` line whatever column the item ends up at, strips it of
-  its pad, and leaves it at the level's own indent — where `substituteBullets` rewrites it
-  anyway. So off-grid is *not* safe here and the `onGrid` gate cannot be borrowed. Measured at
-  WP-1 of `plans/renderer-deferred-work.md`: gating this guard on `onGrid` turned one
-  corrupted width into two on the same witness (`tests/fixtures/coalesced-guard-collision.md`,
-  widths 64 *and* 65 instead of 65 alone). The free variable is the guard's **width**. A
-  guarded line lands at exactly `prefix.width() + guard.length` — every column of that prefix
-  renders as literal spaces — and one space misses the grid for every marker this composer
-  emits (`"* "` at 6+1, `"12. "` at 8+1) *except* the one-digit ordered marker (`"1. "`, 7+1).
-  There the seam narrows one column further and guards with two, but **only when all three of
-  these hold**: the one space would land on the grid; a marker-shaped continuation survives the
-  narrower wrap; and one of the survivors is `*`-shaped. The third is not fussiness —
-  `UNORDERED_MARKER_LINE` matches `*` only, and a `12.`-shaped continuation on the grid is
-  rewritten by nothing after composition, so for those the one space is still right and keeping
-  it keeps their bytes. Each condition was priced on the private corpus at 2 axes: without the
-  second, **116 combos moved and three detector counts rose**; without the third, 101 and two;
-  with both, **52 combos and no ratchet movement at all**.
-
-**The defect that rule replaced, so nobody reinstates the single space.** A one-digit ordered
-item on the coalesced path composes at column 7. At width 65 the one unconditional guard space
-moved a continuation carrying the author's own literal `*` to column 8 — exactly on the grid —
-and `substituteBullets` rewrote the `*` into the depth's bullet glyph `◦`. **The rendered
-output contained a nested list item nobody wrote**, at that width only; 64 and 66 were clean.
-The guard caused exactly the collision it exists to prevent. **No gate in this repo could see
-it**, and that is the durable half: `findContinuationOverIndent`'s drift-1 exemption forgives
-*guard-shaped* lines, and `"◦ "` is guard-shaped — the detector swallowed the artifact the
-corruption produced (see `scripts/AGENTS.md`).
-
-Four more things that must not be simplified away:
-
-- **A `\n` here is authored, and coalescing it is lossless** — which is *not* true one seam
-  over. Markdown treats a single newline inside a paragraph as a soft break, i.e. one space,
-  and because nothing reflowed the text no word has been hard-split.
-- **A hard break is distinguishable, and it is `HARD_RETURN` on the parsed path.** Once
-  inline tokens are dispatched, `br` fires inside an item, so this seam converts each marker
-  into `HARD_RETURN + "\n"` — which `isHardBoundary` refuses to join across — and strips the
-  markers on every return path. **No bare `\r` reaches the terminal**; that is a pinned
-  invariant, not a hope. `HARD_BREAK_TAIL` (two trailing spaces, a trailing backslash, a
-  literal `<br>`) is the *fallback* spelling and still guards every `return raw` path, where
-  the source arrives unparsed. Measured over 600 corpus files: **11,675 soft breaks inside
-  tight items, 1 hard break, 0 `HARD_RETURN`, 0 `SENTINEL`** — rare is not never, which is
-  why this is a boundary and not a heuristic.
-- **A hard break inside a *loose* item is still dropped, and that is a pre-existing defect**
-  — the library preserved it; this repo's `paragraph` path collapses
-  `first line  \n  second line` to one line. Measured identical at `8504bd0` (pre-WP-14), so
-  the `text` seam did not cause it. Recorded in `plans/representative-corpus.md`, not fixed.
-- **Fences, tables and nested lists are excluded by construction, not by inspection.** Each
-  is its own token type and never reaches a `text` call — measured: **0 of 11,443 tight-item
-  tokens contained a `SENTINEL`**. The sentinel check in the seam is belt and braces on that
-  measurement. Do not replace it with a line-shape heuristic over the composed body.
-
-**The defect was a property of the dispatch path, not of the marker.** Verified at the
-library baseline, a tight item rendered `**b**` verbatim and a loose one rendered it bold,
-because a loose item reached `paragraph` — which called `parseInline` — and a tight one did
-not. The orphan population this seam's wrap closed: **1,823 orphans across 250 files at
-width 100 in a 1,744-file corpus sample.**
-
-**This paragraph said "a loose item's children are `paragraph` tokens" until WP-2 of
-`plans/own-the-token-walk.md`; they are `text` tokens** (see the loose-item section above
-for the measurement). What differs is `top`, not the child type, and the correction changes
-what stops the double parse. Do not "extend" the seam to the loose path — a loose item's
-block `text` token *does* arrive here and is parsed here, and it is the **synthesized**
-paragraph's inner text token, which carries no `tokens`, that makes the second visit a
-verbatim pass-through rather than a re-parse. Traced: `text(hasTokens=true)` →
-`paragraph(tokens=["text"])` → `text(hasTokens=false)`. Condition 3 is what holds the whole
-arrangement together, on both paths.
-
-**The punctuation-leading continuation wrap — pinned in WP-5 of
-`plans/renderer-deferred-work.md`, not fixed, and its causal record corrected twice
-before landing.** `plans/marked-terminal-replacement.md`'s WP-6 deferred-finding note
-first recorded this as a real cosmetic defect it could not attribute precisely: a
-coalesced continuation whose first visible character is a piece of punctuation that
-cannot start a word, one column right of the item's own text column. WP-5's own brief
-then proposed a specific mechanism — `LIST_LINE_PREFIX` (`src/render.ts`) greedily
-absorbing a pre-existing extra column and stamping it onto every continuation
-`rewrapListBody` creates — and that theory does not hold either: instrumenting
-`rewrapListBody` directly shows it never re-wraps a line for the reproduction below at
-all, and a margin argument over the nesting arithmetic (`currentListBudget`'s per-level
-`4`-column step against a guard that can only ever add 1) shows an ancestor's wider
-budget can never be exceeded by a descendant's guard-widened line, so this mechanism
-has no live reproduction to attribute to it.
-
-**The verified mechanism is the same guard "The two paths guard differently" already
-documents, misfiring on a shape neither half of that section considered.** A colon
-inside a code span becomes the 9-byte `COLON_REPLACER` sentinel (`*#COLON|*`) during
-inline parsing, and `undoColon` does not decode it back until `composeItem`
-(`src/lists.ts`) — *after* the coalesced tight-item wrap has already measured and
-wrapped the segment. The sentinel's literal leading `*` matches `MARKER_SHAPED_LINE`,
-so the coalesced guard fires on it exactly as it fires on an author's own glued `*` —
-correctly, by the same "the one space was always right for it" reasoning `src/render.ts`
-already gives for `*#COLON|*root`. What that reasoning did not anticipate is what
-happens *after* the guard: `undoColon` shrinks the 9-byte sentinel back to one `:`, but
-the one guard space in front of it is untouched by that shrink, so the rendered line
-is one column wider than an unguarded continuation of the same item — the exact
-punctuation-leading artifact the older plan recorded. Witnessed at
-`tests/fixtures/coalesced-colon-guard-continuation.md` (`tests/render-lists.test.ts`,
-"the coalesced colon-guard continuation drift"), reproducing at widths 50, 60, 90 and
-101 in both glyph tiers, from repo-local content — no private corpus needed, unlike the
-evidence the older plan pointed a future package at and that turned out to live in an
-archive no session can open. **Not fixed here either**: the guard is correct for the
-reason it exists, decoding earlier would reopen the emoji-substitution-inside-verbatim-
-content hazard `COLON_REPLACER` exists to prevent (see "The sentinels" section below,
-"`COLON_REPLACER` is a first-class owned mechanism"), and a repair needs the guard to know an item's
-*true* text column rather than merely which grid column it must avoid — the same
-missing primitive `LIST_LINE_PREFIX` lacks, so the repair this witness is waiting for
-and the one the older, wrongly-attributed theory described may turn out to be the same
-future work after all, just for a different reason than either record gave first.
-
-**A sentence in `src/list-lines.ts` is narrower than the code, and by design (WP-5 of
-`plans/renderer-deferred-work.md`) neither it nor `src/detectors.ts` is being edited to
-fix it.** `MARKER_SHAPED_LINE`'s doc comment there says the render seams defuse a marker-
-shaped continuation by giving it "one leading guard space"; `src/detectors.ts:531-543`
-(off-limits to this package) says the same in its own words. After WP-1 of
-`plans/renderer-deferred-work.md` that is only the common case: the coalesced seam now
-widens to **two** spaces when the one-space form would itself land on the grid, a
-marker-shaped continuation survives the narrower re-wrap, and one of the survivors is
-`*`-shaped (see "The two paths guard differently" above). Neither file is wrong about
-today's corpus — the two-space path was measured firing on no corpus file at any tested
-axis — so both sentences are accurate about what actually renders; they are just no longer
-the whole truth about what the guard *can* emit. Noted here rather than in either module,
-per this package's file scope.
-
-#### A nested item's continuations are pulled back to their own item, per level
-
-The third defect in this family and the one worth the most: a continuation line inside a
-**nested** item was indented past its own item's first line, one marker width **per ancestor
-level**.
-
-The mechanism is in composition and is deliberately reproduced. `composeUnordered` /
-`composeOrdered` (`src/lists.ts`, transcribed from `bulletPointLines` / `numberedLines`,
-`index.js:539-578`) prepend the marker's width in spaces — `toSpaces("* ")`, 2, or
-`toSpaces("12. ")`, 4 — to **every line the claim predicate does not claim**. For the level's
-own items that is exactly right: it puts a continuation under its own marker's text. But the
-body also holds an inner list that has already rendered, and there the same pad moves that
-list's *continuation* lines while leaving its *marker* lines alone. The blanket indent shifts
-every line equally and contributes nothing to the *relative* drift.
-
-**`realignEmbeddedContinuations` (`src/lists.ts`) subtracts it back out, per level, inside
-`renderList`, after `fixNestedLists`.** This is `src/render.ts`'s old
-`realignNestedContinuations` (WP-2e), moved into composition by WP-5 — same call point, same
-arithmetic, same skips — and the module and the byte-domain are the two things that changed,
-so a reader looking for the old name in `src/render.ts` will not find it.
-
-**Why the pad is not simply not added.** Not padding an embedded list's continuations would
-move the indent of a fenced block nested inside a list item, which is content inside a
-`codeRange` and therefore **class C**: measured at WP-5's dispatch, a fence inside a nested
-item sits exactly one pad-width right of its item's code column per ancestor level *today*.
-The pad is kept because removing it moves fence bytes; the subtraction is kept because
-token-type tagging cannot replace it — a list inside a **blockquote** child is own-content by
-token type yet an embedded list on the page, F10's hybrid join hides a marker inside a text
-line until `fixNestedLists` splits it, and the claim dents inside fences must survive
-byte-for-byte.
-
-**This is not a cosmetic fix, which is why it is here and not in a style note.** A
-continuation shifted right is a continuation over budget, and the shallower post-compose wrap
-then shears its tail word onto a line of its own — the same orphan the two seams above chase,
-from a source neither could see. Running the re-alignment *before* that wrap makes the orphan
-disappear **as a consequence** of the indent being right. Measured on the WP-2d regression
-tier at every width 40-360, both glyph tiers, **colourless**: **over-indents 29,035 → 3,683
-and orphans 6,469 → 3,060**, with nothing in either wrapping seam touched. Neutered and
-re-measured at WP-5: removing the de-drift produces **2,355 diffs**.
-
-Four things that must not be simplified away:
-
-- **It subtracts the drift; it does not snap lines to a column.** A blockquote or a fenced
-  block inside a list item is *legitimately* indented past its item's text column by its own
-  renderer, and `findContinuationOverIndent` reports those too. Snapping every reported line
-  to the item's text column flattens them. Subtracting exactly the width *this level* added
-  preserves every legitimate relative offset at every depth — and correctly leaves that class
-  of detector hit standing.
-- **Per level, not once at the outermost list.** The amount to subtract is the marker width
-  this call just added, and that is only knowable here: at the outermost list the ancestors'
-  drifts have already summed, and with levels of differing marker width the sum cannot be
-  decomposed back. Deriving it from the bottom-of-stack item's own `textColumn -
-  markerColumn` is what makes ordered levels work with no special case.
-- **Fenced code is never rewritten**, by the same sentinel walk `substituteBullets` uses. A
-  line that starts inside a fence, or that carries a sentinel of its own, is left alone *and*
-  is not allowed to move the item stack.
-- **A de-indented line may not become a marker.** Landing on the four-column grid with a
-  leading `*` or `12.` is all `isPointedLine` asks for. Unordered text columns are never on
-  the grid (`4d + 2`); a ten-item ordered list's are (`4d + 4`), so the case is live and is
-  guarded with one extra leading space, as both wrapping seams guard it.
-
-The stack model — "which item does this rendered line belong to" — is `trackListLine` in
-`src/list-lines.ts`, shared with `findContinuationOverIndent` deliberately: **a detector and
-the fix it grades must not be able to disagree about where an item's text column is.** It sat
-in `src/detectors.ts` until WP-5 of `plans/tn-review-remediation.md` moved it — *relocated,
-not copied*, precisely because one implementation is the property and one file is not. The
-move takes the detector module (a second `Marked` instantiation, the block-end probe, the
-shear classifier, none of which has a production caller) out of the graph the shipped binary
-is compiled from. **Its value is cohesion, not size**: measured with `bun build --target=bun`,
-the bundle shrank by **151 bytes of 2.68 MB**, because the bundler already tree-shook every
-detector function `render.ts` could not reach. The fixture is `tests/fixtures/nested-list.md`.
-
-#### The claim decision: ANSI-stripped for prose, **raw bytes for fence lines**
-
-`claimLine` (`src/lists.ts`) asks `isPointedLine` whether a composed line is a marker line,
-and it asks on two different byte-domains on purpose. This is WP-5's family **C1** and it is
-the fix for a whole class of colour/colourless divergence.
-
-Under any colour level, `applyStyle`'s newline encasing re-emits the open code at the head of
-every line of an item's text — *ahead of that line's own indent* — so a **raw-byte** claim
-can never match an embedded list's marker line. The coloured and colourless renders of a
-nested list therefore disagreed at the base commit, and every pass that made a structural
-decision on raw bytes was silently inert in a terminal. Two measurements pin how inert: the
-old realignment spelling rewrote **0 lines under colour against 115,472 colourless**, and the
-ordered-renumbering defect (family B1) is a **chalk-level-0 defect** — under `FORCE_COLOR=3`
-the library already numbered correctly, because `isPointedLine` could not claim a styled
-nested marker line. Claiming on `stripAnsi(line)` makes the decision about the columns a
-reader sees, at both settings, which is what a layout decision was always about.
-
-**Fence lines are the deliberate exception, in both directions.** A line that starts inside a
-`SENTINEL` pair, or carries one, is content inside a recorded `codeRange`, where every byte —
-*including* the accident that a raw-byte claim behaves differently under colour — is class C
-and must not move. Those lines keep the raw-byte claim verbatim: a colourless fence line whose
-content begins `"    * "` still loses its pad (the library's own dent, shipped in every render
-to date), and a coloured one still keeps it. **Reproducing a defect inside a fence is the
-contract; fixing it is forbidden.** Neutering this exception — the "obvious" simplification of
-claiming every line on stripped bytes — immediately produces **20 class-C violations**.
-
-Related and settled the same way: `isPointedLine`'s vocabulary stays the two literals `\*` and
-`\d+\.` and nothing else, the indent stays an **exact** multiple of four, and no space is
-required after the marker. Widening it to the glyph tier's bullets would claim a fence line
-whose content begins `- ` and drop the pad from a line inside a `codeRange` — class C again.
-The same argument applies one level up to `fixNestedLists`' `POINT_REGEX`.
-
-#### `rewrapListBody` — the primary wrap for uncoalesced tight items
-
-**This is not a repair net, and it is not deletable. Both halves were measured in WP-5.** The
-plan expected it to become a provable no-op once every seam wrapped at the item's exact
-budget, and for the coalesced tight path, the loose `paragraph` path, `heading`, `html` and
-tables that is now true. What the plan's model missed is that an **uncoalesced** tight item
-was never wrapped by any seam at all: this pass was its **primary and only** wrap. The
-deletion was gated falsifiably — replace the pass with identity, require `diffed=0` over the
-corpus — and **the gate rejected it**. It cannot move into the `text` seam either, for the
-entity-decoding reason stated above.
-
-Its budget argument is **blockquote columns only** (`quoteColumns`, tracked by the
-`blockquote` renderer), *not* the prefix stack's non-list total. Since WP-5 the stack also
-carries one non-list entry per open **item** — `composeItem`'s exact marker width — and
-counting those here would narrow the budget by every ancestor item's marker. That left
-`outerColumns()` with no production reader, and WP-6 deleted it.
-
-Two things it must never do, **both invisible to every gate `bun run verify` runs**, and both
-of which it did until WP-2f:
-
-**It must never rewrite a line that belongs to a fenced block.** The rendering policy below is
-unqualified — fenced code is never rewritten, because the corpus's fences are gate commands
-meant to be pasted and a wrapped command is a wrong command. This pass had no sentinel walk
-and split fence content mid-command like any other long line, and no gate could see it.
-Measured over a 1,000-file corpus sample of fence-carrying files at 80 and 116: **185 of
-37,246 fenced source lines did not survive verbatim on the parent commit; 0 do not now**, with
-no line newly broken.
-
-- **The sentinel walk here is the stricter of the two *forms* the repo uses, and the
-  one-line fence is what decides which form a pass needs.** `substituteBullets` may bail on "this line *started* inside a fence" alone,
-  because it only rewrites a *leading* marker and a fence's opening physical line begins with
-  the sentinel character itself. This pass rewrites the whole line, and `wrapCode` emits
-  `SENTINEL` immediately followed by the block's first content line — so a **one-line** block
-  carries all of its content on a line that both opens and closes the pair, where "started
-  inside a fence" is false. A line that starts inside a fence **or merely carries a sentinel**
-  is returned untouched. Nothing but `wrapCode` emits a sentinel, so the stricter form can only
-  ever spare a genuine fence line.
-- **An over-budget fence line inside a list item overflows.** That is what fenced code does
-  everywhere else here, and it is self-consistent rather than a new exemption: those lines land
-  inside a recorded `codeRange` and stay exempt from `--check` and both sweeps. Verified, not
-  assumed — `tests/fixtures/fenced-list.md` asserts that *every* over-width line it renders is
-  inside a recorded range, at six widths and both tiers. The visible consequence is real:
-  `tests/fixtures/nested-list.md` emits an 81-column line at width 80, and the WP-2e assertion
-  that no line of it exceeds the width had to start exempting code ranges — **it had been
-  passing for the wrong reason**, because the fence was being wrongly re-wrapped.
-
-**It must never break a line so that a continuation starts `*` or `N.`.** The pass chooses
-where lines break, so it chooses whether `isPointedLine` claims one of them — and then
-numbering renumbers, or `substituteBullets` turns the author's `*` into a bullet glyph.
-
-- **Copying the other seams' guard verbatim makes this pass cause the collision it is meant to
-  prevent.** They wrap text starting at column 0, which is *on* the four-column grid, so one
-  leading space always takes a marker-shaped line off it. Here the continuation prefix is the
-  line's own — `"    1. "` is **7** columns, already off the grid and already safe — and adding
-  a space moves it *onto* the grid. Reproduced at width 55 on `fenced-list.md`: with the
-  unconditional guard the author's bare `*` was still rewritten, and only because the guard had
-  shifted the line from column 7 to 8. **The guard therefore fires only when the composed
-  continuation would land on the grid.**
-- **`substituteBullets` had to be tightened to the same grid**, or the guard cannot reach it.
-  Its regex was a leading `*` at *any* indent, on the reasoning that a `*` at the start of a
-  rendered line is always a marker. That reasoning predates this pass, which can put an
-  author's bare `*` at the start of a continuation line. Every genuine marker is on the grid
-  because the blanket indent only ever adds four columns at a time: measured over a 1,000-file
-  sample at five widths, **79,410 substitutions, 0 of them off-grid**. Measured on
-  `fenced-list.md` at every width in 40-360, both tiers: the parent commit rewrites the author's
-  `*` at widths 54, 55, 100 and 101; this one at none.
-
-The fixture is `tests/fixtures/fenced-list.md` — fences in loose, tight and nested items, a
-one-line fence, marker-shaped fence content as decoys, and the bare-`*` continuation. **A green
-sweep is not evidence for any of it**; the source-anchored counts above are.
-
-#### The retained passes, and why each is retained
-
-WP-5's scope said it would delete four post-hoc correction passes, "one per historical defect".
-**Measurement rejected three of the four deletions, and the fourth moved rather than died.**
-These read as leftovers unless the file says they were measured, so:
-
-| Pass | Status | The measurement |
-|---|---|---|
-| `realignNestedContinuations` | **moved** to `src/lists.ts` as `realignEmbeddedContinuations` | Token-type tagging cannot see every embedded list (blockquote children, F10's hybrid join, in-fence dents). It did gain the fix it existed for: decisions on ANSI-stripped bytes, where the old spelling was **inert under colour — 0 lines rewritten against 115,472 colourless** |
-| `rewrapListBody` | **retained** | The primary and only wrap for uncoalesced tight items. Identity-substitution gate required `diffed=0`; **the gate rejected the deletion** |
-| `coalesceTightItemLines` | **retained**, semantics unchanged | The `text` seam's coalescing half; WP-2b's forbidden case is excluded by condition 3, not by this pass |
-| the `MARKER_SHAPED_LINE` guard | **retained** | Two shapes, not one, and it now runs at every budget (see the loose-item section) |
-| `substituteBullets` | **retained** — WP-4 expected WP-5 to retire it | Three independent blockers: widening `isPointedLine` moves fence bytes (class C); the bullet a line gets is chosen by its **rendered indent**, which a blockquote shifts after composition returns (`- outer` / `  > - quoted` renders `•` then `‣`, not `•` then `◦`); and `fixNestedLists`' `POINT_REGEX` must find the literal `*` on the hybrid join line, so composition-time glyphs would leave every tight item's nested list glued to its parent's text |
-| `rewriteTaskState` + `TASK_STATE_SENTINEL` | **retained** — the plan predicted deletion | See "Two deferred findings" below |
-
-**The nested-list geometry measurements in this file are *colourless* measurements** (finding
-F1), and that qualification used to be missing throughout. It matters: before WP-5 several
-structural passes were provably inert under colour. **After WP-5 the coloured geometry matches
-the colourless geometry**, so a claim like "renders `•` then `‣`" now holds at **both** colour
-settings. Where a measurement is colourless-only, it says so.
-
-**A note on the detector counts.** WP-5 landed with a non-zero detector delta against the
-"non-increasing" gate, by user-approved carve-out, and the classification was established by
-reproduction rather than argument: the increases are **colourless-only**, total **+1 to +4 on
-12 of 20 axes** against populations of 500–4,300, and trace to **8 distinct (file, detector,
-width) situations** — **32 increases against 38 decreases, net −6**. Every increase is a
-**pre-existing wrapper artifact relocated by the deliberate budget change**, each confirmed by
-rendering the *base* revision at adjacent widths and finding the identical artifact (widths
-101–102 for the new `overIndent` line, 101–104 for the new `orphans` fragment). Because an
-exact per-item budget moves wrap points, it necessarily moves which width trips a pre-existing
-artifact; the detectors are heuristics over rendered text, so in aggregate a relocated artifact
-is indistinguishable from a new one. **A future package re-checking this should re-run the
-adjacent-width reproduction rather than re-derive it.**
-
-#### A blockquote owes columns exactly like a list, and half the defect was ours
-
-The fourth defect in this family, and the only one whose symptom is *outside* the block it
-belongs to: **a list inside a blockquote rendered its markers at column 0**, out of the quote
-entirely, while its siblings stayed at column 8.
-
-**A rendered list marker at column 0 is never correct output.** Composition blanket-indents its
-whole body before returning it, so the shallowest marker this tool can emit is at column 4, and
-one inside a quote at 8. That invariant is the *only* instrument that can grade this case, and
-`src/detectors.ts`'s `findColumnZeroMarkers` is it — see the detector section in
-`scripts/AGENTS.md` for why the other two are structurally blind to it.
-
-Two independent mechanisms, and **the severe one was this tool's own code**:
-
-- **`wrapOverBudgetLines` preserved no indentation.** It re-wrapped an over-budget line as
-  `wrapAnsi(line, targetWidth)`, and `src/wrap.ts` starts every emitted line at a *word* — so
-  the line's leading indent was discarded whether or not it even had to be split, and an
-  81-column indented line at width 80 came back as one line at column 0. Harmless for
-  `paragraph` and `heading`, whose text starts at column 0 anyway; destructive for
-  `blockquote`, which hands it an already-indented body.
-- **The library's `blockquote` was `section(this.o.blockquote(indentify(this.tab,
-  quote.trim())))`** (`index.js:106`; `indentify` at `:505`). The `trim()` stripped the rendered
-  body's indent from its **first line only**, so a quoted list's first item sat four columns
-  left of its own siblings. Real, but the mild one — visible only at widths where nothing wraps.
-
-**Both are gone by construction now, and that is the shape of the whole WP-3 change.**
-`src/blocks.ts`'s `renderBlockquote` simply does not trim the first line's indent away
-(`trimKeepingFirstIndent`), so there is nothing to measure and paste back:
-`firstLineIndentTrimmedAway` and `restoreFirstLineIndent` are deleted. And an owned
-`paragraph`/`heading` takes its budget as a parameter, so `wrapOverBudgetLines` — the safety
-net for a reflow that measured `.length` — is deleted with the two budget caches. **Five
-mechanisms for one problem that no longer exists.**
-
-What the pre-WP-3 arrangement measured, kept because it is the evidence that the seam is where
-the fix belongs:
-
-- The indent-preserving re-wrap belonged in the shared helper, not on the `blockquote` path:
-  dropping a line's own indent is never right, so the caller is not what makes it wrong.
-  `paragraph`/`heading` stayed byte-identical **by construction** — the preserving path was
-  entered only for a line that *has* leading whitespace, and both callers hand the helper text
-  starting at column 0. Verified anyway over **1,181 corpus files at four widths: every
-  differing render is a blockquote-carrying file, 0 otherwise.**
-- **`currentListBudget` had to learn that a list is not the only thing that still owes an
-  indent.** A blockquote applies its indent for the same reason and at the same moment, so the
-  post-compose wrap was re-splitting quoted list lines against a budget four columns too
-  generous while the prose seams were already subtracting the quote in full — the two
-  disagreeing about the same item.
-- **The `paragraph` gate moving from "are we in a list" to "does anything still owe columns"
-  was forced, not chosen.** A blockquote reflows its children at the full target width and then
-  indents the result, so every wrapped line of quoted prose was four columns over budget — which
-  only ever looked fine because the safety net was *deleting* the indent instead of honouring
-  it. The moment it stopped, the net started shearing a word off each of those lines.
-  **`heading` needed the same treatment for the same reason.** Measured over **599
-  blockquote-free corpus files at four widths, byte-identical**: nothing outside a quote in that
-  sample has a heading that wraps.
-
-The fixture is `tests/fixtures/blockquote-list.md` — unordered, ordered and nested lists inside
-quotes, a quote inside a quote, fences (including the one-line shape) inside a quote, plain
-quoted prose as the control, and **a blockquote inside a list item**, which is *legitimately*
-indented past its item's text column and which nothing here may flatten back. Measured over the
-95 corpus files that put a list inside a blockquote, at widths 40/80/116/346: **column-0 markers
-471 → 4** — the residual four are one authored numbered paragraph in one file, present
-identically on the parent — and on the tier-pure sub-count of substituted bullet glyphs, **406 →
-0**. Fenced source lines surviving verbatim over the same sample: **7,974 → 7,996 of 8,020, 0
-newly broken.**
-
-#### Ordered numbering, and two deliberate non-changes
-
-`composeOrdered` numbers each level from its own `token.items` and never looks at a line a
-nested level produced. What it replaced — a single counter walked over the *whole composed
-body*, asking `isPointedLine` per line — let a nested list's markers **consume the parent's
-counter** and be rewritten into the parent's sequence by a plain string replace that finds the
-first `"* "` anywhere in the line. Measured on the validation corpus: **486 of 4,779 files
-(10.2%), 900 of 6,343 ordered lists (14.2%)** contain an ordered list with a nested list, and
-every one of them rendered wrong. This is family **B1**, and it is a **colourless** defect:
-under colour the styled marker lines were never claimed, so the library already numbered
-correctly there.
-
-Unordered parents were unaffected — padding never renumbers — which is why the parity stages
-split by **list kind** rather than by width or tier.
-
-- **`token.start` stays ignored.** The library read it and never used it, so a list authored
-  `5.` renders `1.`. Honouring it is a diff family nobody has granted; deliberate deferral, not
-  oversight.
-- **The `line.replace("* ", marker)` on an item's first line is kept in the library's own
-  spelling**, because composition put `"* "` at the head of that line one function earlier, so
-  the first occurrence *is* the head. The landmine that spelling carries — rewriting a `"* "`
-  inside an author's `**bold**` on a *continuation* line — is gone with the counter walk,
-  because continuation lines no longer reach that branch.
+### The list pipeline — moved to `docs/agents/list-pipeline.md`
+
+**The whole record is `docs/agents/list-pipeline.md`**, moved there at WP-4 of
+`plans/docs-and-memory-curation.md` with every section title unchanged: "Composition pushes
+the item's **exact** marker width, per item", "Loose items are wrapped by `paragraph`, at
+the item's own budget", "Tight items are parsed by `text` — and wrapped on **two different
+paths**" (including "The two paths guard differently"), "A nested item's continuations are
+pulled back to their own item, per level", "The claim decision: ANSI-stripped for prose,
+**raw bytes for fence lines**", "`rewrapListBody` — the primary wrap for uncoalesced tight
+items", "The retained passes, and why each is retained", "A blockquote owes columns exactly
+like a list, and half the defect was ours", and "Ordered numbering, and two deliberate
+non-changes". Four defects, one theme: *a line has to be laid out at the width it will
+actually occupy, and only composition knows that width.*
 
 ### The sentinels — two control characters, and one literal that is not a defect
 
@@ -834,7 +310,8 @@ replace `styleWikiLink`'s hardcoded pre-lexer SGR) until WP-2 of
 lexing pass, so a label is styled at emission — `styleWikiLabel` over the shared
 `applyStyleChain` (`src/style.ts`) — with nothing left to carry between the source and the
 walk. Code points 2 and 3 now mean **nothing** to this renderer and pass through as content
-(grant C4; see "The wiki-link carrier defect" below for the full record and its closure).
+(grant C4; see "The wiki-link carrier defect" — `docs/agents/wiki-link-record.md`, pointed
+at below — for the full record and its closure).
 Code points 0 and 1 keep their strips — they still have internal meaning.
 
 The two control characters are control characters, not zero-width Unicode, **deliberately**:
@@ -1084,247 +561,18 @@ disposition:
 correct output. **A package that deletes the pre-pass owns that test**, and owes a repair for the
 nested lex — suppressing it for task items is real design work, not a side effect.
 
-#### The wiki-link carrier defect — fixed, WP-2 of `plans/wiki-link-tokenizer.md` (`ab3518e`)
+#### The wiki-link carrier defect — moved to `docs/agents/wiki-link-record.md`
 
-**Fixed by moving recognition into the lexer, not by patching the pre-pass.**
-`plans/colour-modes.md`'s WP-1 (rev 4 at `c381d1c`) recorded this defect without fixing it,
-after three fix designs failed across three audit cycles (below); `plans/wiki-link-tokenizer.md`
-designed the successor across three further audit cycles and landed it at WP-2 (`ab3518e`).
-`markWikiLinks` (deleted from `src/wikilink.ts` at that landing, called from
-`preprocessBody`) used to run on every source line that `FENCE_LINE` (`src/render.ts:51`,
-``` ``` ``` and `~~~` only) did not toggle off. There was no indented-code, block-HTML, or
-container guard, so the pass fired on a line that later tokenized as verbatim content
-exactly as it fired on ordinary prose.
-
-**The substitution was irreversible by construction, which is why no downstream patch — at
-a leaf or anywhere else — could have fixed it.** `markWikiLinks` replaced the whole
-`[[…]]` (or `![[…]]`) match with carrier-wrapped `alias ?? slug` — the fragment, the `|`
-separator, the `!`, and the slug itself (whenever an alias was given) were all discarded
-before the lexer ever ran. A leaf that later discovered it was rendering verbatim content
-had nothing left in the rendered text to restore the authored brackets from. **The fix that
-landed does not restore anything — it never destroys the brackets to begin with**:
-recognition is now an inline **tokenizer extension** inside marked's own lexing pass
-(`wikiLinkExtension`, `src/wikilink.ts`), so the extension is simply never offered a
-position inside a `code` token, a block `html` token, a container-nested code block, a
-formed codespan, a link/image destination or title, or an HTML tag or comment. There is no
-source-coordinate bookkeeping left to get wrong.
-
-**Context table**, re-verified 2026-08-19 against `ab3518e` at width 80, `UNICODE_GLYPHS`,
-both colour policies (`{sgr:"none",hyperlinks:false,tmux:false}` /
-`{sgr:"full",hyperlinks:false,tmux:false}`):
-
-| Context | Behaviour | Status | Witness |
-|---|---|---|---|
-| Indented code | `[[slug]]`, `[[slug\|Alias]]`, `[[slug#head\|Alias]]` and `![[embed]]` all keep every authored byte — the label survives inside the recorded `codeRange`, brackets and all; `codeRanges` are unchanged from the pre-fix pins | **fixed** | `tests/render.test.ts`, "C1: indented code keeps every authored byte — plain, alias, fragment, embed" |
-| Fenced code | Left untouched — `FENCE_LINE`'s toggle skips every line between a pair of ` ``` `/`~~~` fences (unchanged; the tokenizer protects it too, redundantly, by construction) | guarded-by-FENCE_LINE | `tests/wikilink.test.ts`, "a fenced [[slug]] example is verbatim in both modes — now by construction" |
-| Block HTML | `[[slug]]` keeps its authored brackets — no `codeRange` was ever needed for this fix, because the tokenizer never fires inside a block `html` token in the first place | **fixed** | `tests/render.test.ts`, "C1: block HTML keeps its authored brackets — the corruption with no codeRange to hide in" |
-| Blockquote-nested code | Same repair, at the code's own nested position, inside a recorded `codeRange` | **fixed** | `tests/render.test.ts`, "C1: indented code nested inside a blockquote keeps its authored brackets" |
-| List-nested code | Same repair, inside a recorded `codeRange` | **fixed** | `tests/render.test.ts`, "C1: indented code nested inside a list item keeps its authored brackets" |
-| Codespan interior | `` `[[note]]` `` is now **literal** — the tokenizer can never be offered a position inside a codespan that syntactically forms, retiring colour-modes Decision 7's "kept-recognizing" row (locked D1). **Scope note — the landed outcome, not the plan's prediction:** when a `[[` opens *before* a backtick and the match's `]]` lands inside the would-be codespan, the wikilink still wins the position — that ownership decision is parity — but the label is now lexed in its own scope (D5), so its unmatched backtick has nothing left to pair with outside the match: **both backticks render literal** now, not the single-codespan-forms-inside-the-label shape the old pass produced. See the precedence-matrix row below for the falsified byte prediction | **literal (D1)** | `tests/wikilink.test.ts`, "a codespan's interior is literal now — locked D1"; the cross-boundary case is "D1 scope note: a match opening before a backtick still wins positionally" |
-| Inline-HTML interior | `<span>[[note]]</span>` still recognizes and styles the label — unchanged, deliberately (probe f): the tokenizer fires inside the inline `text` run between the two `html` tag tokens, exactly as it does in ordinary prose | kept-recognizing, unchanged | `tests/wikilink.test.ts`, "an inline-HTML interior is still recognized — unchanged, and asserted as unchanged" |
-| Link labels (a wiki-link's own alias containing a Markdown link) | Still does not match `WIKI_LINK_TOKENIZER` at all — the alias group excludes `]`, and a nested `[label](url)` contains one — passes through as literal text, unaffected by any of this | recorded-unchanged | `tests/wikilink.test.ts`, "an alias containing a Markdown link does not match, and continues not to" |
-
-##### The surface was wider than verbatim contexts: the precedence matrix — fixed, WP-2
-
-**The context table above enumerated only the verbatim-context corruptions. The pre-lexer
-substitution reached further**, and `plans/wiki-link-tokenizer.md`'s three audit cycles
-established the rest ("The precedence matrix"; every row below carries both the old
-mechanism's bytes, pinned at that plan's WP-1, and the tokenizer's bytes, pinned at WP-2).
-The old mechanism was one sentence: **a pre-lexer regex substitution over source lines
-cannot know what a construct the lexer has not yet built will turn out to own**, so it used
-to fire inside every one of these exactly as it fired in prose. The tokenizer extension
-fires inside marked's own lexing pass instead, so none of them is reachable by it now.
-
-| Context | Before (`markWikiLinks`) | After (the tokenizer, `ab3518e`) | Class |
-|---|---|---|---|
-| Backslash escape — `\[[note]]`, `\![[note]]` | recognition fired anyway: the `\` survived as literal text and the label styled beside it; `\![[…]]` still rendered `embed: ` | the escape is honored — the wiki-link does not form; `\![[…]]` is a literal `!` beside a forming embed | **C3 fix** |
-| Inline-link destination — `[x](https://e/[[note]])` | destination rewritten, and under colour **SGR was injected into the href** | destination intact, no SGR | **C3 fix** |
-| Inline-link title — `[x](url "[[t]]")` | rewritten (invisible — this renderer drops link titles) | intact | **C3 fix** |
-| Image destination and title — `![alt](/[[note]])`, `![alt](/u "[[t]]")` | both rewritten; the title was visible, as `alt – title` | both intact | **C3 fix** |
-| HTML attribute value — `<span title="[[note]]">` | rewritten, with SGR injected inside the tag | intact | **C3 fix** |
-| Inline HTML comment — `<!-- [[note]] -->` | comment interior rewritten and styled | intact | **C3 fix** |
-| Autolink — `<https://e/[[note]]>` | **broken**: the authored `>` was swallowed into the rendered href | intact — the authored `>` closes it | **C3 fix** |
-| Bare URL — `https://e/[[note]]` | split into `https://e/` plus a styled label; with hyperlinks on, SGR landed in the OSC-8 destination | one intact token, clean OSC-8 destination | **C3 fix** |
-| Reference-definition destination and title — `[x]: /[[note]]`, `[x]: /u "[[t]]"` | both rewritten, the definition consumed whole so nothing downstream could see it happened | both intact | **C3 fix** |
-| Link label — inline, full-reference, collapsed and shortcut forms | the outer link survived (OSC-8 to the definition, styled label inside) | the outer link no longer forms — `text + wikilink + text` plus the literal remainder. **Granted loss, landed as such**, not a repair | **C3 loss (landed)** |
-| Image alt text — all four forms | one image token, alt rewritten | image does not form; `text + wikilink` plus a literal suffix. Same loss shape | **C3 loss (landed)** |
-| Cross-boundary greedy match — `` [[a `code [[y]] z` end]] `` | the wikilink won positionally; a codespan formed *inside* the label, across the match boundary | the wikilink still wins the position (the ownership decision is parity), but **both backticks are now literal** — the label is lexed in its own scope (D5), so its unmatched backtick has nothing to pair with outside the match. The plan's byte prediction ("identical") was falsified and user-accepted at landing (WP-2's finding 1); the *decision* is parity, the *bytes* are not | **D1 scope note (landed)** |
-
-**Witnesses:** `tests/wikilink.test.ts`, "the precedence matrix — the candidate's bytes for
-every changing row (WP-2, C3)", plus **"the ownership-class probe sweep — every built-in
-inline shape, the candidate's bytes"** — the completeness instrument: eighteen shapes
-covering every built-in inline ownership class in marked's tokenizer order, each
-containing `[[note]]`, byte-exact in both colour modes. A class whose bytes move for a
-reason the matrix does not name shows up there rather than nowhere.
-
-##### Three further defects the same mechanism caused — all three repaired, WP-2
-
-Each was invisible to every gate `bun run verify` runs, for the reason the colour section
-below gives: they were colour-only, or inside a `codeRange`, or both — which is why none of
-the three ever showed up in a green run before this plan.
-
-- **A URL-shaped slug used to emit a malformed OSC-8 sequence; it does not now (C5).**
-  `[[https://example.test/path]]` has no alias, so the label *is* the URL. Under the old
-  mechanism the finished document re-entered the lexer as text, came out a `url` token, and
-  `renderLink` emitted OSC-8 for it — but the carrier-styling pass ran over the **finished
-  document**, long after that emission, so the wiki chain's close codes landed **inside the
-  destination, before the BEL**: `ESC]8;;https://example.test/path` + `ESC[24m` `ESC[39m` +
-  BEL, which no terminal resolves. Under the tokenizer the label is lexed into children at
-  tokenize time, so the `url` child reaches `renderLink` with a clean destination and the
-  OSC-8 sequence is well-formed. Witness: `tests/wikilink.test.ts`, "C5 — a URL-shaped label
-  emits a well-formed OSC-8 (WP-2, repaired)", pinned with hyperlinks off/on and the tmux DCS
-  envelope, plus "the destination is sanitized at emission — an authored control byte cannot
-  escape it".
-- **A wrapped wiki label in a table cell no longer bleeds its colour into the neighbouring
-  cell (C6a).** `src/table.ts` builds plain measured strings and never dispatches a cell
-  token (`renderTable`), so under the old mechanism a label in a cell was styled by the same
-  document-wide pass that styled prose — which saw a label already split across rows and
-  opened its chain on one row, closing it on another, with the cell's padding, the border
-  glyph and **the next column's text** all inside the open style. Measured at width 16 on
-  `| [[abcdefghijklmnopqrstuvwxyz]] | y |`: the `y` column used to render between a cyan
-  open and its close on a row whose own cell held no wiki-link. The span-cell contract
-  styles each fragment independently now, so no sequence crosses a cell's padding or a
-  border. Witness: `tests/wikilink.test.ts`, "C6a: a wrapped label is styled per fragment —
-  nothing crosses padding or a border", plus the bleed-inversion assertions in "C6a: a body
-  cell and a header cell…" and the alignment/prose-adjacency cases beside it.
-- **A label's boundary whitespace no longer survives cell normalization as an accident
-  (C6b).** `cellText` collapses `\s+` and trims; the old carriers were control characters,
-  not whitespace, so they stood between a label's own leading and trailing spaces and that
-  collapse — a barrier nothing designed, and `| [[ b ]] |` used to render a three-column
-  label ` b `, which no other cell text in this renderer did. With the carriers gone there is
-  nothing left to fence the collapse, so a wiki label now normalizes exactly like every other
-  cell's text: `| [[ b ]] |` renders a **one**-column label. This is a **deliberate behaviour
-  change, not a restoration** — the old three-column form was itself the defect (an artifact
-  of the carriers, not an authored intent), and the fix is that wiki labels stopped being a
-  special case. Witness: `tests/wikilink.test.ts`, "C6b: a label's boundary whitespace
-  normalizes like every other cell text", plus "C6b: the normalization edge grid — edges,
-  adjacency, internal runs, entities, embeds".
-
-The contract that makes all three possible — `{ text, spans }` carried through the cell
-pipeline so styling applies **per wrapped fragment at emission**, where a sequence cannot
-cross padding or a border, over text normalized like every other cell's — landed
-byte-identically at WP-1 with a synthetic-span battery (`tests/table.test.ts`) driving every
-clipping, wrapping, padding, measurement and nesting path before any producer existed; the
-`wikilink` span producer that puts real spans into it is WP-2's (`src/table.ts`).
-
-**Three failed fix designs, and why each died** — one plan, three audit cycles, no fourth
-mechanism proposed after the third failed:
-
-1. **Restore at the leaves** (rev 1). A leaf renderer (`code`, `html`, …) that detects it
-   is rendering verbatim content tries to undo the carrier substitution and reconstruct
-   the authored `[[…]]`. Dead on arrival: the substitution already discarded the
-   fragment, the `|` separator, the `!`, and the slug itself whenever an alias is present
-   (`markWikiLinks`, removed at `ab3518e`; see git history — the lines this citation once
-   pointed to now hold `WIKI_LINK_STYLES`) — there is nothing left in the rendered text for
-   a leaf to restore *from*. `runs/dispatch/colour-modes-plan-audit-report-cycle1.md`,
-   finding 2.
-2. **A byte-offset line map** (rev 2). Accumulate marked's block-token `raw` lengths
-   before substitution runs, to know per source line which lines are block-verbatim, and
-   skip those in `preprocessBody`. Failed on three independent grounds: marked
-   normalizes CRLF to LF, so concatenated token `raw` lengths cannot reconstruct a CRLF
-   source's line coordinates — the committed gate-corpus witness
-   `tests/fixtures/witnesses/defect-0-crlf-frontmatter.md` breaks the map's own stop
-   condition on the binding corpus; top-level accumulation cannot see code nested under
-   `blockquote` or `list` tokens, which only ever appear in container children; and
-   computing the map before `stripSentinelChar`/`stripTaskStateSentinel`/
-   `stripWikiLinkCarriers` run is not classification-preserving — stripping code point 2
-   alone changes a paragraph into indented code. `runs/dispatch/colour-modes-plan-audit-report-cycle2.md`,
-   finding 1.
-3. **A line-count map** (rev 3). Count physical lines per top-level token instead of
-   bytes, to sidestep CRLF. Failed differently: token raw line counts are not additive
-   across blank-line boundaries (a five-physical-line source splits into three tokens
-   whose raw line counts sum to seven, with no rule for which token owns a shared blank
-   line), and — more decisively — **marked elides reference definitions from the token
-   array entirely**, keeping them only in `tokens.links` with no `raw` and no position, so
-   a line-count walk has nothing to place a following code block against.
-   `runs/dispatch/colour-modes-plan-audit-report-cycle3.md`, finding 1.
-
-**A fix needs pre-lexer knowledge of which source lines are block-verbatim — source
-anchoring marked's own lexer does not provide** (no source-offset API; the same interface
-gap `src/walk.ts`'s header and `docs/adr/0001-editor-path.md` both cite for the styled-run
-work this repo has already deferred once). That is a successor plan's job — plausibly by
-owning the lexer — and the three failures above, together with the context table and the
-witnesses it cites, are its starting record rather than a foundation to build on: a future
-fix that changes any pinned byte will trip a named witness, which is the point. This
-record sits beside, and does not amend, "The task-state pre-pass" above: that pass's own
-class-C exception was requested and **the user withheld it** (`src/render.ts:193-213`,
-`rewriteTaskState` — this file's task-state section above). The two defects share a mechanism — an unguarded
-pre-lexer substitution reaching fenced or indented code — but they are independently
-dispositioned, and repairing one does not authorize repairing the other.
-
-**The successor exists and it does not need pre-lexer knowledge at all, which is why the
-paragraph above is kept rather than corrected.** `plans/wiki-link-tokenizer.md` (approved
-2026-08-19, three audit cycles) moves recognition **into** marked's lexing pass as an
-inline **tokenizer extension**, so a verbatim context is protected *by construction*: the
-inline tokenizer is simply never offered a position inside a `code` token, a block `html`
-token, a container-nested code block, a formed codespan, a link or image destination or
-title, or an HTML tag or comment. There is no source-coordinate bookkeeping left to get
-wrong, which is what all three failed designs above were trying and failing to do. The
-sentence "a fix needs pre-lexer knowledge" was the correct conclusion from three failures
-at *patching the pre-pass*, and it is exactly the assumption the successor discards.
-
-**Fixed by, and the grant's limits held.** WP-2 of `plans/wiki-link-tokenizer.md` landed at
-`ab3518e`: recognition is the inline tokenizer extension described above, a `WikiLinkToken`'s
-children style at emission through `styleWikiLabel`/`applyStyleChain` (`src/style.ts`), and
-the carrier machinery — `markWikiLinks`, `markWikiLink`, `stripWikiLinkCarriers`,
-`styleWikiLinkCarriers`, the carrier constants, and the post-walk styling pass — is gone
-entirely. Rendered bytes changed **inside recorded `codeRanges`**, exactly as the grant
-authorized (C1) and not one byte further: **the task-state surface stayed untouched and
-user-withheld** — `src/render.ts:193-213` (`rewriteTaskState`) is hash-identical across the
-cutover, enforced directly by `tests/render.test.ts`'s "task-state adjacency — held
-unmodified through the tokenizer cutover". Two of WP-1's 42 whole-document task-state pins
-could not hold unedited on their *wiki-link* half — one is C1's own granted repair, landing
-inside a recorded `codeRange`; the other gained one `ESC[90m` blockquote-gray re-open that
-`link`/`del`/`codespan` already trigger there today, which is C2's "wiki-links behave like
-every other styled span" reaching one more path — both orchestrator-accepted findings, and
-neither moved a task-state byte, held directly by "every task-state glyph and its column are
-exactly WP-1's, in both tiers", which carries no wiki-link byte at all. The gate corpus did
-not move: three env-pinned render-diff runs against the pre-cutover commit (`9c19997`) read
-`combos=280 diffed=0 ok=true` under `FORCE_COLOR=0`, `FORCE_COLOR=3`, and
-`MDVIEW_COLOR=never`. The link- and image-label rows of the precedence matrix are **granted
-losses**, landed as such, not repairs.
-
-**C4 — authored control bytes 2 and 3 now pass through as content.**
-`stripWikiLinkCarriers` used to sanitize *authored* STX/ETX before the lexer and after
-render, because those bytes had internal meaning to the carrier mechanism. With the
-mechanism gone the bytes mean nothing to this renderer, so the fidelity rule (colour-policy
-Decision 1) applies: an authored code point 2 or 3 now passes through untouched, in both
-directions, fences included. Code points 0 and 1 (`SENTINEL`, `TASK_STATE_SENTINEL`) still
-strip — they still have internal meaning. The invariant that survives is rephrased, not
-retired: **the tool generates no carrier byte and no escape byte that enters the lexer** —
-asserted by comparing authored-ESC positions and counts across `preprocessBody`, now
-*absolutely* rather than merely relatively identical, plus a dedicated pass-through witness.
-Witnesses: `tests/wikilink.test.ts`, "C4 — authored code points 2 and 3 pass through, and
-0/1 still do not" (survives preprocessing and reaches the output; forges nothing; passes
-through inside a fence too; 0/1 still stripped); `tests/render.test.ts`, "with no policy, a
-wiki-link emits no escape — and no tool-generated 2/3 for carrier-free input".
-
-**D4 — an unescaped `|` inside a cell's `[[…]]` splits the cell, and that is GFM, not a
-defect.** `marked` unescapes `\|` when it splits a table row, before a cell's inline source
-is built, so the authored-correct spelling in a cell is the escaped `[[s\|Alias]]`. An
-unescaped `[[s|Alias]]` is read as two cells by GFM's own row-splitting rule, exactly as any
-other cell content containing a bare `|` would be — the tokenizer is never handed a
-contiguous string to recognize. Recorded here **so a future "defect" report can be answered
-from the record**: author `\|`. Witness: `tests/wikilink.test.ts`, "D4: an escaped pipe
-keeps the alias in one cell; an unescaped one splits it, per GFM".
-
-##### Witness ownership — which tests fence what
-
-Kept beside the defect record rather than in `tests/AGENTS.md`, which stays scoped to
-containment and the fixture trap.
-
-| Surface | Lives in | Fenced by |
-|---|---|---|
-| The extension itself (shape, `start`, the two regexes, D5's lexing) | `src/wikilink.ts` | `tests/wikilink.test.ts`, "the tokenizer extension — shape, registration, and the token it produces"; "the two regexes — the provenance record and the lexer form" |
-| The walker's `wikilink` dispatch, the override contract, the block-walk throw | `src/walk.ts` | `tests/walk.test.ts`, "TokenWalker — the wikilink case and the parseInline override contract" (7 tests) |
-| Verbatim-context protection (C1) | `src/wikilink.ts`'s tokenizer, by construction | `tests/render.test.ts`, "renderDocument — verbatim contexts keep their authored brackets (wiki-link-tokenizer WP-2, C1)" |
-| The precedence matrix — fixes and losses (C3), the D1 scope note, the ownership-class sweep | `src/wikilink.ts` + `src/walk.ts`'s dispatch | `tests/wikilink.test.ts`, "the precedence matrix — the candidate's bytes for every changing row (WP-2, C3)"; "the ownership-class probe sweep — every built-in inline shape, the candidate's bytes" |
-| C4 (authored 2/3 pass through), the lexer-input witness | `src/render.ts`'s `preprocessBody` (no wiki-link strip left in it) | `tests/wikilink.test.ts`, "C4 — authored code points 2 and 3 pass through, and 0/1 still do not"; "the lexer-input witness: preprocessing introduces no NEW ESC byte and no carrier" |
-| C5 (OSC-8 repair) | `styleWikiLabel` → `renderLink` (`src/wikilink.ts`, `src/inline.ts`) | `tests/wikilink.test.ts`, "C5 — a URL-shaped label emits a well-formed OSC-8 (WP-2, repaired)" |
-| C2 (wrapped prose labels carry one pair, not one per line) | `styleWikiLabel`/`applyStyleChain` (`src/wikilink.ts`, `src/style.ts`) | `tests/wikilink.test.ts`, "C2 — a wrapped prose label carries one pair, not one per line (WP-2, repaired)" |
-| C6a/C6b (cells), D3 (no OSC-8/nested SGR in cells), D4 (the GFM pipe) | the `wikilink` span producer (`src/table.ts`) | `tests/wikilink.test.ts`, "C6 — table cells: fragment-scoped styling and ordinary normalization (WP-2, repaired)"; `tests/table.test.ts`'s production span-producer block |
-| Task-state adjacency, held unmodified (C1's own limit) | `src/render.ts`'s `rewriteTaskState` (untouched, hash-identical) | `tests/render.test.ts`, "task-state adjacency — held unmodified through the tokenizer cutover"; "every task-state glyph and its column are exactly WP-1's, in both tiers" |
-| The applicator lift (`applyStyleChain`: one definition, two call sites) | `src/style.ts` | `tests/style.test.ts`, the carrier-absence assertion rephrased per C4 |
+**The whole record is `docs/agents/wiki-link-record.md`**, moved there at WP-4 of
+`plans/docs-and-memory-curation.md` with every section title unchanged: "The wiki-link
+carrier defect — fixed, WP-2 of `plans/wiki-link-tokenizer.md` (`ab3518e`)" and its
+re-verified context table, "The surface was wider than verbatim contexts: the precedence
+matrix", "Three further defects the same mechanism caused" (C5's OSC-8 repair, C6a's cell
+bleed, C6b's normalization), the three failed fix designs, C4's authored-2/3 pass-through,
+D4's GFM pipe rule, and "Witness ownership — which tests fence what". The root `AGENTS.md`'s
+own paragraph on the carrier's retirement is merged into that file too, so it is the one
+owning home. **The live carrier census stays above**, in "The sentinels": three carriers,
+not five; code points 2 and 3 mean nothing to this renderer now, 0 and 1 still strip.
 
 #### Colourless gates cannot see colour-only defects — and that is now a class, not an anecdote
 
@@ -1410,7 +658,8 @@ borders, and task-state glyphs **together** — there is no per-feature toggle.
 | Task states | `○` / `✓` | `[ ]` / `[x]` |
 
 Precedence, highest first: **resolved ambiguous width `wide`** (`src/glyphs.ts:113`, ahead of
-everything — see below) → `--ascii` / `--unicode` (mutually exclusive; passing both throws) →
+everything — see `docs/agents/ambiguous-width.md`) → `--ascii` / `--unicode` (mutually
+exclusive; passing both throws) →
 `MDVIEW_GLYPHS=ascii|unicode` → auto-detection. Auto-detection is ASCII when `TERM` is one of
 `linux dumb vt100 vt220 ansi`, otherwise Unicode iff `LC_ALL || LC_CTYPE || LANG` matches
 `/utf-?8/i`. **The flags exist because no heuristic is a contract** — do not tune the heuristic
@@ -1425,13 +674,15 @@ narrowly.** `•`, `─` and the whole box-drawing set are East Asian *Ambiguous
 columns under `MDVIEW_AMBIGUOUS=wide`; only `◦`, `‣` and `✓` are 1 either way. `resolveGlyphs`
 therefore takes the resolved ambiguous setting as a third argument and **refuses to hand this
 tier out in wide mode at all**, which makes the combination `unicode × wide` unreachable from
-the CLI. See "`wide` forces the ASCII glyph tier" below for the arithmetic.
+the CLI. See "`wide` forces the ASCII glyph tier" (`docs/agents/ambiguous-width.md`) for the
+arithmetic.
 
 Bullet substitution runs **once, at the outermost list** (`listDepth() === 1`), reading depth
 back out of the line's own indentation. Owning composition removed the *original* reason for
 that restriction — it is no longer racing marker detection for ancestors still on the stack —
 but three independent blockers keep the pass where it is; they are in the retained-passes table
-above. The pass skips any line that *starts* inside a `SENTINEL` region, and matches the marker
+(`docs/agents/list-pipeline.md`, "The retained passes, and why each is retained"). The pass
+skips any line that *starts* inside a `SENTINEL` region, and matches the marker
 **only on the four-column grid** (WP-2f), because the post-compose wrap runs before it and can
 put an author's own bare `*` at the start of a continuation line.
 
@@ -1453,8 +704,9 @@ last-wins rule `--color` already has, and nothing downstream of `parseArgs` ever
 colour flags that could disagree. `--hyperlinks[=WHEN]` is `--color`'s shape transplanted onto
 the independent hyperlink axis: bare means `always`, repeated last-wins, an unrecognised value
 throws. `--plain` alone has no `=WHEN` form — it is a bare boolean, because "plain" is not a
-point on the `auto`/`always`/`never` scale the other two flags share; see "Colour" below for
-what it does at the CLI boundary, which is the part that is not just flag parsing.
+point on the `auto`/`always`/`never` scale the other two flags share; see "Colour: one owned
+decision, resolved from inputs handed in" (`docs/agents/colour.md`) for what it does at the
+CLI boundary, which is the part that is not just flag parsing.
 
 **`mdview <file.md>` with no subcommand is load-bearing, not a convenience.** It predates
 subcommands and is the invocation the user runs daily, so `main` dispatches to a named handler
@@ -1483,11 +735,11 @@ built-ins (`dataviewjs`→`javascript`, `dataview`→`sql`); a user entry for a 
 default wins. `color` is `auto`/`always`/`never` and is **a directive rather than a boolean**,
 unlike the `emoji` key beside it: colour has an explicit third state a user may want to write
 down (*I know this key exists and I want the default*), which is not the same statement as
-omitting the key. It is the fifth slot in the precedence table under "Colour" below, so it
+omitting the key. It is the fifth slot in the precedence table in `docs/agents/colour.md`, so it
 loses to anything said about this invocation. `hyperlinks` (WP-3 of `plans/colour-modes.md`)
 sits beside it, read the identical way through the same `parseColourDirective`, and is its own
-independent axis rather than a second reading of `color` — see "Colour" below for its own
-precedence slot.
+independent axis rather than a second reading of `color` — see `docs/agents/colour.md` for its
+own precedence slot.
 
 **The resolver is a value, built once, and there is no process state behind it.**
 `src/cli.ts`'s `runView` calls `makeFenceLanguageResolver(config.highlightAs)` after
@@ -1532,490 +784,32 @@ source, because the tool answers to two names and a reader who knows the project
 settled — see "Two names, on purpose" at the top of the root `AGENTS.md`. Do not reconcile the
 two names.
 
-### Colour: one owned decision, resolved from inputs handed in
-
-**How much SGR this render emits is `LayoutContext.sgr`, a three-level `SgrMode`**; whether the
-renderer emits OSC-8 hyperlinks is `LayoutContext.hyperlinks`. Both are resolved **once per
-render**, by `resolveColourPolicy` (`src/colour.ts`), and threaded as
-`renderDocumentDetailed`'s last parameter — WP-1 of `plans/colour-policy.md`, with the colour
-half widened from a boolean at WP-2 of `plans/colour-modes.md`.
-
-**Nothing in `src/colour.ts` reads `process`.** The environment, the destination's TTY-ness, the
-platform, the parsed `--color` flag and the config file's `color` key are all arguments. That is
-the same rule `glyphs` and `measure` already follow, extended to the last decision that was still
-being made behind the renderer's back, and it is what makes every environment case testable in
-one process — `tests/colour.test.ts` runs the whole matrix, including the Windows branches, with
-no subprocess anywhere.
-
-The ratified precedence, highest first, is `--color` → `MDVIEW_COLOR` → `NO_COLOR` (presence
-counts, even empty) → `FORCE_COLOR` → config `color` → `isTTY`. Two edges are worth naming here
-because they are policy rather than transcription: **`NO_COLOR` outranks `FORCE_COLOR`** (a user
-who exported the first said something about this machine; a `FORCE_COLOR` inherited from some
-parent process did not), and **a malformed `FORCE_COLOR` decides nothing and falls through** —
-`"0"`/`"false"` are no, `""`/`"true"`/`"1"`-`"3"` are yes, and anything else is not a directive.
-Hyperlinks are an independent axis with an absolute non-TTY ceiling; `NO_COLOR` does not touch
-them. **The hyperlink axis's own precedence**, highest first, since WP-3 of
-`plans/colour-modes.md` (Decision 6): the non-TTY ceiling (checked first inside
-`resolveHyperlinks`, and still absolute — nothing below it can turn a hyperlink on off a
-terminal) → `--hyperlinks` flag → `MDVIEW_HYPERLINKS` → config `hyperlinks` → terminal
-detection. `HyperlinkInput` — the interface `resolveHyperlinks` is typed to — carries the new
-`flag`/`config` fields; `resolveColourPolicy`'s own signature is unchanged, and it maps its
-`ColourPolicyInput`'s new `hyperlinkFlag`/`hyperlinkConfig` fields into them (cycle-3 f5's exact
-type relationship, so `resolveHyperlinks` never has to know the shape of the larger input).
-
-**`--plain` sits above both axes and is not a fifth precedence slot — it is a short-circuit at
-the CLI boundary, and where that happens matters.** Decision 2: the policy under `--plain` is
-built by hand in `src/cli.ts`'s `runView` — `{ sgr: "none", hyperlinks: false, tmux:
-resolveTmux(env) }` — **without calling either `resolveColor` or `resolveHyperlinks` at all**.
-The alternative — giving `--plain` the top slot in each ladder and letting the existing
-functions return early — was rejected (cycle-3 f4): even an early return still *evaluates* the
-call, and both functions read `MDVIEW_COLOR`/`MDVIEW_HYPERLINKS` and call `warn` on a malformed
-one before deciding anything else, so a `--plain` render would have printed a warning about an
-environment variable it was about to ignore. Short-circuiting one level up — never calling the
-resolver — is the only shape where a malformed value under `--plain` produces silence, which is
-what `tests/cli.test.ts`'s no-warning-under-`--plain` cases assert. `tmux` is still resolved
-under `--plain`: it is a fact about the destination an OSC-8 emitter would need, not a colour
-decision, and resolving it costs nothing even though `--plain`'s `hyperlinks: false` means it
-never gets used.
-
-*History, because the conclusion inverted.* Until WP-6 this asked `marked-terminal` directly: a
-throwaway extension was built, its `strong` was handed a probe string, and the answer was
-whether anything came back around it. WP-6 replaced that with **`supports-color`, promoted from
-transitive to direct**, on the argument that `chalk`'s rule — ~150 lines of stream, flag and
-environment inspection — was the rule that had always governed this tool's output, and that a
-tool reproducing only the TTY half would answer differently the first time it met `--color`,
-`FORCE_COLOR=false`, `TERM=dumb` or a CI runner. The equality was measured rather than assumed:
-both spellings ran against a **36-cell environment matrix** and **agreed on all 36**.
-
-**That measurement still stands and is no longer the argument, because the goal changed.** The
-question WP-6 answered was *what does `chalk` decide here*; the question the ratified policy asks
-is *what should this tool decide*, and the two have different answers. `supports-color@7.2.0`
-scans the whole of `process.argv` for `--color` through `has-flag`, so a flag aimed at the `bun`
-wrapper — or at nothing at all — turned styling on inside the renderer; and it has **no reference
-to `NO_COLOR` at all**, so the one environment variable with an actual cross-tool convention
-behind it was ignored for the tool's entire life. Neither is a bug in that library. Both are
-disqualifying for a policy this tool is supposed to own, which is why the dependency went.
-
-**`chalk` itself is not a dependency of this repo and is not read anywhere.** A copy survives in
-the tree at `4.1.2` only as **eslint's** transitive — a devDependency of a devDependency, in
-nothing this ships; the nested `5.6.2` left with `marked-terminal` and the `4.1.2` that
-`cli-highlight` pulled in left with it at WP-2.
-
-**Two authorities disagreed with the policy above for exactly one work package, and closing
-them is what WP-2 of `plans/colour-policy.md` did.** `src/table.ts` styled through
-`@colors/colors`' own environment-only `enabled` flag, and `cli-highlight` gated syntax colour
-on that `chalk@4`'s module-load level. So `MDVIEW_COLOR=always` on a pipe coloured everything
-the renderer emitted and **nothing** either of those two emitted — measured on `tight-list.md`
-at width 80, where the forced-colour render carried the highlighter's `31m`/`36m` token colours
-and the `MDVIEW_COLOR=always` render did not, with identical visible text. `--color=always`
-happened to agree with `FORCE_COLOR=3` only because `@colors` sniffed argv for `--color` too,
-which was the same accident in a second package.
-
-**Both packages are gone and every producer reads the resolved mode.** The styles come from
-`src/style.ts` — a narrow committed table of exactly the `[open, close]` pairs this renderer is
-authorized to emit, with `38`/`48` introducers rejected by an assertion independent of the
-emitter — and the syntax colours from `src/highlight.ts`, this repo's transcription of
-`cli-highlight`'s span walk over `highlight.js` direct. What that bought, measured at WP-2's
-close over all fourteen gate-corpus files at three widths in both glyph tiers:
-**`MDVIEW_COLOR=always` on a pipe is byte-identical to `FORCE_COLOR=3` in 84 of 84 combos**
-(36 of the 84 differed before), and the forced-colour render itself did not move a byte.
-
-**"Every producer" was one short until WP-4, and the exception was the oldest of them.**
-`styleWikiLink` (`src/render.ts`) read no policy at all — it wrote a cyan/underline SGR pair
-into the markdown *source* before the lexer, so it styled at every colour level including
-colourless and its bytes were not in the committed table. `src/wikilink.ts` replaced it with a
-carrier pair through the lexer and a post-walk pass over `applyStyle` (see "The sentinels"),
-and the sentence above is now unqualified. Measured: the forced-colour render is byte-identical
-across the change in all 84 colour-on combos, the colour-off render lost exactly those four
-escape codes on the one gate-corpus file that carries a wiki-link and moved no visible
-character on any of the 168 combos measured, and the colour axis's `sgrAny` went **5 → 0**.
-**That carrier pair is itself gone now**, retired without replacement at WP-2 of
-`plans/wiki-link-tokenizer.md` (`ab3518e`): recognition moved into the lexer as an inline
-tokenizer extension, and a label styles at emission through `styleWikiLabel`/
-`applyStyleChain` — see "The wiki-link carrier defect" above for the closure. The claim this
-paragraph makes — every producer reads the resolved policy, and the renderer emits no escape
-byte this repo does not spell — is unaffected and, if anything, stronger: there is no carrier
-left to account for either.
-
-**One colour-off consequence, and it is Decision 1 rather than a regression.** Because
-`@colors` answered from the environment without consulting `isTTY`, a plain
-`mdview file.md | cat` used to emit that package's table styling into the pipe — 205 grey pairs
-and 12 bold pairs on `wide-table.md` alone, with no colour requested anywhere. Those escapes are
-gone: the piped default now emits exactly what a `FORCE_COLOR=0` render always emitted, which is
-what the ratified spec's first decision asks for. The visible text is identical, and the
-sanitized colour-off renders every gate and sweep actually measures were byte-identical across
-the package (84 of 84).
-
-#### Three levels, not two: `SgrMode` and the hue/format split (WP-2 of `plans/colour-modes.md`)
-
-`ColourPolicy.color: boolean` became **`sgr: "full" | "formats" | "none"`**, and that one type
-is the whole of the colour-mode work. The predecessor plan
-(`plans/styled-runs-and-colour-policy.md`, closed won't-implement and deleted at
-`795ef9b`) needed eight work packages
-for the same semantics because hue and weight were fused into opaque byte strings at six
-independent producers, and *"thread a policy to the producers"* cannot express *"drop hue,
-keep bold"*. `plans/colour-policy.md` retired that premise without setting out to: since it
-landed, every producer holds a **named** chain (`createStyler("gray")`, not `"\x1b[90m"`) and
-exactly two emitters turn a chain into bytes. The name survives to the point of emission, so
-the mode semantics are a **filter inside `src/style.ts`** rather than a renderer migration.
-
-**What each level means.**
-
-| Level | Emits | Reached by |
-|---|---|---|
-| `full` | every committed style | `always` at any slot; `FORCE_COLOR` truthy; the `isTTY` floor |
-| `formats` | format and control classes; **no hue** | the three explicit `never` **directives** only — `--color=never`, `MDVIEW_COLOR=never`, config `never` |
-| `none` | nothing of the tool's own | `NO_COLOR` presence; `FORCE_COLOR=0`; a non-TTY with nothing requested |
-
-**The kill-switch/directive split is the load-bearing distinction and it is not cosmetic**
-(Decision 5). A `never` *directive* is a user saying *this tool, this render, no colour*, and
-Decision 1 reads that as "no hue, keep the formatting" — dim, bold, italic, underline and
-strikethrough are not colour. `NO_COLOR` and `FORCE_COLOR=0` are kill-switches with an
-established cross-tool meaning and an installed base, and they keep today's bytes exactly.
-**Those three directive routes are the exhaustive list of inputs whose rendered bytes WP-2
-moved**; `full` and `none` renders are byte-identical to the WP-1 commit across the gate
-corpus at every width and both tiers, verified by scripted byte diff (336 combos, 0 differing)
-as well as by `render-diff --expect a`. Any other moved byte is a defect, not a re-baseline.
-
-**The classification is of style *names*, and it lives beside the table it classifies.**
-`STYLE_CLASSES` (`src/style.ts`) is total over `STYLE_TABLE` by a `satisfies` constraint, so a
-new committed style cannot be added without being classified:
-
-- **hue** — `red green yellow blue magenta cyan gray`. The only class `formats` drops.
-- **format** — `bold dim italic underline strikethrough`. **`dim` is a format, not a hue** —
-  the user's own words at Decision 1, and the membership most at risk of being "corrected" by
-  someone reading `2m` as a brightness. It is what keeps the frontmatter metadata block
-  legible under `--color=never`.
-- **control** — `reset` (Decision 8, cycle-1 f9). `0m` both directions, framing every
-  paragraph, rule and list item. Emitted whenever `sgr !== "none"`.
-
-**The filter runs before `chalk`'s two surgeries, and the ordering is the part to get right.**
-`applyStyle`'s re-open surgery re-emits *this chain's own* close codes and appends the matching
-open; its newline encasing reinserts *this chain's own* `openAll` after every line break. Run
-either over the unfiltered chain and a `formats` render gets its hue back — on the second line
-of every wrapped span, where no single-line assertion would see it. `filterChain` rebuilds the
-chain through `createStyler` over the surviving names rather than string-editing `openAll`,
-because the accumulation order (outermost-first open, innermost-first close) is a parity-class-A
-obligation and re-running the original builder is the only spelling that cannot get it wrong.
-A chain that filters to nothing emits **nothing** — not an empty open/close pair.
-
-##### The reader inventory, with each reader's threshold
-
-Every consumer of the colour decision, and which of the three levels it keys on. The table
-exists because "derive a boolean and carry on" is exactly the change cycle-2 f4 rejected: it
-would have run the highlighter — and `fixHardReturn`'s visible-content change — under
-`formats`.
-
-| Reader | Threshold | Why |
-|---|---|---|
-| `applyStyle` / `styleSpan` (`src/style.ts`) | all three | the filter itself; `none` returns the input, `formats` drops hue-class links, `full` is the identity |
-| every inline visitor (`src/inline.ts`), every block leaf (`src/blocks.ts`), the list-item chain (`src/lists.ts`), `styleWikiLabel` (`src/wikilink.ts`, via `applyStyleChain`) | `sgr !== "none"`, **via `applyStyle`** | they pass `ctx` through and implement no filter of their own — Decision 8's property rule in structural form |
-| `renderTable` (`src/table.ts`) | all three | the producer the split divides: `bold` heads survive `formats`, `gray` borders do not |
-| `formatMetaBlockDetailed` (`src/frontmatter.ts`) | `sgr !== "none"` in effect | it emits only `dim`, which is format-class, so `full` and `formats` are byte-identical here |
-| **`highlightCode` (`src/blocks.ts`)** | **`sgr !== "full"` returns raw code** | Decision 3's named producer exception — see below |
-| `LayoutContext.color` | derived, `sgr !== "none"` | **no production reader left.** Retained as the default threshold and tested for all three modes; deleting it is a future package's call |
-
-**Decision 3 is a producer exception, named rather than hidden.** Fenced-code syntax
-highlighting runs under `full` and nothing else, so a `formats` fence is byte-identical to a
-`none` fence. Two reasons, both measured: the highlight branch carries `fixHardReturn`, a
-**visible-content** transform inside a `codeRange` (it rewrites the first `\r` as the five
-literal characters `/\n/g`), so reaching it under `formats` would break
-`visible(formats) === visible(off)` — the property WP-4's G2 gate is about, which this keeps
-true *by construction*; and the theme is not hue-only — it carries `dim`, `italic`, `bold` and
-`underline` (`src/highlight.ts`), all format-class, so a property filter would have produced a
-half-highlighted fence, decoration with its colours removed and its emphases kept. What
-`formats` loses is enumerated: the theme's bold/italic/underline/dim spans inside fenced code,
-and nothing else. The property-pure alternative — highlighting under `formats` through a
-`fixHardReturn`-free path — is recorded in the plan as the fallback if the exception is ever
-withdrawn. **A future package adding a second producer exception owes the same two-part
-justification**; everywhere else the rule is Decision 8's.
-
-**Two things this package deliberately did not touch, and both are user-withheld ground —
-one of them since fixed by a later plan.** The task-state pre-pass
-(`src/render.ts:193-213`, `rewriteTaskState`; "The task-state pre-pass" above) keeps its class-C exception
-withheld and its 84 corrupted lines exactly as they are — any task-state byte movement
-anywhere is a defect. The wiki-link verbatim defect ("The wiki-link carrier defect" above)
-was still recorded-not-fixed at the time this package landed — its pinned witnesses in
-`tests/render.test.ts` and `tests/wikilink.test.ts` had only their policy literals migrated
-here (`color: true` → `sgr: "full"`, `color: false` → `sgr: "none"`) with **not one expected
-byte moved**, because they were the instrument a future fix would have to trip, and a
-migration that also tidied an expectation would have destroyed it. **It has since been
-fixed**, at WP-2 of `plans/wiki-link-tokenizer.md` (`ab3518e`) — see "The wiki-link carrier
-defect" above for the closure — and those same witnesses are what the fix re-pinned rather
-than what it had to trip.
-
-### Ambiguous width (WP-3)
-
-`src/width.ts` owns one question: **how many columns is an East Asian *Ambiguous* character?**
-Unicode's answer is "one or two, depending on the terminal, and you cannot tell from the
-character" — and almost every non-ASCII character in this corpus is in that class
-(`— – → ← … ≥ × • ○` and the whole box-drawing set; 90 em dashes in one real document).
-`string-width@7` defaults to narrow, which is also TR11's own recommendation when the context
-cannot be established, and that default was hardcoded at **26 call sites across 7 modules**
-because the library takes the setting as a *per-call option* and offers no global switch.
-
-**`src/width.ts` is now the only file in `src/` or `scripts/` that imports `string-width`**, and
-`tests/width.test.ts` asserts it. That is not tidiness: a module that imports it directly
-silently opts out of whatever mode was resolved, and **no width gate can see that**, because a
-check measured with the wrong ruler passes. It is the same class of defect as the `cli-table3`
-v4/v7 disagreement below (closed in WP-3 of `plans/tn-review-remediation.md`, by owning the
-emitter), and it is exactly the kind this repo has shipped green four times.
-
-#### The mode is threaded, exactly like `GlyphSet`, and for the same stated reason
-
-`src/glyphs.ts`'s header is the precedent: *"this module is the only place that reads the
-environment; `render.ts` and `table.ts` stay pure and take a `GlyphSet` argument so every test is
-deterministic regardless of the machine's `TERM` or locale."* A process-global
-`ambiguousIsNarrow` in `width.ts` would be smaller and is precisely what that sentence was
-written to prevent — it makes every test's result depend on what ran before it, and the sweep's
-numbers depend on the machine that ran them.
-
-So a `Measure` is a value: a callable `(text) => columns` carrying an `ambiguous` tag, passed
-alongside the glyph set on the channel that already exists (`cli.ts` → `renderDocumentDetailed`
-→ `LayoutContext` → `renderTable`), and **defaulting to `NARROW_MEASURE` at every public entry
-point**. The default is not a convenience — it *is* rule 4 of the resolution order — and the
-narrow branch calls `stringWidth(text)` with **no options object at all**, byte-for-byte the
-call all 26 sites used to make. That makes narrow-mode output identical to the parent commit *by
-construction* rather than by measurement. Measured anyway: **4,368 renders (21 files × 104
-widths × both tiers) byte-identical, 0 differing bytes, 0 `codeRanges` disagreements.**
-
-Since WP-2 the `Measure`, the `GlyphSet`, the prefix stack, the fence-language resolver, the
-`emoji` decision and the colour decision are one immutable `LayoutContext`
-(`src/layout-context.ts`), constructed once per render and threaded explicitly. That is what
-makes the layout state reachable from a visitor that is no longer a closure inside
-`renderDocumentDetailed` — the whole point of the seam.
-
-#### Resolution order (highest first)
-
-1. `MDVIEW_AMBIGUOUS=narrow|wide`. Any other value — unset, empty, a typo — is **ignored** and
-   falls through. Never throws on a bad env var; that is the `MDVIEW_GLYPHS` contract and this
-   matches it exactly.
-2. A cached probe result for **this terminal identity**.
-3. A live DSR probe, iff stdin *and* stdout are TTYs **and the caller opted in**. `allowProbe`
-   defaults to *off*, which is the load-bearing direction: `--check`, the sweep and the whole
-   test suite get "no terminal I/O, no cache writes" for free rather than each having to
-   remember.
-4. **Narrow.**
-
-**The cache key is deliberately over-specified**: `TERM`, `TERM_PROGRAM`, `COLORTERM`,
-`VTE_VERSION`, the multiplexer, and the locale. The locale is in the key because it is
-conventionally *the* thing that changes a terminal's ambiguous-width behaviour.
-
-*This paragraph has been rewritten twice against field data, and the history is the point.* It
-first justified the key by claiming `TERM` alone cannot separate the validated terminals
-"because a multiplexer rewrites it". **The validation disproved that**: zellij did **not**
-rewrite `TERM` — ghostty under zellij reported `xterm-ghostty` — so that specific mechanism
-never fired. The five-terminal survey of 2026-07-28 then supplied the mechanism that is actually
-real:
-
-| host | `TERM` | distinguishing field |
-|---|---|---|
-| ghostty + zellij | `xterm-ghostty` | `TERM` |
-| urxvt | `rxvt-unicode-256color` | `TERM` |
-| kitty | `xterm-kitty` | `TERM` |
-| gnome-terminal | **`xterm-256color`** | **`VTE_VERSION=7600`** |
-| anything + tmux | `tmux-256color` | *(the host that started the server — see below)* |
-| mlterm | `mlterm` | `TERM` — **and the only measured `wide`** |
-
-**`TERM` is a terminfo name, not an identity, and this machine already proves it**:
-gnome-terminal reports the *generic* `xterm-256color`, the value plain xterm, alacritty and
-terminator also claim. `VTE_VERSION` is what separates it. That is the real justification; the
-multiplexer-rewrite story was speculation that happened to be wrong.
-
-**Under tmux the key is dominated by tmux's own fields, and that is correct rather than a
-collision.** The reason it is correct is **not** that the host fields vanish — it is that **tmux
-answers DSR from its own grid model rather than relaying to the host**, measured by running the
-probe in a fully detached session with nothing attached to render anything, which still replied
-`\e[1;2R` in 5 ms. mdview's output is laid into tmux's grid and *tmux* decides the wrapping, so
-tmux's opinion is the one that governs and sharing an answer across hosts is the desired
-behaviour. A host that disagrees with its own multiplexer is already rendering corrupt output
-for every program, and is not mdview's to reconcile.
-
-**What tmux actually does to the environment** (measured 2026-07-28 by injecting known values at
-server start and reading them back inside a pane): it overrides exactly the two variables it
-owns — `TERM` → `tmux-256color`, `TERM_PROGRAM` → `tmux` — and **passes everything else through
-unchanged, frozen at server-start time**. `COLORTERM` and `VTE_VERSION` both survive; the
-default `update-environment` list carries neither, so an *attaching* client contributes nothing.
-The consequence is that a pane's identity records **whichever host started the server**, not
-whoever is looking at it:
-
-| tmux server started from | identity under tmux | how |
-|---|---|---|
-| kitty / ghostty | `…\|colorterm=truecolor\|vte=\|mux=tmux` | field |
-| urxvt | `…\|colorterm=rxvt-xpm\|vte=\|mux=tmux` | field |
-| gnome-terminal | `…\|colorterm=truecolor\|vte=7600\|mux=tmux` | lab, **then field** |
-
-The last row is worth its own note: it was **predicted from the injection experiment and then
-confirmed live**, byte-for-byte, in a real gnome-terminal + tmux session. That is the difference
-between this version of the paragraph and the three wrong ones — the rule was stated first and
-the observation arrived afterwards to match it.
-
-So tmux keys split **per server origin**, not per host and not into one bucket, and the split
-persists for every client that ever attaches. The cost is bounded at one spurious re-probe per
-origin, all of them agreeing, because tmux gives the same answer regardless. Over-specifying
-costs a re-probe; under-specifying hands ghostty urxvt's answer.
-
-**The one place the key is genuinely under-specified, found 2026-07-28 by installing a terminal
-that can be configured either way.** mlterm's `col_size_of_width_a` is a config-file setting:
-`=2` probed **wide** (`\e[2;3R`, cursor 1→3), `=1` probed **narrow** (`\e[2;2R`), same binary,
-same session shape, and **byte-identical identity strings**
-(`term=mlterm|program=|colorterm=truecolor|vte=|mux=none|locale=en_US.UTF-8`). Two correct
-opposite answers under one key. The cache therefore serves the stale verdict across such a flip
-until `--refresh`, and no field available to the identity can fix it, because the setting never
-reaches the environment. Documented in the README as user-facing advice rather than papered
-over. **Do not "fix" this by widening the key** — there is nothing to widen it with; the honest
-options are a TTL or always re-probing on a TTY, and neither is worth 5 ms per run against a
-setting most users change never.
-
-This pair is also **the proof that the probe measures rendering rather than correlating with
-`TERM`.** Six narrow terminals could not establish it; one terminal that answers both ways under
-an unchanged identity does, and it is the only evidence in the repo that distinguishes the
-design from a lookup table. Every `wide` claim before this was `MDVIEW_AMBIGUOUS` or a test
-double.
-
-**zellij is the opposite and overrides nothing.** Measured on two different hosts: ghostty under
-zellij keeps `TERM=xterm-ghostty`, kitty under zellij keeps `TERM=xterm-kitty`, and neither
-gains a `TERM_PROGRAM` it did not already have — kitty sets none, so the field stays empty where
-tmux would have stamped `tmux`. Under zellij the key therefore still identifies the **host**,
-correctly. This is also the cleanest argument for keeping `mux` in the key at all: kitty bare and
-kitty-under-zellij differ in **exactly one field**, and it is that one. **Do not generalise from
-one multiplexer to another** — the two behave oppositely on environment, and `screen` differs
-from both again (it does not strip `ZELLIJ`, which is why `detectMultiplexer` needs `TERM` as a
-tiebreaker).
-
-**Keep the claim sized to the evidence.** This paragraph has now been wrong three times while
-the code was right throughout: first "a multiplexer rewrites `TERM`" (zellij does not), then
-"every host collapses to one key" and "tmux strips `VTE_VERSION`" (it strips nothing — it
-overrides two variables and freezes the rest). Each wrong version was an observation generalised
-into a mechanism. The rule above is stated as a rule because it was measured as one.
-
-Writes are atomic (temp file + `rename`, `src/config.ts`'s pattern); every corrupt, truncated,
-wrong-version or unreadable shape reads as a **miss** and re-probes, and an unwritable cache is
-a `false` return, never a throw — a viewer that refuses to render because a file it generated is
-corrupt has mistaken its plumbing for the user's request.
-
-**The probe never moves the cursor to a cell it did not already own.** It asks where the cursor
-is, writes one character *there*, asks again, and the difference is the answer; then it returns
-to the recorded column and clears to end of line, which is exact because nothing to the right of
-the cursor existed before. The obvious alternative — CR to column 1, write, restore — overwrites
-whatever the shell prompt left there and cannot put it back. Within two columns of the right
-margin it **refuses and says so** rather than guessing, because the glyph would wrap and the
-erase would clear a line the probe never wrote.
-
-Cooked mode is restored in **three** layers, and the third is not belt-and-braces: a `finally`
-covers a throw or a return, `process.on("exit")` covers `process.exit`, and handlers for
-`SIGINT`/`SIGTERM`/`SIGHUP` cover an external `kill` — whose *default* disposition terminates
-without emitting `exit` at all, which is the one path that would strand the user's shell in raw
-mode. Verified against a scripted pty: killed mid-probe, the tty comes back `icanon`. Ctrl-C is
-handled as a **byte** (`\x03`), not a signal, because raw mode is exactly what turns `ISIG` off.
-
-#### `wide` forces the ASCII glyph tier — arithmetic, not taste
-
-The tier section above says *"every Unicode substitute is exactly 1 column, so the tier has no
-width impact and `chromeWidth` stays `3N+1`"*. **That is a narrow-measurement statement, and
-under `wide` it is false for most of the set**: `•` (U+2022), `─` (U+2500) and the entire
-box-drawing charset are themselves Ambiguous and measure 2. Only `◦`, `‣` and `✓` survive.
-
-Two consequences, neither cosmetic and neither repairable in the allocator:
-
-- **A table's border row cannot be made to fit.** A horizontal rule is one `─` per column of
-  cell width, so the border row is exactly *twice* the content rows — and no allocation can
-  shrink by its entire budget, so `allocateWidths` reports `fits: false` and the table is
-  emitted at its minimum feasible width rather than as a wreck. Measured on
-  `tests/fixtures/wide-table.md`: **160 columns at a target of 80, 200 at 100 — exactly 2×**,
-  pinned in `tests/width.test.ts`. **WP-3 of `plans/tn-review-remediation.md` did not move these
-  numbers and was not supposed to** — it closed the *padding* defect below, which is a
-  measurement problem; this is a glyph-choice problem, and refusing the tier is the choice.
-- **A substituted bullet widens its own item.** `substituteBullets` swaps `"* "` for `"• "`
-  *after* the budget arithmetic ran on the source marker, so every unordered item is one column
-  over budget per level.
-
-Measured over the bundled corpus at all five sweep widths: **wide + Unicode = 35 overflows of 60
-combos; wide + ASCII = 0.** So `resolveGlyphs` takes the ambiguous setting as a third argument
-and returns ASCII whenever it is `wide` (`src/glyphs.ts:113`), **ahead of `--unicode` and
-`MDVIEW_GLYPHS`** — because `--unicode` asserts a *capability* ("this terminal can draw these"),
-which remains true and is simply not the constraint that binds. **`unicode × wide` is therefore
-unreachable from the CLI.** An explicit `--unicode` overridden this way is named once on stderr
-(`wideForcesAscii`, deliberately the *flag* only and not the env var: a flag going unmet is news
-about this invocation; an exported variable would print on every render for the rest of that
-shell's life). `MDVIEW_AMBIGUOUS=narrow` is the escape hatch.
-
-`renderRule` divides the target by the rule glyph's *measured* width for the same reason —
-`"─".repeat(targetWidth - 1)` is twice the document width in wide mode, which would put the
-tool's own frontmatter divider over budget on every file that has one.
-
-#### The residual, named rather than papered over — and then closed by owning the emitter
-
-**The finding.** `cli-table3` bundled its own `string-width@4.2.3`, which has no
-`ambiguousIsNarrow` option at all, so its cell padding could never honour wide mode. A cell
-containing *k* ambiguous characters was padded *k* columns too wide, and since *k* varies cell by
-cell within a column, **a table's right edge could be ragged by up to *k* columns**. This
-paragraph used to end "not fixable from outside the library", and that was exactly right: it
-padded to `colWidths` in its own units, so no amount of pre-padding, pre-wrapping or budget
-adjustment on our side could make its count agree with ours per-cell. The capped
-render/measure/reallocate loop that used to sit in `renderTable` absorbed only the **aggregate**
-overage — which is why a table stayed inside the target while its edge stayed crooked, and why a
-green width gate was never evidence about this.
-
-**The fix, in WP-3 of `plans/tn-review-remediation.md`: stop being outside the library.**
-`src/table.ts` emits its own borders, junctions, padding and alignment from the allocation
-`allocateWidths` already produced, padding with the `Measure` it was handed — the same ruler the
-allocation used and the same one `--check` grades the result with. The disagreement is not
-repaired, it is **impossible by construction**; the retry loop, `MAX_FIT_PASSES` and
-`maxRenderedWidth` are gone with it, and the rendered geometry now *equals* the allocated
-geometry (`tests/table.test.ts` asserts that equality directly).
-
-Measured over this repo's own 41 markdown files at six widths, both tiers, both ambiguous modes
-— 984 renders:
-
-| Combination | Rendered tables | Ragged before | Ragged after |
-|---|---|---|---|
-| narrow, either tier | 180 each | 0 | 0 |
-| **wide + ASCII** (what the CLI produces) | 180 | **66** | **0** |
-| wide + Unicode (unreachable; `wideForcesAscii`) | 180 | 180 | 180 |
-
-Narrow-mode output is **byte-identical** across those 492 renders — 0 differing bytes — because
-narrow measurement is where the two `string-width` majors happened to agree on this corpus, and
-because the emitter reproduces the library's escape-sequence layout — one style wrap per *cell*,
-not per line — and, at the time, `@colors/colors`' styling decision exactly rather than
-approximately. (The *layout* is still reproduced; the *decision* is the resolved policy since
-WP-2 of `plans/colour-policy.md`, and the two style pairs are committed literals in
-`src/style.ts`.) It is *not* byte-identical in general: a
-narrow-mode table carrying U+26A0 changes, and improves — that glyph is 1 column to
-`string-width@4` and 2 to `@7`, which is the original reconciliation bug, and its edge went from
-a spread of 3 to 0.
-
-**`cli-table3` is gone from the tree entirely as of WP-6**, which removed the last thing
-requiring it. The finding above is why `src/table.ts` stopped importing it; the dependency
-removal is a separate fact and is recorded in the root `AGENTS.md`.
-
-**Do not read this as "wide mode + Unicode tables now work."** They do not, and the row above
-says so: `─` and the whole box-drawing set are themselves Ambiguous, a border row is still
-exactly 2× the content rows, and that is still handled by refusing the tier.
-
-#### The sweep keeps the two axes independent, on purpose
-
-`scripts/sweep.ts` takes `--ambiguous narrow|wide` and **never** reads `MDVIEW_AMBIGUOUS`, never
-consults the cache, and never probes. It is a corpus *measurement* instrument whose numbers are
-compared against dated runs in the private archive; a baseline that changed ruler because of the
-machine's `TERM`, or because someone once ran `mdview probe`, could not be compared to anything.
-It also does **not** apply the wide-forces-ASCII rule, so `--ambiguous wide --glyphs unicode`
-stays reachable — that combination is how the finding above was measured, and an instrument that
-cannot reproduce a finding is not an instrument. It prints a NOTE saying the CLI never produces
-that combination.
-
-`--check` is the other way round and for the opposite reason: it honours the env var and the
-cache (it just never probes), because its whole claim is "the renderer hit the budget it was
-given". A check measured with a different ruler than the allocation used is asserting something
-else entirely.
-
-#### What the orchestrator cannot verify
-
-The probe's *arithmetic*, cleanup, timeout, interrupt and cache behaviour are covered by
-`tests/width.test.ts` against a scripted terminal double, and end-to-end against a scripted pty.
-**What no test here can establish is what a real terminal answers.** The user runs urxvt and
-ghostty-inside-zellij; run `mdview probe` in each and read the `ambiguous width` line. Nothing in
-this repo may claim those pass.
+### Colour: one owned decision — moved to `docs/agents/colour.md`
+
+**The whole record is `docs/agents/colour.md`**, moved there at WP-4 of
+`plans/docs-and-memory-curation.md` with every section title unchanged: "Colour: one owned
+decision, resolved from inputs handed in" (`resolveColourPolicy`, `src/colour.ts`, the
+ratified precedence, the hyperlink axis's own ladder, and `--plain`'s CLI-boundary
+short-circuit), "Three levels, not two: `SgrMode` and the hue/format split", and "The reader
+inventory, with each reader's threshold" — which is where Decision 3's named producer
+exception for fenced-code highlighting is enumerated. **What stays here**: "Colourless gates
+cannot see colour-only defects" and its WP-3 closure, above, and the rendering policy's own
+highlighting-path entry, below. The packages that used to make this decision are
+`docs/agents/dependency-history.md`.
+
+### Ambiguous width (WP-3) — moved to `docs/agents/ambiguous-width.md`
+
+**The whole record is `docs/agents/ambiguous-width.md`**, moved there at WP-4 of
+`plans/docs-and-memory-curation.md` with every section title unchanged: "Ambiguous width
+(WP-3)" (`src/width.ts` as the only importer of `string-width`, and the threaded `Measure`),
+"The mode is threaded, exactly like `GlyphSet`, and for the same stated reason", "Resolution
+order (highest first)" with the probe, the over-specified cache key and the five-terminal
+validation table, "`wide` forces the ASCII glyph tier — arithmetic, not taste", "The
+residual, named rather than papered over — and then closed by owning the emitter" (the
+`cli-table3` padding defect and the table emitter that made it impossible by construction),
+"The sweep keeps the two axes independent, on purpose", and "What the orchestrator cannot
+verify". **The glyph tier itself stays above** — its precedence rule's top slot, resolved
+`wide`, is the arithmetic in that file.
 
 ### Rendering policy
 
@@ -2047,7 +841,8 @@ this repo may claim those pass.
   unstyled code whenever `ctx.sgr` is not `"full"` — i.e. whenever the resolved policy
   (`src/colour.ts`) says so, which is every non-TTY run with nothing forced: `bun test`,
   `--check`, both sweeps, CI. **The gate narrowed from `ctx.color` at WP-2 of
-  `plans/colour-modes.md`** (Decision 3, "Three levels, not two" above): the format-preserving
+  `plans/colour-modes.md`** (Decision 3, "Three levels, not two", `docs/agents/colour.md`): the
+  format-preserving
   `formats` mode takes this same dark branch, so `--color=never` no longer reaches the
   highlighter at all. It **used** to be the same gate the library's `highlight()`
   applied at `index.js:591` (`chalk.level === 0`); WP-1 of `plans/colour-policy.md` made the two
@@ -2081,8 +876,8 @@ this repo may claim those pass.
   with `new Array(length).join(str)`, which yields `length - 1`, and `src/blocks.ts`'s
   `renderHr` reproduces it rather than inheriting it. **Match it, don't "fix" it**, or the
   divider and the document's own rules disagree by one column. (The repeat count is a *column*
-  count divided by the glyph's measured width — see `renderRule` and the wide-mode section
-  above.)
+  count divided by the glyph's measured width — see `renderRule` and "`wide` forces the ASCII
+  glyph tier" in `docs/agents/ambiguous-width.md`.)
 - **Known limitation:** a markdown table nested *inside* a list item is re-wrapped as prose and
   its box drawing is mangled. The table renderer sizes to the budget it is handed and has no
   knowledge of what a later pass will do to its rows. There are zero instances in the corpus

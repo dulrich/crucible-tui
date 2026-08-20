@@ -5,7 +5,8 @@ manifests it resolves, what the corpus has actually measured, and the defect det
 that see *under* the width gate. **The root `AGENTS.md` is the parent document — read it
 first.** The sweep's own ambiguous-width policy — why it never reads `MDVIEW_AMBIGUOUS`,
 never consults the cache and never probes — is documented with the rest of ambiguous
-width, in `src/AGENTS.md`'s "The sweep keeps the two axes independent, on purpose".
+width, in `docs/agents/ambiguous-width.md`'s "The sweep keeps the two axes independent, on
+purpose".
 
 ### Corpus sweep
 
@@ -218,12 +219,14 @@ repo's own renderer, where the decision was `supports-color`'s answer, and WP-1 
 `plans/colour-policy.md` made it `resolveColourPolicy`'s (`src/colour.ts`) — threaded in as a
 value, with no library asked. Same gate, same blindness, owned twice over. Since WP-2 of that
 plan the *whole* highlighting path obeys it, `cli-highlight`'s own `chalk` having been the
-last thing that did not — see `src/AGENTS.md`'s "Colour" section and its rendering policy.
+last thing that did not — see `docs/agents/colour.md` and `src/AGENTS.md`'s rendering
+policy.
 
 **And since WP-2 of `plans/colour-modes.md` the gate is narrower than "is colour on":
 `sgr !== "full"` returns raw code, so the format-preserving `formats` mode takes the same
 dark branch `none` does** (Decision 3 — an explicit, ratified *producer* exception, argued
-in `src/blocks.ts`'s `highlightCode` and enumerated in `src/AGENTS.md`). Two consequences
+in `src/blocks.ts`'s `highlightCode` and enumerated in `docs/agents/colour.md`'s reader
+inventory). Two consequences
 for this file's instruments. The blindness above is **unchanged in extent** — every gate
 `verify` runs is still colourless and still cannot see this path. But the *coverage claim*
 narrows: a run that pins `MDVIEW_COLOR=never` is no longer a colour-on run as far as
@@ -532,8 +535,8 @@ walk through `src/style.ts` under the resolved policy; the colourless render of
 width and both tiers. **The carrier pair itself is gone now too** — WP-2 of
 `plans/wiki-link-tokenizer.md` (`ab3518e`) retired it, moving recognition into the lexer as
 an inline tokenizer extension and styling the label at emission instead of after the walk —
-so there is no post-walk pass left to describe here at all; see `src/AGENTS.md`, "The
-wiki-link carrier defect", for that closure. **G1 since WP-5 is what would have caught
+so there is no post-walk pass left to describe here at all; see
+`docs/agents/wiki-link-record.md`, "The wiki-link carrier defect", for that closure. **G1 since WP-5 is what would have caught
 either of the two retired mechanisms directly**, on the `default` child, without needing a
 colourless-render side-channel to notice.
 
@@ -673,7 +676,7 @@ Seven things about this module are load-bearing:
   `this.tab`. Those are correct renderings and the re-alignment pass deliberately leaves
   them alone. **Read a non-zero count here before assuming a regression.** The *second*
   class it used to carry — a list nested inside a blockquote — was closed in WP-2g; see
-  "A blockquote owes columns exactly like a list" in `src/AGENTS.md`.
+  "A blockquote owes columns exactly like a list" in `docs/agents/list-pipeline.md`.
 - **`findContinuationOverIndent` is structurally blind to guard-shaped corruption, and no
   other gate in this repo covers it.** This is a durable trap, not a note about one bug.
   The detector forgives a drift of exactly one column on a line the shared
