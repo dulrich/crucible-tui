@@ -33,7 +33,7 @@ import licenseNotices from "../THIRD-PARTY-LICENSES.txt" with { type: "text" };
  * subcommand. Supporting both is cheaper than making one of two published
  * spellings a lie, and the flag is a one-line delegation to the same handler.
  */
-const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--help] [--licenses]
+const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--probe] [--help] [--licenses]
 
   <file.md>       markdown file to render (required unless --licenses or
                   --probe is given)
@@ -55,8 +55,8 @@ const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--asc
                   hyperlink resolution paragraph below for how it combines
                   with the non-TTY ceiling
   --no-pager      write plain output to stdout instead of piping to a pager
-  --check         render with no pager; exit non-zero if any line exceeds the
-                  target width (this tool's self-smoke gate)
+  --check         render with no pager; exit non-zero if any non-code line
+                  exceeds the target width (this tool's self-smoke gate)
   --ascii         force the ASCII glyph tier (bullets, rules, table borders,
                   task states) regardless of detected terminal capability
   --unicode       force the Unicode glyph tier; mutually exclusive with --ascii
@@ -66,7 +66,8 @@ const USAGE = `usage: mdview <file.md> [--width N] [--no-pager] [--check] [--asc
   --licenses      print aggregated third-party license notices and exit (no
                   file argument needed; see THIRD-PARTY-LICENSES.txt)
 
-Glyph tier resolution (highest precedence first): --ascii/--unicode, then
+Glyph tier resolution (highest precedence first): resolved ambiguous width
+wide forces ASCII (see below), then --ascii/--unicode, then
 MDVIEW_GLYPHS=ascii|unicode in the environment, then auto-detection from the
 locale and TERM.
 
@@ -92,7 +93,8 @@ Subcommands (a bare <file.md> above is still valid on its own — no subcommand
 is required to view a file):
   highlight-as <fence> <language>   map a fence language to a highlighter
                                      language and save it to the config file
-  probe [--refresh]                 report how this terminal renders East Asian
+  probe [--refresh] [--no-cache] [--timeout MS]
+                                     report how this terminal renders East Asian
                                      Ambiguous characters
   view <file.md> [options]          same as the bare form above, spelled out
   help [subcommand]                 print this message, or a subcommand's own
