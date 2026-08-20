@@ -1,7 +1,7 @@
 import type { Token, Tokens } from "marked";
 import type { GlyphSet } from "./glyphs";
 import { type SgrMode } from "./colour";
-import { applyStyle, createStyler } from "./style";
+import { type StyleName, type Styler, applyStyle, createStyler } from "./style";
 import { type Align, padToWidth, splitToken } from "./text";
 import { NARROW_MEASURE, type Measure } from "./width";
 
@@ -92,69 +92,203 @@ export function decodeEntities(text: string): string {
 }
 
 /**
- * Flatten a cell's inline token stream to plain text.
+ * One styled run inside a cell's finished text — the span-cell contract's unit.
  *
- * Deliberately *no ANSI inside cells*: every width measurement and every hard split
- * in this module operates on the string directly, and splitting a string that carries
- * escape sequences risks cutting inside a sequence or dropping a reset — which would
- * corrupt both the colours and the alignment. Emphasis markers are unwrapped, code
- * spans lose their backticks, and a link keeps both its label and its href so no
- * content is discarded.
+ * `start`/`end` are **UTF-16 code-unit indices into the final normalized cell text**,
+ * half-open, and every span in a `CellContent` is non-overlapping and ascending.
+ * `styles` is an ordered chain of names already in the committed style table
+ * (`src/style.ts`) — outermost first, exactly the order `createStyler` accumulates — so a
+ * wiki-link label's span is `["cyan", "underline"]`, the same chain `WIKI_LINK_STYLE`
+ * composes. **No new style vocabulary**: a span can only ask for a style this renderer
+ * is already authorized to emit.
  */
-export function flattenInline(tokens: Token[] | undefined, fallback: string): string {
-  if (!tokens || tokens.length === 0) return decodeEntities(fallback);
-
-  const parts = tokens.map((token): string => {
-    switch (token.type) {
-      case "text":
-      case "escape":
-      case "codespan":
-      case "html":
-        return decodeEntities(token.text ?? "");
-      case "strong":
-      case "em":
-      case "del":
-        return flattenInline(token.tokens, token.text ?? "");
-      case "link": {
-        const label = flattenInline(token.tokens, token.text ?? "");
-        const href = token.href ?? "";
-        return href === "" || href === label ? label : `${label} (${href})`;
-      }
-      case "image":
-        return decodeEntities(token.text ?? "");
-      case "br":
-        return " ";
-      default: {
-        const nested = "tokens" in token ? (token.tokens as Token[] | undefined) : undefined;
-        if (nested && nested.length > 0) return flattenInline(nested, token.raw ?? "");
-        return decodeEntities("text" in token ? (token.text ?? "") : (token.raw ?? ""));
-      }
-    }
-  });
-
-  return parts.join("");
+export interface CellSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly styles: readonly StyleName[];
 }
 
-/** Plain text for one table cell. */
-export function cellText(cell: Tokens.TableCell): string {
-  return flattenInline(cell.tokens, cell.text ?? "").replace(/\s+/g, " ").trim();
+/**
+ * A cell's finished text plus the styling it owes — the value the cell pipeline carries.
+ *
+ * The contract this replaces said "no ANSI inside cells" flat out. That is still true of
+ * **measurement and splitting** and always must be: `naturalWidths`, `wrapText` and
+ * `splitToken` all operate on `text` alone, and splitting a string that carries escape
+ * sequences risks cutting inside a sequence or dropping a reset, which would corrupt both
+ * the colours and the alignment. What changed is *where* styling may happen — at
+ * **emission**, per fragment, against offsets recorded here — so a styled cell can exist
+ * without any pass ever having to measure or split a byte of SGR.
+ *
+ * `spans` is empty for every cell this repo produces today; the producer is WP-2's.
+ */
+export interface CellContent {
+  readonly text: string;
+  readonly spans: readonly CellSpan[];
+}
+
+/** Pre-normalization text and spans, in raw walk coordinates. */
+interface RawCell {
+  readonly text: string;
+  readonly spans: readonly CellSpan[];
+}
+
+const plainCell = (text: string): RawCell => ({ text, spans: [] });
+
+/** Concatenate walk results, rebasing each part's spans onto the joined string. */
+function concatCells(parts: RawCell[]): RawCell {
+  if (parts.length === 1) return parts[0] as RawCell;
+  let text = "";
+  const spans: CellSpan[] = [];
+  for (const part of parts) {
+    const base = text.length;
+    for (const span of part.spans) {
+      spans.push({ start: span.start + base, end: span.end + base, styles: span.styles });
+    }
+    text += part.text;
+  }
+  return { text, spans };
+}
+
+/**
+ * The flatten walk itself: inline tokens down to raw text plus raw-coordinate spans.
+ *
+ * Emphasis markers are unwrapped, code spans lose their backticks, and a link keeps both
+ * its label and its href so no content is discarded — all exactly as before. **Children
+ * are flattened rather than dispatched**, which is the rule the wiki-link span producer
+ * (WP-2) inherits: a label's children flatten to plain text like `strong`/`em`/`del`/link
+ * children already do, and the only span a label contributes is its own outer chain. That
+ * is what keeps cells free of nested SGR and of OSC-8.
+ *
+ * Recursive, and deliberately **not** normalizing: collapsing whitespace per level would
+ * trim interior spaces at every nesting boundary. Normalization happens once, at the top,
+ * in `flattenInline`.
+ */
+function walkInline(tokens: Token[] | undefined, fallback: string): RawCell {
+  if (!tokens || tokens.length === 0) return plainCell(decodeEntities(fallback));
+
+  return concatCells(
+    tokens.map((token): RawCell => {
+      switch (token.type) {
+        case "text":
+        case "escape":
+        case "codespan":
+        case "html":
+          return plainCell(decodeEntities(token.text ?? ""));
+        case "strong":
+        case "em":
+        case "del":
+          return walkInline(token.tokens, token.text ?? "");
+        case "link": {
+          const label = walkInline(token.tokens, token.text ?? "");
+          const href = token.href ?? "";
+          if (href === "" || href === label.text) return label;
+          return concatCells([label, plainCell(` (${href})`)]);
+        }
+        case "image":
+          return plainCell(decodeEntities(token.text ?? ""));
+        case "br":
+          return plainCell(" ");
+        default: {
+          const nested = "tokens" in token ? (token.tokens as Token[] | undefined) : undefined;
+          if (nested && nested.length > 0) return walkInline(nested, token.raw ?? "");
+          return plainCell(decodeEntities("text" in token ? (token.text ?? "") : (token.raw ?? "")));
+        }
+      }
+    }),
+  );
+}
+
+/** One `\s` in JS's own vocabulary — the class `/\s+/` collapses on. */
+const WHITESPACE = /\s/;
+
+/**
+ * `text.replace(/\s+/g, " ").trim()`, carrying the spans through it.
+ *
+ * This is the normalization `cellText` used to apply *after* flattening, moved into the
+ * flatten so `CellContent.text` is already-final and offsets mean something. It is the
+ * same collapse and the same trim, reproduced rather than reinterpreted: every whitespace
+ * run becomes exactly one ASCII space and the result is trimmed once, so for a cell with
+ * no spans the text is byte-identical to what the two-step form produced.
+ *
+ * **Wiki labels normalize like every other cell text**, which is a behaviour change WP-2
+ * lands and this function is written for: the carrier bytes were non-whitespace and
+ * therefore acted as barriers to the collapse, so `| [[ b ]] |` kept its boundary spaces.
+ * Nothing here knows about carriers, so nothing here can reproduce that artifact.
+ */
+function normalizeCell(raw: RawCell): CellContent {
+  const source = raw.text;
+  // `positions[i]` is where raw index `i` lands in the collapsed string. Every index of a
+  // whitespace run after its first maps *past* the space the run became, so a span that
+  // ends inside a run still contains it.
+  const positions = new Array<number>(source.length + 1);
+  let collapsed = "";
+  let index = 0;
+  while (index < source.length) {
+    if (WHITESPACE.test(source.charAt(index))) {
+      positions[index] = collapsed.length;
+      index += 1;
+      collapsed += " ";
+      while (index < source.length && WHITESPACE.test(source.charAt(index))) {
+        positions[index] = collapsed.length;
+        index += 1;
+      }
+      continue;
+    }
+    positions[index] = collapsed.length;
+    collapsed += source.charAt(index);
+    index += 1;
+  }
+  positions[source.length] = collapsed.length;
+
+  const lead = collapsed.length - collapsed.trimStart().length;
+  const tail = collapsed.trimEnd().length;
+  const text = lead >= tail ? "" : collapsed.slice(lead, tail);
+
+  if (raw.spans.length === 0) return { text, spans: [] };
+
+  const clamp = (at: number): number => Math.min(Math.max((positions[at] ?? 0) - lead, 0), text.length);
+  const spans: CellSpan[] = [];
+  for (const span of raw.spans) {
+    const start = clamp(span.start);
+    const end = clamp(span.end);
+    if (start < end) spans.push({ start, end, styles: span.styles });
+  }
+  return { text, spans };
+}
+
+/**
+ * Flatten a cell's inline token stream to its finished text and the spans over it.
+ *
+ * Returned `text` is **already normalized** — entity-decoded, whitespace-collapsed and
+ * trimmed — which is the whole point: an offset is only meaningful against the string the
+ * emitter will actually pad and split.
+ */
+export function flattenInline(tokens: Token[] | undefined, fallback: string): CellContent {
+  return normalizeCell(walkInline(tokens, fallback));
+}
+
+/** Finished content for one table cell. */
+export function cellText(cell: Tokens.TableCell): CellContent {
+  return flattenInline(cell.tokens, cell.text ?? "");
 }
 
 export interface TableGrid {
-  header: string[];
-  rows: string[][];
+  header: CellContent[];
+  rows: CellContent[][];
   aligns: Align[];
   columnCount: number;
 }
 
-/** Extract a rectangular grid of plain-text cells plus per-column alignment. */
+const EMPTY_CELL: CellContent = { text: "", spans: [] };
+
+/** Extract a rectangular grid of cell content plus per-column alignment. */
 export function tableGrid(token: Tokens.Table): TableGrid {
   const header = token.header.map(cellText);
   const rawRows = token.rows.map((row) => row.map(cellText));
   const columnCount = Math.max(header.length, ...rawRows.map((row) => row.length), 0);
 
-  const pad = (row: string[]): string[] =>
-    Array.from({ length: columnCount }, (_, index) => row[index] ?? "");
+  const pad = (row: CellContent[]): CellContent[] =>
+    Array.from({ length: columnCount }, (_, index) => row[index] ?? EMPTY_CELL);
 
   const aligns = Array.from({ length: columnCount }, (_, index) => token.align[index] ?? "left");
 
@@ -170,12 +304,20 @@ export function tableGrid(token: Tokens.Table): TableGrid {
  * (2 columns per character) and emoji are counted in display columns rather than code
  * units, and so East Asian Ambiguous characters are counted the way the terminal this
  * render is destined for actually draws them.
+ *
+ * **It reads `text` and nothing else.** A cell's spans are styling, styling is emitted
+ * last and only ever inserts zero-width escape bytes, so measurement is exactly the
+ * question it always was and its answer cannot move when a span appears.
  */
-export function naturalWidths(header: string[], rows: string[][], measure: Measure = NARROW_MEASURE): number[] {
+export function naturalWidths(
+  header: readonly CellContent[],
+  rows: readonly (readonly CellContent[])[],
+  measure: Measure = NARROW_MEASURE,
+): number[] {
   return header.map((cell, index) => {
-    let widest = measure(cell);
+    let widest = measure(cell.text);
     for (const row of rows) {
-      const width = measure(row[index] ?? "");
+      const width = measure(row[index]?.text ?? "");
       if (width > widest) widest = width;
     }
     return Math.max(ABSOLUTE_MIN_COLUMN_WIDTH, widest);
@@ -359,6 +501,55 @@ export function wrapText(text: string, width: number, measure: Measure = NARROW_
   return lines;
 }
 
+/** One wrapped line of a cell, with the slice of the cell text it came from. */
+interface CellFragment {
+  readonly text: string;
+  /** Offset of this fragment in the cell's `text`, or `-1` if it could not be located. */
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * `wrapText`'s own lines, with each line's `[start, end)` in the cell text recovered.
+ *
+ * **This is a private wrapper over the existing split, not a second wrap** — deliberately,
+ * per the plan's clipping rule (cycle-3 f6): `splitToken` (`src/text.ts:35`) and the public
+ * `wrapText` keep their exact signatures and semantics, because `src/wrap.ts` imports the
+ * first and this module must not change what a prose wrap does. Nothing in `src/text.ts`
+ * is touched.
+ *
+ * Recovery is sound because the input is **already normalized**: every whitespace run in
+ * the cell text is a single space, and `wrapText` either breaks at one of those spaces or
+ * hard-splits inside a word — so every emitted line is a *contiguous slice* of the text,
+ * and consecutive lines are separated by exactly one space or by nothing at all. Locating
+ * each line at the cursor, or one past it, therefore identifies it exactly. The lossless
+ * rejoin `splitToken` documents (`src/text.ts:33`) is what guarantees no character is lost
+ * between fragments.
+ *
+ * If a line cannot be located — which no normalized input should produce — the fragment is
+ * returned with `start = -1` and carries no styling, so the failure direction is *unstyled
+ * text*, never text styled against the wrong offsets.
+ */
+function wrapFragments(text: string, width: number, measure: Measure): CellFragment[] {
+  const lines = wrapText(text, width, measure);
+  const fragments: CellFragment[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    const start = text.startsWith(line, cursor)
+      ? cursor
+      : text.startsWith(line, cursor + 1)
+        ? cursor + 1
+        : -1;
+    if (start === -1) {
+      fragments.push({ text: line, start: -1, end: -1 });
+      continue;
+    }
+    fragments.push({ text: line, start, end: start + line.length });
+    cursor = start + line.length;
+  }
+  return fragments;
+}
+
 // ---------------------------------------------------------------------------
 // Step 5 — the emitter
 // ---------------------------------------------------------------------------
@@ -521,8 +712,66 @@ const HEAD = createStyler("bold"); // the old `head: ["bold"]`
 const styleBorder = (sgr: SgrMode, text: string): string => applyStyle({ sgr }, BORDER, text);
 const styleHead = (sgr: SgrMode, text: string): string => applyStyle({ sgr }, HEAD, text);
 
+/**
+ * Turn one ordered style chain into bytes — the **only** place a `CellSpan.styles` becomes
+ * SGR, and the seam the plan names as the shared applicator.
+ *
+ * The fold is `createStyler`'s own accumulation order, outermost name first, so a chain
+ * `["cyan", "underline"]` produces exactly the `openAll`/`closeAll` `WIKI_LINK_STYLE`
+ * (`src/wikilink.ts`) produces — nothing here hand-spells a pair, and the gate is the
+ * resolved mode, so `formats` drops the hue and `none` emits nothing at all.
+ *
+ * **It is private to this module in WP-1 on purpose.** The plan's contract has *one*
+ * applicator shared with `styleWikiLabel`, and lifting it into `src/style.ts` is WP-2's
+ * edit: this package's file scope excludes `src/style.ts` and `src/wikilink.ts`, and a
+ * second copy that is never called by the second consumer is not a shared applicator. WP-2
+ * moves this body, unchanged, and both consumers call it there.
+ */
+function applyStyleChain(sgr: SgrMode, styles: readonly StyleName[], text: string): string {
+  if (styles.length === 0) return text;
+  let chain: Styler | undefined;
+  for (const name of styles) chain = createStyler(name, chain);
+  return applyStyle({ sgr }, chain as Styler, text);
+}
+
+/**
+ * Style one wrapped fragment against the cell's spans — **per fragment, nothing crossing**.
+ *
+ * Each span is clipped to `[fragment.start, fragment.end)` and opened and closed inside
+ * the fragment, so no sequence spans a cell's padding, a border glyph or a line break. The
+ * measured defect that rule repairs is the neighbouring cell rendering inside a wrapped
+ * label's cyan; a fragment-scoped emission cannot produce it, because a fragment is
+ * exactly the text between two pieces of chrome.
+ */
+function styleFragment(
+  fragment: CellFragment,
+  spans: readonly CellSpan[],
+  sgr: SgrMode,
+): string {
+  if (spans.length === 0 || fragment.start < 0) return fragment.text;
+
+  let out = "";
+  let cursor = fragment.start;
+  for (const span of spans) {
+    const start = Math.max(span.start, fragment.start);
+    const end = Math.min(span.end, fragment.end);
+    if (start >= end) continue;
+    if (start > cursor) out += fragment.text.slice(cursor - fragment.start, start - fragment.start);
+    out += applyStyleChain(sgr, span.styles, fragment.text.slice(start - fragment.start, end - fragment.start));
+    cursor = end;
+  }
+  if (cursor === fragment.start) return fragment.text;
+  return out + fragment.text.slice(cursor - fragment.start);
+}
+
+/** One cell, wrapped into its display lines, with the spans those lines are clipped against. */
+interface LaidOutCell {
+  readonly fragments: CellFragment[];
+  readonly spans: readonly CellSpan[];
+}
+
 /** A row's cells, each already wrapped into its own display lines. */
-type LaidOutRow = string[][];
+type LaidOutRow = LaidOutCell[];
 
 /**
  * Draw one horizontal rule.
@@ -586,12 +835,22 @@ function drawLine(
     .map((width, column) => {
       const left = styleBorder(sgr, column === 0 ? chars.left : chars.middle);
       const right = column === widths.length - 1 ? styleBorder(sgr, chars.right) : "";
-      const line = row[column]?.[lineIndex];
+      const cell = row[column];
+      const fragment = cell?.fragments[lineIndex];
+      // Padding measures the styled string rather than a saved plain copy, which is exact
+      // rather than convenient: `Measure` is `string-width`, so the SGR a span emits is
+      // zero columns to it and a fragment pads to what it *shows* (`src/text.ts`'s
+      // second documented property). With no spans the styled string *is* the plain one.
       const content =
-        line === undefined
+        cell === undefined || fragment === undefined
           ? " ".repeat(cellWidth(width))
           : " ".repeat(PADDING_LEFT) +
-            padToWidth(line, width, aligns[column] ?? "left", measure) +
+            padToWidth(
+              styleFragment(fragment, cell.spans, sgr),
+              width,
+              aligns[column] ?? "left",
+              measure,
+            ) +
             " ".repeat(PADDING_RIGHT);
       return left + (isHead ? styleHead(sgr, content) : content) + right;
     })
@@ -600,7 +859,7 @@ function drawLine(
 
 /** Lines in the tallest cell of a row — the row's rendered height. */
 function rowHeight(row: LaidOutRow): number {
-  return row.reduce((tallest, cell) => Math.max(tallest, cell.length), 1);
+  return row.reduce((tallest, cell) => Math.max(tallest, cell.fragments.length), 1);
 }
 
 /**
@@ -665,17 +924,37 @@ export function renderTable(
   measure: Measure = NARROW_MEASURE,
   sgr: SgrMode = "none",
 ): string {
-  const grid = tableGrid(token);
+  return renderGrid(tableGrid(token), targetWidth, glyphs, measure, sgr);
+}
+
+/**
+ * The allocate-wrap-emit half of `renderTable`, over a grid that is already built.
+ *
+ * Split out so the span pipeline has a seam a caller can hand spans to. Nothing in `src/`
+ * produces a non-empty `CellSpan` yet — the producer is WP-2's — and a contract whose only
+ * exercise is its own future producer is a contract nobody has run: `tests/table.test.ts`'s
+ * synthetic-span battery drives every clipping, wrapping, padding and nesting path through
+ * here with hand-built spans, **before** any production span exists. With `spans` empty
+ * this is byte-for-byte the function `renderTable` always was.
+ */
+export function renderGrid(
+  grid: TableGrid,
+  targetWidth: number,
+  glyphs: GlyphSet,
+  measure: Measure = NARROW_MEASURE,
+  sgr: SgrMode = "none",
+): string {
   if (grid.columnCount === 0) return "";
 
   const natural = naturalWidths(grid.header, grid.rows, measure);
   const { widths } = allocateWidths(natural, targetWidth);
   const chars = resolveBorderChars(glyphs.tableChars);
 
-  const layout = (row: string[]): LaidOutRow =>
-    row.map((cell, index) =>
-      wrapText(cell, widths[index] ?? ABSOLUTE_MIN_COLUMN_WIDTH, measure),
-    );
+  const layout = (row: CellContent[]): LaidOutRow =>
+    row.map((cell, index) => ({
+      fragments: wrapFragments(cell.text, widths[index] ?? ABSOLUTE_MIN_COLUMN_WIDTH, measure),
+      spans: cell.spans,
+    }));
 
   return composeTable(
     layout(grid.header),

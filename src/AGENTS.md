@@ -1132,6 +1132,78 @@ text to restore the authored brackets from.
 | Inline-HTML interior | `<span>[[note]]</span>` recognizes and styles the label too — for `<span>[[note]]</span>`, marked lexes `html("<span>")` + `text(carriers…)` + `html("</span>")`, so the carriers ride the inline `text` token between the two tag tokens, not the `html` visitor (cycle-1 f6) | kept-recognizing | `tests/wikilink.test.ts`, "defect record: an inline-HTML interior's wiki-link is still recognized and styled — kept by Decision 7" |
 | Link labels (a wiki-link's own alias containing a Markdown link) | Does not match `WIKI_LINK` at all — the alias group is `[^\]]+`, and a nested `[label](url)` contains `]` — passes through as literal text, unaffected by this defect | recorded-unchanged | `tests/wikilink.test.ts`, "an alias containing a Markdown link does not match, and continues not to" (pre-existing, WP-4 of `plans/colour-policy.md`) |
 
+##### The surface is wider than verbatim contexts: the precedence matrix
+
+**The table above enumerates where the substitution destroys *verbatim* content. It is not
+the whole of what the pass reaches**, and the successor plan's three audit cycles
+established the rest (`plans/wiki-link-tokenizer.md`, "The precedence matrix"; every row
+below verified by direct execution 2026-08-19 and pinned at WP-1 of that plan). The
+mechanism is one sentence: **a pre-lexer regex substitution over source lines cannot know
+what a construct the lexer has not yet built will turn out to own**, so it fires inside
+every one of these exactly as it fires in prose.
+
+| Context | Today's behaviour | Status |
+|---|---|---|
+| Backslash escape — `\[[note]]`, `\![[note]]` | The escape does not stop recognition: the `\` survives as literal text and the label is styled beside it; `\![[…]]` still renders `embed: ` | corrupted-recorded |
+| Inline-link destination — `[x](https://e/[[note]])` | The destination is rewritten and, under colour, **SGR is injected into the href**; with hyperlinks on it lands inside the OSC-8 destination before the BEL | corrupted-recorded |
+| Inline-link title — `[x](url "[[t]]")` | Rewritten (invisible in output — this renderer drops link titles) | corrupted-recorded |
+| Image destination and title — `![alt](/[[note]])`, `![alt](/u "[[t]]")` | Both rewritten; the title *is* visible, as `alt – title` | corrupted-recorded |
+| HTML attribute value — `<span title="[[note]]">` | Rewritten, with SGR injected inside the tag | corrupted-recorded |
+| Inline HTML comment — `<!-- [[note]] -->` | The comment interior is rewritten and styled | corrupted-recorded |
+| Autolink — `<https://e/[[note]]>` | **Broken**: the brackets go before the lexer sees them, so the authored `>` is swallowed into the rendered href | corrupted-recorded |
+| Bare URL — `https://e/[[note]]` | Splits into `https://e/` plus a styled label; with hyperlinks on, SGR lands in the OSC-8 destination | corrupted-recorded |
+| Reference-definition destination and title — `[x]: /[[note]]`, `[x]: /u "[[t]]"` | Both rewritten, and the definition is consumed whole so nothing downstream can see it happened | corrupted-recorded |
+| Link label — inline, full-reference, collapsed and shortcut forms | **The outer link survives today** (OSC-8 to the definition, styled label inside). The successor's tokenizer breaks it: this row is a **loss**, granted at approval rather than repaired | recorded-loss |
+| Image alt text — all four forms | One image token today, alt rewritten. Same loss shape | recorded-loss |
+| Cross-boundary greedy match — `` [[a `code [[y]] z` end]] `` | The wikilink wins positionally and the codespan never forms | parity, surfaced |
+
+**Witnesses:** `tests/wikilink.test.ts`, "the precedence matrix — today's bytes for every
+changing row (WP-1, recorded not fixed)", plus **"the ownership-class probe sweep — every
+built-in inline shape, today's bytes"**, which is the completeness instrument for the claim
+above: eighteen shapes covering every built-in inline ownership class in marked's tokenizer
+order, each containing `[[note]]`, byte-exact in both colour modes. A class whose bytes move
+for a reason the matrix did not predict shows up there rather than nowhere.
+
+##### Three further defects the same mechanism causes, measured rather than inferred
+
+Each is invisible to every gate `bun run verify` runs, for the reason the colour section
+below gives: they are colour-only, or they are inside a `codeRange`, or both.
+
+- **A URL-shaped slug emits a malformed OSC-8 sequence.**
+  `[[https://example.test/path]]` has no alias, so the label *is* the URL; it re-enters the
+  lexer as text and comes out a `url` token, and `renderLink` emits OSC-8 for it. The
+  carrier pass runs over the **finished document**, i.e. long after that emission, so the
+  wiki chain's close codes are written **inside the destination, before the BEL**:
+  `ESC]8;;https://example.test/path` + `ESC[24m` `ESC[39m` + BEL. No terminal resolves that.
+  The colour-off render is the control and is clean, which is what identifies the styling
+  pass rather than the OSC-8 emitter as the cause. Witness: `tests/wikilink.test.ts`, "C5 —
+  a URL-shaped slug emits a malformed OSC-8 today", pinned with hyperlinks off and on and
+  with the tmux DCS envelope.
+- **A wrapped wiki label in a table cell bleeds its colour into the neighbouring cell.**
+  `src/table.ts` builds plain measured strings and never dispatches a cell token
+  (`renderTable`), so a label in a cell is styled by that same document-wide pass — which
+  sees a label already split across rows and opens its chain on one row and closes it on
+  another. Everything between is inside the style: the cell's padding, the border glyph,
+  and **the next column's text**. Measured at width 16 on
+  `| [[abcdefghijklmnopqrstuvwxyz]] | y |`: the `y` column renders between a cyan open and
+  its close on a row whose own cell holds no wiki-link. Witness: `tests/wikilink.test.ts`,
+  "C6 — table-cell wiki-link bytes today", which names the crossing directly as well as
+  pinning the bytes.
+- **A label's boundary whitespace survives cell normalization, and only by accident.**
+  `cellText` collapses `\s+` and trims. The carriers are control characters, not
+  whitespace, so they stood between the label's own leading and trailing spaces and that
+  collapse — a barrier nothing designed. `| [[ b ]] |` therefore renders a three-column
+  label ` b `, which no other cell text in this renderer does.
+
+**All three are repaired by the successor** (`plans/wiki-link-tokenizer.md`, grants C5, C6a
+and C6b): recognition moves into the lexer, so a label's children are lexed clean and the
+`url` token carries no escape; and `src/table.ts`'s span-cell contract carries
+`{ text, spans }` through the cell pipeline so styling is applied **per wrapped fragment at
+emission**, where a sequence cannot cross padding or a border, over text normalized like
+every other cell's. The contract landed byte-identically at WP-1 with a synthetic-span
+battery (`tests/table.test.ts`) driving every clipping, wrapping, padding, measurement and
+nesting path before any producer existed; the producer is WP-2's.
+
 **Three failed fix designs, and why each died** — one plan, three audit cycles, no fourth
 mechanism proposed after the third failed:
 
@@ -1174,6 +1246,27 @@ class-C exception was requested and **the user withheld it** (`src/render.ts:186
 this file's task-state section above). The two defects share a mechanism — an unguarded
 pre-lexer substitution reaching fenced or indented code — but they are independently
 dispositioned, and repairing one does not authorize repairing the other.
+
+**The successor exists and it does not need pre-lexer knowledge at all, which is why the
+paragraph above is kept rather than corrected.** `plans/wiki-link-tokenizer.md` (approved
+2026-08-19, three audit cycles) moves recognition **into** marked's lexing pass as an
+inline **tokenizer extension**, so a verbatim context is protected *by construction*: the
+inline tokenizer is simply never offered a position inside a `code` token, a block `html`
+token, a container-nested code block, a formed codespan, a link or image destination or
+title, or an HTML tag or comment. There is no source-coordinate bookkeeping left to get
+wrong, which is what all three failed designs above were trying and failing to do. The
+sentence "a fix needs pre-lexer knowledge" was the correct conclusion from three failures
+at *patching the pre-pass*, and it is exactly the assumption the successor discards.
+
+**What that plan's approval grants, so this record is read with its limits attached.**
+Rendered bytes inside recorded `codeRanges` may change for inputs whose verbatim contexts
+contain `[[…]]` — a scoped class-C exception, and the fix itself. It extends **not one byte
+further**: the task-state surface stays untouched and user-withheld, enforced by
+`tests/render.test.ts`, "task-state adjacency — held unmodified through the tokenizer
+cutover", across Unicode/ASCII × `none`/`formats`/`full`; and the gate corpus must not move
+at all, under three env-pinned render-diff runs. The link- and image-label rows of the
+precedence matrix are **granted losses**, not repairs. Everything this section records
+stays true of the code until that plan's WP-2 lands; WP-1 changed no rendered byte.
 
 #### Colourless gates cannot see colour-only defects — and that is now a class, not an anecdote
 

@@ -66,8 +66,30 @@ interface ProbeMethods {
 /**
  * A renderer that emits its own dispatch trace. Every method is present, so it also stands as
  * the completeness fixture for the constructor check below.
+ *
+ * **`extra` is the owned walker's half of the differential, and it exists because the two
+ * sides cannot be given the same object once this repo dispatches a token type marked does
+ * not have.** `marked.use()` validates every renderer key against its own `Renderer`
+ * prototype and **throws** on one it does not recognise (`marked.cjs:2251`; measured — see
+ * the test below), so a probe carrying, say, a `wikilink` method could never be handed to
+ * the marked side at all. Keeping the *built-ins* shared and letting only the owned side
+ * take an addition is what preserves the differential's meaning: both walkers still run the
+ * identical renderer over every token type they both dispatch, which is the whole claim.
+ *
+ * Nothing passes `extra` yet — WP-2 of `plans/wiki-link-tokenizer.md` is what adds a token
+ * type — and **no walker source changes belong to this package**: the seam is here so that
+ * package's differential does not have to fork `bothWalkers` in the same commit that
+ * changes the walk.
  */
-function probeRenderer(): ProbeMethods {
+function probeRenderer(extra: ProbeMethods = {}): ProbeMethods {
+  return {
+    ...builtinProbeMethods(),
+    ...extra,
+  };
+}
+
+/** The eighteen built-in methods both walkers dispatch — shared by construction. */
+function builtinProbeMethods(): ProbeMethods {
   return {
     hr: () => "[hr]",
     heading: function (this: ProbeHost, token: Tokens.Heading) {
@@ -115,13 +137,23 @@ function lex(source: string): Token[] {
  * `marked` reaches its `Parser` only through `Marked.parse`, which lexes first — so the
  * comparison is made on a source string, and both sides lex identically because the walk did
  * not touch the lexer.
+ *
+ * **The marked side is given the built-ins and only the built-ins**, deliberately: `use()`
+ * throws on a renderer key it does not know, so `ownedExtra` is the one asymmetry, and it is
+ * an asymmetry the differential can afford because it only ever *adds* a method for a token
+ * type the marked side's lexer cannot produce. Everything both walkers can reach stays
+ * shared, which is what makes a diff here mean "the walkers disagree" rather than "the
+ * probes did".
  */
-function bothWalkers(source: string): { marked: string; owned: string } {
+function bothWalkers(
+  source: string,
+  ownedExtra: ProbeMethods = {},
+): { marked: string; owned: string } {
   const viaMarked = new Marked();
   viaMarked.use({ renderer: probeRenderer() });
   return {
     marked: viaMarked.parse(source, { async: false }),
-    owned: new TokenWalker(probeRenderer()).parse(lex(source)),
+    owned: new TokenWalker(probeRenderer(ownedExtra)).parse(lex(source)),
   };
 }
 
@@ -167,6 +199,40 @@ describe("TokenWalker — differential against marked's Parser", () => {
       expect(owned).toBe(marked);
     });
   }
+
+  /**
+   * **Why the two sides take their probes through a factory rather than sharing one
+   * object** — WP-1(d) of `plans/wiki-link-tokenizer.md`, from that plan's probe P4.
+   *
+   * `marked.use()` walks the renderer object and rejects any key that is not on its own
+   * `Renderer` prototype. So the moment this repo dispatches a token type marked does not
+   * have, a single shared probe stops being possible: handing it to `use()` throws before a
+   * single token is parsed. The seam above keeps the built-ins shared and lets only the
+   * owned side take an addition, which preserves what the differential is actually for.
+   *
+   * Measured here rather than asserted, because the whole restructure rests on it.
+   */
+  test("marked.use() throws on a renderer key it does not know — the reason the sides differ", () => {
+    expect(() => new Marked().use({ renderer: { wikilink: () => "x" } as never })).toThrow(
+      "renderer 'wikilink' does not exist",
+    );
+  });
+
+  test("the owned side takes an extra probe method the marked side never sees", () => {
+    // The seam, exercised without needing a token type that does not exist yet: an extra
+    // method that overrides nothing changes nothing, and the two sides still agree. What
+    // this proves is the *plumbing* — `probeRenderer(extra)` reaches the owned walker and
+    // `bothWalkers` still hands `use()` a marked-legal object.
+    const { marked, owned } = bothWalkers("a **bold** paragraph\n", {});
+    expect(owned).toBe(marked);
+
+    // And an addition really is carried: overriding a built-in only on the owned side
+    // makes the two disagree, so the parameter cannot be silently dropped.
+    const forked = bothWalkers("a **bold** paragraph\n", { strong: () => "[OWNED-ONLY]" });
+    expect(forked.owned).not.toBe(forked.marked);
+    expect(forked.owned).toContain("[OWNED-ONLY]");
+    expect(forked.marked).toContain("[b:");
+  });
 });
 
 describe("TokenWalker — block text coalescing and the synthetic paragraph", () => {
