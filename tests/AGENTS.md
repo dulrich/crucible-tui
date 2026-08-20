@@ -86,10 +86,16 @@ pin it.
 
 **If you check a dependency out beside your clone, that is handled — but on evidence.**
 The neighbour rule drops a name that collides with an installed package *only* when the
-directory proves it is that package: a `package.json` naming itself. Otherwise reading
-`marked-terminal`'s source next door — which `src/AGENTS.md` tells you to do — would turn
-every mention of it into a finding, and a guard that fails for reasons unrelated to your
-change is a guard that gets switched off.
+directory proves it is that package: a `package.json` naming itself. Otherwise reading a
+dependency's source next door — as this repo's own history needed for `marked-terminal`,
+back when it was still installed and `src/AGENTS.md` pointed readers at its file:line
+citations directly — would turn every mention of it into a finding, and a guard that fails
+for reasons unrelated to your change is a guard that gets switched off.
+`marked-terminal` itself is no longer that live case: WP-6 of
+`plans/marked-terminal-replacement.md` removed the package, and `src/AGENTS.md`'s "How to
+read this file" withdrew the instruction — its `index.js:NNN` citations are historical
+evidence now, not a pointer at an installed neighbour, and the case they were the example
+of is `DOCUMENTED_FORMER_PACKAGES` below, not this rule.
 
 **A dependency this repo *removed* still gets cited, and the guard has to allow that.** The
 `foreign-path` rule reads its package whitelist from `node_modules`, so uninstalling a

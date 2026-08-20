@@ -207,16 +207,22 @@ bun run scripts/gen-licenses.ts --check
 bun run src/cli.ts --check --width 80 tests/fixtures/wide-table.md
 bun run sweep
 bun run sweep -- --glyphs ascii
+bun run sweep -- --colour-mode both
 bun run test:security
 ```
 
 That list is the explanation of what `verify` does, not a second thing to run by hand —
 every command in it is byte-identical to the gate that already existed for it, plus three
-that existed but were not wired into any single chain before WP-1: the compiled build, a
-smoke of the built artifact (a build step alone cannot see a broken binary), and license
-freshness in `--check` mode (renders to memory and compares against
-`THIRD-PARTY-LICENSES.txt`, so a failing local run never leaves the tree dirty — the
-default `bun run gen-licenses`, with no flag, still writes).
+that existed but were not wired into any single chain before WP-1 of
+`plans/tn-review-remediation.md`: the compiled build, a smoke of the built artifact (a
+build step alone cannot see a broken binary), and license freshness in `--check` mode
+(renders to memory and compares against `THIRD-PARTY-LICENSES.txt`, so a failing local
+run never leaves the tree dirty — the default `bun run gen-licenses`, with no flag, still
+writes). The colour-axis sweep joined the chain afterward, for a different reason: three
+exact gates, no thresholds, over the fixed gate corpus — a colour decision may change
+which bytes a render emits, never which characters, and an undirected, piped render must
+emit no terminal sequence at all (`scripts/AGENTS.md`, "The colour axis — three exact
+gates over four children", carries the gate definitions and history).
 
 **`verify` never runs `bun install`.** Local floats (`bun install`), CI freezes (`bun
 install --frozen-lockfile`), and that asymmetry is deliberate — installation stays a
@@ -510,7 +516,10 @@ both packages. **This rule pins; it does not upgrade.** Bumping any of these is 
 deliberate decision with its own corpus/sweep verification pass, not a side effect of
 installing on a new machine.
 
-Plans: `plans/mdview.md` (the original build) and `plans/vault-readiness.md` (glyph tier,
-fence languages, divider, embeds, and the multi-corpus sweep). The two sat at different
-levels before extraction — the first predated the tool's own folder — and were flattened
-into one `plans/` when this repo was split out.
+Plans: the founding pair is `plans/mdview.md` (the original build) and
+`plans/vault-readiness.md` (glyph tier, fence languages, divider, embeds, and the
+multi-corpus sweep). The two sat at different levels before extraction — the first
+predated the tool's own folder — and were flattened into one `plans/` when this repo was
+split out. Every plan since has followed; every file in `plans/` carries a Status line
+(provisional → audited → approved → implemented) directly under its title, so the
+directory itself is the index — read it, don't enumerate it here.

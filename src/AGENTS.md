@@ -1214,8 +1214,10 @@ mechanism proposed after the third failed:
    is rendering verbatim content tries to undo the carrier substitution and reconstruct
    the authored `[[…]]`. Dead on arrival: the substitution already discarded the
    fragment, the `|` separator, the `!`, and the slug itself whenever an alias is present
-   (`src/wikilink.ts:116-121`) — there is nothing left in the rendered text for a leaf to
-   restore *from*. `runs/dispatch/colour-modes-plan-audit-report-cycle1.md`, finding 2.
+   (`markWikiLinks`, removed at `ab3518e`; see git history — the lines this citation once
+   pointed to now hold `WIKI_LINK_STYLES`) — there is nothing left in the rendered text for
+   a leaf to restore *from*. `runs/dispatch/colour-modes-plan-audit-report-cycle1.md`,
+   finding 2.
 2. **A byte-offset line map** (rev 2). Accumulate marked's block-token `raw` lengths
    before substitution runs, to know per source line which lines are block-verbatim, and
    skip those in `preprocessBody`. Failed on three independent grounds: marked
@@ -1245,8 +1247,8 @@ owning the lexer — and the three failures above, together with the context tab
 witnesses it cites, are its starting record rather than a foundation to build on: a future
 fix that changes any pinned byte will trip a named witness, which is the point. This
 record sits beside, and does not amend, "The task-state pre-pass" above: that pass's own
-class-C exception was requested and **the user withheld it** (`src/render.ts:186-192`,
-this file's task-state section above). The two defects share a mechanism — an unguarded
+class-C exception was requested and **the user withheld it** (`src/render.ts:193-213`,
+`rewriteTaskState` — this file's task-state section above). The two defects share a mechanism — an unguarded
 pre-lexer substitution reaching fenced or indented code — but they are independently
 dispositioned, and repairing one does not authorize repairing the other.
 
@@ -1268,7 +1270,7 @@ the carrier machinery — `markWikiLinks`, `markWikiLink`, `stripWikiLinkCarrier
 `styleWikiLinkCarriers`, the carrier constants, and the post-walk styling pass — is gone
 entirely. Rendered bytes changed **inside recorded `codeRanges`**, exactly as the grant
 authorized (C1) and not one byte further: **the task-state surface stayed untouched and
-user-withheld** — `src/render.ts:186-213` (`rewriteTaskState`) is hash-identical across the
+user-withheld** — `src/render.ts:193-213` (`rewriteTaskState`) is hash-identical across the
 cutover, enforced directly by `tests/render.test.ts`'s "task-state adjacency — held
 unmodified through the tokenizer cutover". Two of WP-1's 42 whole-document task-state pins
 could not hold unedited on their *wiki-link* half — one is C1's own granted repair, landing
@@ -1436,7 +1438,7 @@ put an author's own bare `*` at the start of a continuation line.
 ### Command-line surface (WP-4)
 
 ```
-mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--probe] [--help]
+mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--probe] [--help] [--licenses]
 mdview view <file.md> [options ...]
 mdview highlight-as <fence> <language>
 mdview probe [--refresh] [--no-cache] [--timeout MS]
@@ -1648,7 +1650,8 @@ the package (84 of 84).
 
 `ColourPolicy.color: boolean` became **`sgr: "full" | "formats" | "none"`**, and that one type
 is the whole of the colour-mode work. The predecessor plan
-(`plans/styled-runs-and-colour-policy.md`, closed won't-implement) needed eight work packages
+(`plans/styled-runs-and-colour-policy.md`, closed won't-implement and deleted at
+`795ef9b`) needed eight work packages
 for the same semantics because hue and weight were fused into opaque byte strings at six
 independent producers, and *"thread a policy to the producers"* cannot express *"drop hue,
 keep bold"*. `plans/colour-policy.md` retired that premise without setting out to: since it
@@ -1729,7 +1732,7 @@ justification**; everywhere else the rule is Decision 8's.
 
 **Two things this package deliberately did not touch, and both are user-withheld ground —
 one of them since fixed by a later plan.** The task-state pre-pass
-(`src/render.ts:186-192`; "The task-state pre-pass" above) keeps its class-C exception
+(`src/render.ts:193-213`, `rewriteTaskState`; "The task-state pre-pass" above) keeps its class-C exception
 withheld and its 84 corrupted lines exactly as they are — any task-state byte movement
 anywhere is a defect. The wiki-link verbatim defect ("The wiki-link carrier defect" above)
 was still recorded-not-fixed at the time this package landed — its pinned witnesses in
@@ -2128,7 +2131,8 @@ dependency now rather than a transitive one). It was investigated once before (2
 rejected on 392 prose shortcodes across 59 files — but that test was a throwaway subagent
 invocation nothing in the repo could re-run, and its 59 files were reachable **only** by
 following symlinked subtrees the corpus was never meant to include. That is a
-corpus-*membership* bug (`plans/corpus-symlink-membership.md`, WP-1/WP-2), not a property of the
+corpus-*membership* bug (`plans/corpus-symlink-membership.md`, WP-1/WP-2 — closed
+won't-implement and deleted at `e4ce368`), not a property of the
 user's real documents, and it has since been fixed by adding the two roots that actually matter
 as **explicit** corpus members instead of symlink-following into everything reachable.
 
@@ -2208,7 +2212,8 @@ entirely, and it is the one WP-6 expected to delete and could not: see `COLON_RE
 markdown that no gate in this repo has ever rendered" does not: composition of that
 symlink-reachable set is **~73% agent scratch directories and third-party package caches**,
 reachable only because a tracked root symlinks into a home directory, and formally out of this
-corpus's scope (`plans/corpus-symlink-membership.md`, "Decisions locked"). The remaining
+corpus's scope (`plans/corpus-symlink-membership.md`, "Decisions locked" — closed
+won't-implement and deleted at `e4ce368`). The remaining
 plausibly-real markdown in that set was not pulled in by following symlinks — it was added
 properly, as the two explicit roots this section now measures against. Any "verified across the
 whole corpus" claim made before 2026-07-29 still carries the hole that the swept corpus was

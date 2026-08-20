@@ -68,7 +68,7 @@ list above, enforced by a committed eligibility assertion and exact-set pin
 fixture path named by a `witness-index.json` record whose `test_file` exists in the
 repo. A third test in the same file pins the resolver contract this relies on:
 a wildcard-free manifest entry resolves to exact-path membership, never a prefix or
-substring match (`matchSegment`, `scripts/corpus.ts:347`). See "The seeds, and what
+substring match (`matchSegment`, `scripts/corpus.ts`). See "The seeds, and what
 defines them" below for the colour-axis history this fixed.
 
 **Witness class accounting (WP-1).** Candidates are the 6 unique fixture files named by
@@ -195,8 +195,8 @@ weakens the rule it was originally cited for.
 
 `--check` and both sweeps **exempt fenced-code ranges from checking**. That exemption is
 correct for width — fences are never rewritten, so their width is not ours to guarantee —
-but it means **content corruption inside a fence is invisible to every one of the seven
-gates**. WP-2 shipped exactly that bug fully green: a bullet-substitution pass rewrote
+but it means **content corruption inside a fence is invisible to every gate `bun run
+verify` runs**. WP-2 shipped exactly that bug fully green: a bullet-substitution pass rewrote
 `* not a bullet` inside a fence nested in a list item, and nothing caught it.
 
 So: **a change that touches rendered text is not verified by a green sweep.** Byte-compare
@@ -452,12 +452,14 @@ any of those files, including a one-line Status-line edit or a brand-new plan, m
 population and therefore the old ratchets, with no renderer change in the commit. Five
 re-seeds chased that drift, only one of them behind an actual source change: **62 → 65**
 (WP-2, `plans/own-the-token-walk.md`, which rewrote root `AGENTS.md` as a side effect of
-owning the token walk) **→ 66** (`plans/styled-runs-and-colour-policy.md` was written,
+owning the token walk) **→ 66** (`plans/styled-runs-and-colour-policy.md` (deleted at
+`795ef9b`) was written,
 adding a globbed file whose own text also demonstrated one of the three colour-only
 defects below) **→ 70** (that plan's rev 2 replaced rev 1's prose — a same-file edit with
 zero source changes) **→ 73 → 75** (further revisions, measured but never landed before
 this WP; see `plans/gate-corpus-reframe.md`'s Context for the full instability record).
-The withdrawn `plans/styled-runs-and-colour-policy.md` spent a whole sub-package building
+The withdrawn `plans/styled-runs-and-colour-policy.md` (closed won't-implement and deleted
+at `795ef9b`) spent a whole sub-package building
 per-file ratchet *attribution* to manage that instability instead of removing its cause.
 User direction (2026-08-18) was a fixed, explicit, wildcard-free corpus instead of
 attribution machinery, and that is what `corpus/default-manifest.json` now is. **The exact
@@ -580,9 +582,9 @@ is keyed to `full`; the hue/format split itself is applied once, by style name, 
 | Site | What it emits | Obeys `ctx.sgr`? |
 |---|---|---|
 | `src/style.ts` (`applyStyle`) | the one styling primitive; every SGR pair in prose comes through here. Was `src/inline.ts:205-226` until WP-2 of `plans/colour-policy.md` moved it, with the byte table, into the module that owns styling. **Since WP-2 of `plans/colour-modes.md` it is also where the hue/format filter lives** — `STYLE_CLASSES` classifies each committed name, and both emitters run their existing bodies over the *filtered* chain | **yes** — returns the input untouched at `none`, and drops hue-class links at `formats` |
-| `src/inline.ts:339,348,363,382,420,424,427` | its inline call sites — strong, em, codespan, del, link | via `applyStyle` |
-| `src/blocks.ts:151,195,213,426,457,518` | its block call sites — code, hr, html, heading, paragraph, blockquote | via `applyStyle` |
-| `src/lists.ts:380` | its list-item call site | via `applyStyle` |
+| `src/inline.ts` — `grep -n "applyStyle(" src/inline.ts` | its inline call sites — strong, em, codespan, del, link (7 sites) | via `applyStyle` |
+| `src/blocks.ts` — `grep -n "applyStyle(" src/blocks.ts` | its block call sites — code, hr, html, heading, paragraph, blockquote (6 sites) | via `applyStyle` |
+| `src/lists.ts` — `grep -n "applyStyle(" src/lists.ts` | its list-item call site (1 site) | via `applyStyle` |
 | `src/inline.ts`'s `renderLink`, through `src/ansi.ts`'s `link` | **OSC-8**, not SGR, plus the tmux DCS envelope | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken. The *emitter* was `ansiEscapes.link` until WP-3 of the same plan; it is this repo's transcription now, and the href is sanitized at emission |
 | `src/wikilink.ts` (`styleWikiLabel`) | the wiki-link label's cyan+underline, applied **at emission** — the tokenizer extension lexes the label into child tokens and the prose visitor styles the rendered result through `src/style.ts`'s shared `applyStyleChain`; under `formats` the cyan drops and the underline stays — the only two-link chain here with one link of each class | **yes** — via `applyStyleChain` → `applyStyle` under the resolved policy. Two mechanisms preceded this one, both retired, both left the same trail: it was `src/render.ts:62-65`'s `styleWikiLink` (hardcoded `[36m[4m…` injected **before the lexer**, at every colour level, obeying nothing — the last row in this table that ever answered **no**) until WP-4 of `plans/colour-policy.md` replaced it with a carrier pair styled **after the walk**; WP-2 of `plans/wiki-link-tokenizer.md` (`ab3518e`) then retired the carrier pair too, moving recognition into the lexer itself, so there is no longer a post-walk pass or a carrier to account for |
 | `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit argument since WP-1 (`color`, widened to `sgr` at WP-2 of `plans/colour-modes.md`), through `src/style.ts`'s plain wrap since WP-2 of `plans/colour-policy.md`; it was two hardcoded constants and no decision at all. `dim` is **format**-class, so a metadata block renders identically under `full` and `formats` |
@@ -605,8 +607,8 @@ part, and each is the same mistake.
 | `src/lists.ts`'s empty-line filter | filtered empty lines by raw bytes, so a line of escapes alone survived; `stripAnsi(line) !== ""` since WP-3 |
 | `src/lists.ts`' `substituteBullets` and `realignEmbeddedContinuations` | bullet substitution and the de-drift claim on stripped text — the de-drift since WP-5 of `plans/tn-review-remediation.md`, the substitution since WP-3 of this plan (its anchored regex could not match an encased marker line) |
 | `src/render.ts`'s `isHardBoundary` and its three marker-shape guards | a hard-break tail and a marker shape, both anchored on raw lines; asked of `stripAnsi(line)` since WP-3, which is what made the guards fire under colour at all |
-| `src/blocks.ts:313` | drops a trailing line that is blank once stripped |
-| `src/render.ts:667-668` | the emoji trailing-space strip has to match *across* the SGR that closes the segment |
+| `src/blocks.ts`'s `reflowSection` | drops a trailing line that is blank once stripped |
+| `src/render.ts`'s `stripEmojiTrailingSpace` | the emoji trailing-space strip has to match *across* the SGR that closes the segment |
 | `src/detectors.ts:120,315,327,396,516,603,641` | measurement, not rendering — no rendered byte depends on these, but they read the same escapes |
 | `scripts/corpus.ts:693`, `:859` | the sweep's orphan line lookup, and this axis's own digest |
 
