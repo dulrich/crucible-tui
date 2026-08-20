@@ -389,6 +389,31 @@ export function applyStyle(ctx: ColourGate, chain: Styler, input: string): strin
 }
 
 /**
+ * Turn one ordered style chain into bytes — the **one** place a chain of `StyleName`s
+ * becomes SGR for the two producers that carry names rather than a prebuilt `Styler`.
+ *
+ * The fold is `createStyler`'s own accumulation order, outermost name first, so
+ * `["cyan", "underline"]` produces exactly the `openAll`/`closeAll` that
+ * `createStyler("underline", createStyler("cyan"))` produces — nothing hand-spells a pair,
+ * and the gate is the resolved mode, so `formats` drops the hue and `none` emits nothing at
+ * all.
+ *
+ * **Both consumers call this one body** (the span-cell contract's "one shared applicator",
+ * `plans/wiki-link-tokenizer.md`): `styleWikiLabel` (`src/wikilink.ts`, prose) hands it
+ * `WIKI_LINK_STYLES`, and `src/table.ts`'s fragment emitter hands it each `CellSpan`'s own
+ * chain. It landed private to `src/table.ts` at WP-1 of that plan — with a comment naming
+ * this lift — because `src/style.ts` and `src/wikilink.ts` were outside that package's file
+ * scope; WP-2 moved the body here unchanged and left no copy behind. A second copy that the
+ * second consumer never calls is not a shared applicator.
+ */
+export function applyStyleChain(gate: ColourGate, styles: readonly StyleName[], input: string): string {
+  if (styles.length === 0) return input;
+  let chain: Styler | undefined;
+  for (const name of styles) chain = createStyler(name, chain);
+  return applyStyle(gate, chain as Styler, input);
+}
+
+/**
  * Apply a style chain as a **plain wrap** — open, text, close — with no nested re-open and
  * no line-break encasing.
  *

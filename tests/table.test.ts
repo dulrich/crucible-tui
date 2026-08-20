@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { Lexer, type Tokens } from "marked";
+import { Lexer, Marked, type Tokens } from "marked";
 import stringWidth from "string-width";
 import {
   type CellContent,
@@ -22,6 +22,7 @@ import { stripAnsi } from "../src/list-lines";
 import { type Align, splitToken } from "../src/text";
 import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
 import { NARROW_MEASURE, WIDE_MEASURE, type Measure } from "../src/width";
+import { wikiLinkExtension } from "../src/wikilink";
 
 // --- helpers ---------------------------------------------------------------
 
@@ -758,12 +759,13 @@ describe("border and head styling obey the policy that is handed in", () => {
  * fragment**, clipped to the wrapped line, so a sequence physically cannot cross padding or
  * a border.
  *
- * **Nothing in `src/` produces a span yet** — that is WP-2's — which is exactly why this
- * battery exists. A contract whose only exercise is its own unwritten producer is a
- * contract nobody has run, so every clipping, wrapping, padding, measurement and nesting
- * path is driven here from hand-built spans, at WP-1, with exact bytes. The
- * production-empty case is proved by the rest of this file and by the env-pinned
- * render-diff: with `spans` empty the emitter's output is byte-identical.
+ * **The producer arrived at WP-2** — `walkInline`'s `wikilink` case, exercised in its own
+ * describe below. The synthetic battery is kept exactly as it was, because its job was never
+ * to stand in for the producer: it drives every clipping, wrapping, padding, measurement and
+ * nesting path from hand-built spans, including shapes no wiki-link produces (partial spans,
+ * hostile offsets, un-normalized text). Every cell that carries **no** wiki-link still has an
+ * empty `spans`, which is what keeps the rest of this file and the env-pinned render-diff
+ * meaningful.
  */
 describe("the span-cell contract — text and offsets", () => {
   /** Lex one markdown table down to its first body cell's token. */
@@ -788,13 +790,14 @@ describe("the span-cell contract — text and offsets", () => {
     expect(flattenInline(cell.tokens, cell.text ?? "").text).toBe(`a & b <c> "d" 'e'`);
   });
 
-  test("inline markup flattens with the link's href kept, and no cell carries a span today", () => {
+  test("inline markup flattens with the link's href kept, and a wiki-link-free cell carries no span", () => {
     const cell = lexBodyCell(
       "| col |\n|---|\n| **bold** and `code` and [l](https://example.test/x) |\n",
     );
     const flat = flattenInline(cell.tokens, cell.text ?? "");
     expect(flat.text).toBe("bold and code and l (https://example.test/x)");
-    // The production-empty half of the contract, asserted rather than assumed.
+    // The half of the contract that stays true now that a producer exists: only a wiki-link
+    // contributes a span, so every other cell in the repo is byte-identical to before.
     expect(flat.spans).toEqual([]);
   });
 
@@ -812,6 +815,129 @@ describe("the span-cell contract — text and offsets", () => {
     const bare: CellContent[] = [{ text: "alpha beta", spans: [] }];
     const spanned: CellContent[] = [{ text: "alpha beta", spans: [{ start: 0, end: 5, styles: ["cyan", "underline"] }] }];
     expect(naturalWidths(spanned, [spanned])).toEqual(naturalWidths(bare, [bare]));
+  });
+});
+
+/**
+ * **The production span producer** — WP-2 of `plans/wiki-link-tokenizer.md`.
+ *
+ * `walkInline`'s `wikilink` case is the only thing in `src/` that emits a `CellSpan`. Locked
+ * decision D3 keeps a cell's wiki-link styled (it is a navigation target); cycle-3 f3 fixed
+ * *how*: the label's children are flattened by this walk, exactly as `strong`/`em`/`del`/link
+ * children already are, and the **outer chain is the only span the label contributes**. That
+ * is what keeps a cell free of nested SGR and of OSC-8 — `renderLink` is unreachable from a
+ * cell by construction.
+ *
+ * Offsets are recorded in *raw* walk coordinates and carried through `normalizeCell`, so a
+ * label normalizes like every other cell text (grant C6b). Rendered bytes for all of this are
+ * in `tests/wikilink.test.ts`; what is asserted here is the `{text, spans}` value itself,
+ * because an offset that is right by accident in one table is a defect waiting for another.
+ */
+describe("the span-cell contract — the wiki-link producer (WP-2)", () => {
+  /** Lex a table with the extension registered, exactly as `renderDocumentDetailed` does. */
+  function lexTableWithWikiLinks(source: string): Tokens.Table {
+    const instance = new Marked();
+    instance.use({ extensions: [wikiLinkExtension] });
+    const token = instance.lexer(source).find((candidate) => candidate.type === "table");
+    if (!token) throw new Error("fixture contains no table");
+    return token as Tokens.Table;
+  }
+
+  const bodyCell = (source: string): CellContent => {
+    const cell = lexTableWithWikiLinks(source).rows[0]?.[0];
+    if (!cell) throw new Error("fixture contains no body cell");
+    return flattenInline(cell.tokens, cell.text ?? "");
+  };
+
+  const WIKI: CellSpan["styles"] = ["cyan", "underline"];
+
+  test("a bare label contributes one span over exactly its own text", () => {
+    expect(bodyCell("| col |\n|---|\n| [[wiki-slug]] |\n")).toEqual({
+      text: "wiki-slug",
+      spans: [{ start: 0, end: 9, styles: WIKI }],
+    });
+  });
+
+  test("the span is clipped to the label when prose surrounds it", () => {
+    expect(bodyCell("| col |\n|---|\n| pre [[mid]] post |\n")).toEqual({
+      text: "pre mid post",
+      spans: [{ start: 4, end: 7, styles: WIKI }],
+    });
+  });
+
+  test("adjacent labels are two spans, non-overlapping and ascending", () => {
+    const { text, spans } = bodyCell("| col |\n|---|\n| [[a]][[bb]] |\n");
+    expect(text).toBe("abb");
+    expect(spans).toEqual([
+      { start: 0, end: 1, styles: WIKI },
+      { start: 1, end: 3, styles: WIKI },
+    ]);
+  });
+
+  test("the children flatten — no nested span, no href, no OSC-8 material", () => {
+    // `strong` inside a label contributes nothing of its own, and a `url` child flattens to
+    // its own text rather than to a link. One span, the outer chain, always.
+    expect(bodyCell("| col |\n|---|\n| [[**bold** and `code`]] |\n")).toEqual({
+      text: "bold and code",
+      spans: [{ start: 0, end: 13, styles: WIKI }],
+    });
+    expect(bodyCell("| col |\n|---|\n| [[https://example.test/p]] |\n")).toEqual({
+      text: "https://example.test/p",
+      spans: [{ start: 0, end: 22, styles: WIKI }],
+    });
+  });
+
+  test("`embed: ` is outside the span, and the span still lands on the label", () => {
+    expect(bodyCell("| col |\n|---|\n| ![[note]] |\n")).toEqual({
+      text: "embed: note",
+      spans: [{ start: 7, end: 11, styles: WIKI }],
+    });
+  });
+
+  test("C6b: offsets survive normalization — boundary trim and internal collapse", () => {
+    // The carriers were non-whitespace and fenced `cellText`'s `\s+` collapse, which is why
+    // `| [[ b ]] |` used to keep its boundary spaces. Nothing here knows about carriers, so
+    // the label normalizes like any other cell text and the span follows the collapse.
+    expect(bodyCell("| col |\n|---|\n| [[ b ]] |\n")).toEqual({
+      text: "b",
+      spans: [{ start: 0, end: 1, styles: WIKI }],
+    });
+    expect(bodyCell("| col |\n|---|\n| [[a   b]] |\n")).toEqual({
+      text: "a b",
+      spans: [{ start: 0, end: 3, styles: WIKI }],
+    });
+    expect(bodyCell("| col |\n|---|\n|   x   [[ a   b ]]   y   |\n")).toEqual({
+      text: "x a b y",
+      spans: [{ start: 2, end: 5, styles: WIKI }],
+    });
+  });
+
+  test("entities decode around and inside a label, and the offsets are post-decode", () => {
+    // `&amp;` is five characters raw and one decoded; an offset recorded against the raw
+    // string would land three characters off.
+    expect(bodyCell("| col |\n|---|\n| a &amp; [[b]] &lt;c&gt; |\n")).toEqual({
+      text: "a & b <c>",
+      spans: [{ start: 4, end: 5, styles: WIKI }],
+    });
+  });
+
+  test("an empty label contributes no span at all", () => {
+    // `applyStyle`'s own guard returns an empty input untouched, and a zero-width span would
+    // be a degenerate entry in a list the emitter walks. `[[|x]]` does not match at all, so
+    // this is the whitespace-only label that normalizes to nothing.
+    expect(bodyCell("| col |\n|---|\n| [[   ]] |\n")).toEqual({ text: "", spans: [] });
+  });
+
+  test("the spans a whole grid carries are exactly the labelled cells'", () => {
+    const grid = tableGrid(
+      lexTableWithWikiLinks("| [[h]] | plain |\n|---|---|\n| [[a]] | b |\n| c | [[d]] |\n"),
+    );
+    const spanCounts = [grid.header, ...grid.rows].map((row) => row.map((cell) => cell.spans.length));
+    expect(spanCounts).toEqual([
+      [1, 0],
+      [1, 0],
+      [0, 1],
+    ]);
   });
 });
 

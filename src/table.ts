@@ -1,9 +1,10 @@
 import type { Token, Tokens } from "marked";
 import type { GlyphSet } from "./glyphs";
 import { type SgrMode } from "./colour";
-import { type StyleName, type Styler, applyStyle, createStyler } from "./style";
+import { type StyleName, applyStyle, applyStyleChain, createStyler } from "./style";
 import { type Align, padToWidth, splitToken } from "./text";
 import { NARROW_MEASURE, type Measure } from "./width";
+import { WIKI_LINK_STYLES, type WikiLinkToken } from "./wikilink";
 
 /**
  * The wide-table allocator — the reason `mdview` exists.
@@ -188,6 +189,38 @@ function walkInline(tokens: Token[] | undefined, fallback: string): RawCell {
           return plainCell(decodeEntities(token.text ?? ""));
         case "br":
           return plainCell(" ");
+        case "wikilink": {
+          // **The span producer** (WP-2 of `plans/wiki-link-tokenizer.md`). Locked decision
+          // D3 keeps a cell's wiki-link styled — it is a navigation target — and cycle-3 f3
+          // fixed *how*: the label's children are flattened here, by this walk, exactly as
+          // `strong`/`em`/`del`/link children already are, and the only span the label
+          // contributes is its own outer chain. That is what keeps a cell free of nested SGR
+          // and of OSC-8: `renderLink` is unreachable from here, so a URL-shaped label
+          // flattens to its own text rather than emitting a hyperlink into a cell that
+          // `splitToken` would then have to split.
+          //
+          // The `embed: ` prefix sits **outside** the span, matching the prose visitor, and
+          // the span is recorded in *raw* coordinates — `normalizeCell` carries it through
+          // the collapse and trim, so a label's boundary whitespace normalizes like every
+          // other cell's (grant C6b; the carriers used to fence it, which is an artifact
+          // nothing here can reproduce).
+          //
+          // **The span covers the label's *content*, not its authored padding.** A label's
+          // own leading and trailing whitespace is about to be collapsed or trimmed away, and
+          // if the span still claimed it, one such space merging with the *neighbouring*
+          // text's whitespace would leave the survivor styled — a stray styled space, visible
+          // in the bytes and in nothing else. Trimming here is also what makes a
+          // whitespace-only label contribute no span at all rather than a degenerate one.
+          const wiki = token as unknown as WikiLinkToken;
+          const label = walkInline(wiki.tokens, wiki.alias ?? wiki.slug);
+          const lead = label.text.length - label.text.trimStart().length;
+          const tail = label.text.trimEnd().length;
+          const styled: RawCell = {
+            text: label.text,
+            spans: lead >= tail ? [] : [{ start: lead, end: tail, styles: WIKI_LINK_STYLES }],
+          };
+          return wiki.embed ? concatCells([plainCell("embed: "), styled]) : styled;
+        }
         default: {
           const nested = "tokens" in token ? (token.tokens as Token[] | undefined) : undefined;
           if (nested && nested.length > 0) return walkInline(nested, token.raw ?? "");
@@ -713,28 +746,6 @@ const styleBorder = (sgr: SgrMode, text: string): string => applyStyle({ sgr }, 
 const styleHead = (sgr: SgrMode, text: string): string => applyStyle({ sgr }, HEAD, text);
 
 /**
- * Turn one ordered style chain into bytes — the **only** place a `CellSpan.styles` becomes
- * SGR, and the seam the plan names as the shared applicator.
- *
- * The fold is `createStyler`'s own accumulation order, outermost name first, so a chain
- * `["cyan", "underline"]` produces exactly the `openAll`/`closeAll` `WIKI_LINK_STYLE`
- * (`src/wikilink.ts`) produces — nothing here hand-spells a pair, and the gate is the
- * resolved mode, so `formats` drops the hue and `none` emits nothing at all.
- *
- * **It is private to this module in WP-1 on purpose.** The plan's contract has *one*
- * applicator shared with `styleWikiLabel`, and lifting it into `src/style.ts` is WP-2's
- * edit: this package's file scope excludes `src/style.ts` and `src/wikilink.ts`, and a
- * second copy that is never called by the second consumer is not a shared applicator. WP-2
- * moves this body, unchanged, and both consumers call it there.
- */
-function applyStyleChain(sgr: SgrMode, styles: readonly StyleName[], text: string): string {
-  if (styles.length === 0) return text;
-  let chain: Styler | undefined;
-  for (const name of styles) chain = createStyler(name, chain);
-  return applyStyle({ sgr }, chain as Styler, text);
-}
-
-/**
  * Style one wrapped fragment against the cell's spans — **per fragment, nothing crossing**.
  *
  * Each span is clipped to `[fragment.start, fragment.end)` and opened and closed inside
@@ -742,6 +753,10 @@ function applyStyleChain(sgr: SgrMode, styles: readonly StyleName[], text: strin
  * measured defect that rule repairs is the neighbouring cell rendering inside a wrapped
  * label's cyan; a fragment-scoped emission cannot produce it, because a fragment is
  * exactly the text between two pieces of chrome.
+ *
+ * The chain becomes bytes through `applyStyleChain` (`src/style.ts`) — the one applicator,
+ * shared with `styleWikiLabel`'s prose path, so neither hand-spells a pair and the two
+ * cannot drift.
  */
 function styleFragment(
   fragment: CellFragment,
@@ -757,7 +772,7 @@ function styleFragment(
     const end = Math.min(span.end, fragment.end);
     if (start >= end) continue;
     if (start > cursor) out += fragment.text.slice(cursor - fragment.start, start - fragment.start);
-    out += applyStyleChain(sgr, span.styles, fragment.text.slice(start - fragment.start, end - fragment.start));
+    out += applyStyleChain({ sgr }, span.styles, fragment.text.slice(start - fragment.start, end - fragment.start));
     cursor = end;
   }
   if (cursor === fragment.start) return fragment.text;

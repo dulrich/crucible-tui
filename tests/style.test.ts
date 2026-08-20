@@ -421,15 +421,22 @@ describe("the styling inventory — every producer emits, under an injected TTY 
   // these producers — **no exception, since WP-4 of `plans/colour-policy.md`**. This test
   // read "the only escapes left are the wiki-link's" and expected exactly
   // `36m`/`4m`/`24m`/`39m`, because `styleWikiLink` injected that pair into the source
-  // before the lexer at every colour level. It is gone: the label is carried through the
-  // lexer by control characters (`src/wikilink.ts`) and styled after the walk, through the
-  // emitter above, under the same gate as everything else. Decision 1 of that plan — zero
-  // tool-generated escape bytes with the policy off — is now total over this fixture.
+  // before the lexer at every colour level. It is gone: recognition is the lexer's since
+  // WP-2 of `plans/wiki-link-tokenizer.md`, and the label is styled by a visitor under the
+  // same gate as everything else. Decision 1 of the colour plan — zero tool-generated escape
+  // bytes with the policy off — is total over this fixture.
+  //
+  // **The carrier half of this test is rephrased, not retired** (grant C4). Code points 2/3
+  // were the carrier pair, and this asserted the pass stripped them unconditionally. There is
+  // no pass and no carrier now, so the claim is the one that survives the mechanism: **the
+  // tool generates none**, therefore a source containing none produces none. An *authored*
+  // 2 or 3 passes through as content — pinned in `tests/wikilink.test.ts`.
   test("with the policy off, no producer emits an escape at all", () => {
     const escapes = [...plain.matchAll(ANSI)].map((match) => match[0]);
     expect(escapes).toEqual([]);
-    // And nothing invisible-but-present took the escapes' place: the carriers are stripped
-    // unconditionally, balanced or not.
+    // Non-vacuous: the fixture this is measured over is itself carrier-free.
+    expect(source).not.toContain(String.fromCharCode(2));
+    expect(source).not.toContain(String.fromCharCode(3));
     expect(plain).not.toContain(String.fromCharCode(2));
     expect(plain).not.toContain(String.fromCharCode(3));
     expect(rendered).not.toContain(String.fromCharCode(2));
