@@ -1,179 +1,212 @@
 /**
- * Wiki-link recognition, carrier marking, and the post-walk styling pass.
- * WP-4 of `plans/colour-policy.md`.
+ * Wiki-link recognition — the **inline tokenizer extension**, the token it produces, and
+ * the prose visitor that renders it. WP-2 of `plans/wiki-link-tokenizer.md`.
  *
- * ## What changed, and what deliberately did not
+ * ## What this replaced, and the defect that forced it
  *
- * Obsidian wiki-links aren't markdown, so this tool rewrites them in a line-by-line
- * pre-pass over the source *before* `marked`'s lexer sees it. That much is unchanged.
- * What changed is **emission only**: `styleWikiLink` (`src/render.ts`, deleted here) put
- * `\x1b[36m\x1b[4m` … `\x1b[24m\x1b[39m` — a hardcoded cyan-plus-underline SGR pair —
- * into the markdown source, at **every** colour level including colourless. That made it
- * the last escape producer in the repo outside the styling authority, and the only one
- * whose bytes entered the lexer:
+ * Until this package recognition was a **pre-lexer regex substitution** over source lines
+ * (`markWikiLinks`, called from `preprocessBody`): every `[[…]]` on every line the fence
+ * toggle did not skip was rewritten to a carrier-wrapped `alias ?? slug` *before* `marked`'s
+ * lexer ran, and a post-walk pass styled each balanced carrier pair.
  *
- * - it emitted colour on a plain `mdview note.md | cat`, which is exactly what Decision 1
- *   of `plans/colour-policy.md` forbids ("default non-TTY stdout: zero tool-generated
- *   escape bytes");
- * - it emitted a style pair this repo's committed style table (`src/style.ts`) never
- *   authorized, bypassing the one gate that is supposed to decide;
- * - and it put tool-generated escapes into the *lexer input*, so every downstream claim
- *   about "what the lexer sees" had to carve out an exception for it.
+ * That mechanism could not know what a construct the lexer had not yet built would turn out
+ * to own, so it fired inside verbatim contexts — indented code, block HTML, container-nested
+ * code — and inside link and image destinations and titles, HTML attribute values and
+ * comments, autolinks, bare URLs and reference definitions. The substitution was
+ * **irreversible**: the brackets, the `|`, the `!`, the `#fragment` and the slug itself
+ * (whenever an alias was present) were gone before the lexer ran, so nothing downstream
+ * could restore them. Block HTML was the worst case — `extractCodeRanges` only brackets
+ * `wrapCode` output, so that corruption carried no `codeRange` and no gate could see it.
+ * Three fix designs for the pre-pass failed three audit cycles (leaf restore; byte-offset
+ * line map; line-count map); the full record is `src/AGENTS.md`, "The wiki-link carrier
+ * defect".
  *
- * The replacement is the same idiom the two existing sentinels already use
- * (`SENTINEL` = code point 0, `TASK_STATE_SENTINEL` = code point 1, both in
- * `src/render.ts`): a **carrier pair** of control characters, code points 2 and 3, marking
- * where a wiki-link's label starts and ends. The pre-pass emits carriers; the fully
- * rendered document is walked once afterwards, each balanced pair is styled through
- * `applyStyle` under the resolved policy, and the carriers are removed. Colourless output
- * loses the escape bytes and keeps every visible character.
+ * **The tokenizer needs none of that bookkeeping.** Recognition happens *inside* the lexing
+ * pass, so a verbatim context is protected **by construction**: the inline tokenizer is
+ * simply never offered a position inside a `code` token, a block `html` token, a
+ * container-nested code block, a formed codespan, a link/image destination or title, or an
+ * HTML tag or comment. There are no source coordinates left to get wrong.
  *
- * **Control characters, not zero-width Unicode**, for the reason `TASK_STATE_SENTINEL`
- * records at length: the ASCII glyph tier exists for terminals that cannot render UTF-8,
- * and every gate here measures display *width* rather than code points, so an "invisible"
- * U+200B would be three bytes of exactly the thing that tier avoids and nothing would
- * have caught it.
+ * ## What the carriers were, and why they are gone
  *
- * ## Recognition semantics are frozen
+ * `WIKI_LINK_OPEN`/`WIKI_LINK_CLOSE` were control code points 2 and 3, the same sentinel
+ * idiom `SENTINEL` (0) and `TASK_STATE_SENTINEL` (1) use, marking a label through the lexer
+ * and the walk so a post-walk pass could style it under the resolved policy. They existed
+ * because the *pre-pass* had to hand a decision it could not make to a pass that could. The
+ * tokenizer hands the walk a token instead, and the visitor below styles it at emission —
+ * so the carriers have nothing left to carry. Both code points now mean **nothing** to this
+ * renderer and pass through as content (grant C4 of the plan; code points 0 and 1 keep
+ * their strips, which have internal meaning). The invariant that survives is the one that
+ * mattered: **this tool generates no carrier byte and no escape byte that enters the
+ * lexer.**
  *
- * `WIKI_LINK` below is byte-for-byte the regex `src/render.ts` carried, and it is applied
- * exactly as it was: line by line, skipped inside fenced blocks by `preprocessBody`'s own
- * `FENCE_LINE` toggle. Its consequences are **pinned as expected outputs rather than
- * discovered** (`tests/wikilink.test.ts`): a multiline alias does not match and continues
- * not to; an alias containing a Markdown link does not match, because the alias group is
- * `[^\]]+` and such an alias contains `]`; malformed input passes through unchanged; and
- * `![[embed]]` keeps its `embed: label` rendering. Anything about *which* text is a
- * wiki-link is a separate, deliberate change nobody has asked for.
+ * ## Recognition semantics, and the two deliberate changes
  *
- * The regex is deliberately the same one an in-house web markdown renderer already uses
- * against the same corpus — same pattern, terminal styling instead of an HTML `<span>`.
- * Two documents rendered by two tools must decide what a wiki-link *is* the same way, or
- * they disagree about the same note. The one addition is the leading optional `!` group,
- * to catch Obsidian's `![[embed]]` syntax, which that renderer's pattern does not
- * recognize at all.
+ * `WIKI_LINK` below is still byte-for-byte the regex `src/render.ts` carried, kept exported
+ * because it is the provenance record — the same pattern an in-house web markdown renderer
+ * applies to the same corpus, so two tools rendering one note agree about what a wiki-link
+ * *is*. `WIKI_LINK_TOKENIZER` is that regex in the form an inline tokenizer needs:
+ * **anchored, non-global**, and with `\n` excluded from all three negated character classes
+ * (locked decision D2 — an Obsidian slug is a filename, so a newline in one makes no sense,
+ * and the line-scoped behaviour the per-line pre-pass had is preserved exactly).
+ *
+ * The label is **`alias ?? slug`, always lexed into child tokens** (locked decision D5) via
+ * `this.lexer.inlineTokens(label)`. That is parity, not a new feature: the pre-pass wrote
+ * the label back into the *source*, so a bare slug's own markup already reached the lexer —
+ * `[[**bold**]]` has always rendered bold. Two consequences follow and both are deliberate:
+ * a label's children can include `link`/`url` tokens, which reach `renderLink` and its OSC-8
+ * emission (grant C5 — that is what repairs the malformed sequence a URL-shaped slug used to
+ * produce); and in a **cell** those children are flattened to plain text instead, by
+ * `src/table.ts`'s own flattener, exactly as `strong`/`em`/`del`/link children already
+ * flatten there (locked decision D3).
+ *
+ * Three behaviours worth naming because they changed at the cutover and were granted at
+ * approval rather than discovered:
+ *
+ * - a **codespan interior** that syntactically forms is now literal — the tokenizer can
+ *   never be offered a position inside one (D1). A `[[` that opens *before* a backtick still
+ *   wins positionally, which is byte-for-byte what the line-level regex did (D1's scope note);
+ * - a wiki-link inside a **link or image label** breaks the outer construct, where the
+ *   pre-pass's rewrite let it survive — an enumerated, granted loss (C3);
+ * - an **unescaped `|`** inside a cell's `[[…]]` splits the cell per GFM (D4). The
+ *   authored-correct spelling is the escaped `[[s\|Alias]]`, which `marked` unescapes when it
+ *   splits the row, so the tokenizer sees a real `|` and reads it as the alias separator.
  */
-import { type ColourGate, applyStyle, createStyler } from "./style";
-
-/**
- * The label carriers: code points 2 (`STX`) and 3 (`ETX`), chosen for the same reason the
- * other two sentinels chose 0 and 1 — distinct code points, so a bug in one strip pass can
- * never interact with another's bookkeeping, and control characters that have no
- * legitimate place in markdown source.
- *
- * `src/ansi.ts`'s scanner classifies both as ordinary `text` (pinned in
- * `tests/ansi.test.ts` for code points 0 and 1, and here for 2 and 3), which is correct:
- * a carrier is **not** a terminal sequence. It is also zero display columns to
- * `src/width.ts`'s `Measure` — asserted in `tests/wikilink.test.ts` — so a label wrapped
- * by `src/wrap.ts` occupies exactly the columns its visible text does, which is what makes
- * the colourless render's visible text unmovable by this change.
- */
-export const WIKI_LINK_OPEN = String.fromCharCode(2);
-export const WIKI_LINK_CLOSE = String.fromCharCode(3);
+import type { Token } from "marked";
+import type { TokenizerExtension, TokenizerThis } from "marked";
+import type { LayoutContext } from "./layout-context";
+import { type StyleName, applyStyleChain } from "./style";
 
 /**
  * The wiki-link pattern, moved here from `src/render.ts:41` **verbatim** — see the
- * "Recognition semantics are frozen" note above. Exported so a test can assert the
- * recognition boundary directly rather than inferring it from rendered output.
+ * "Recognition semantics" note above. Exported so a test can assert the recognition
+ * boundary directly rather than inferring it from rendered output, and kept as the
+ * provenance record the tokenizer form below is derived from.
  */
 export const WIKI_LINK = /(!)?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
 
 /**
- * Cyan + underline — `chalk.cyan.underline`, the chain whose `openAll`/`closeAll` are
- * exactly the four codes `styleWikiLink` hardcoded (`\x1b[36m\x1b[4m` / `\x1b[24m\x1b[39m`,
- * per `plans/mdview.md` WP-2's original suggestion). Built through `src/style.ts`'s
- * committed table, so the bytes are now the authority's rather than this file's.
+ * The same pattern in the form an inline tokenizer needs.
+ *
+ * Two differences from `WIKI_LINK`, both required and both narrow:
+ *
+ * - **anchored and non-global.** `marked`'s inline loop offers a tokenizer the remaining
+ *   source and asks "does a token start *here*"; a `g`-flagged, unanchored regex would carry
+ *   `lastIndex` across calls and could match further along the string, consuming source the
+ *   loop never offered.
+ * - **`\n` excluded from all three negated classes** (`[^\]|#\n]+`, `[^\]|\n]*`,
+ *   `[^\]\n]+`). The pre-pass was applied line by line, so its opening and closing brackets
+ *   could never be in the same string and a multiline `[[a\nb]]` did not match. The lexer
+ *   offers whole inline runs, newlines included, so without this exclusion the tokenizer
+ *   would start matching a construct that has never been a wiki-link here (locked D2).
  */
-const WIKI_LINK_STYLE = createStyler("underline", createStyler("cyan"));
+export const WIKI_LINK_TOKENIZER = /^(!)?\[\[([^\]|#\n]+)(?:#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/;
 
 /**
- * Remove every carrier, unconditionally.
+ * Cyan + underline, as an ordered chain of names rather than a prebuilt `Styler`.
  *
- * Two callers, and the reasoning is the same one `stripSentinelChar` gives: a control
- * character has no legitimate place in markdown source, so stripping it from the incoming
- * document (`preprocessBody`) means a hostile or merely odd file cannot **forge** a styled
- * span; and stripping it from the rendered document means nothing invisible-but-present
- * ever reaches a terminal, whatever shape the carriers ended up in.
+ * The names are what both consumers need: `styleWikiLabel` below hands them to
+ * `applyStyleChain` (`src/style.ts`), and `src/table.ts` records them as a `CellSpan`'s
+ * `styles` so the fragment emitter can hand *the same* applicator *the same* chain. Order is
+ * outermost-first, so the bytes are exactly `chalk.cyan.underline`'s — the four codes
+ * `styleWikiLink` hardcoded before any of this was owned (`\x1b[36m\x1b[4m` /
+ * `\x1b[24m\x1b[39m`), now produced by the committed style table.
  */
-export function stripWikiLinkCarriers(text: string): string {
-  if (!text.includes(WIKI_LINK_OPEN) && !text.includes(WIKI_LINK_CLOSE)) return text;
-  return text.split(WIKI_LINK_OPEN).join("").split(WIKI_LINK_CLOSE).join("");
-}
+export const WIKI_LINK_STYLES: readonly StyleName[] = ["cyan", "underline"];
 
-/** Wrap a wiki-link's label in carriers. The entire emission side of the pre-pass. */
-export function markWikiLink(label: string): string {
-  return `${WIKI_LINK_OPEN}${label}${WIKI_LINK_CLOSE}`;
+/**
+ * The token the extension produces — **repo-local**, because `marked` has no wiki-link and
+ * the walk that dispatches this is this repo's (`src/walk.ts`).
+ *
+ * `tokens` is the label's own inline children, lexed by `this.lexer.inlineTokens` at
+ * tokenize time, so the walk renders them exactly as it renders any other inline run.
+ * `slug` and `alias` are kept even though the label is derived from them, because they are
+ * the authored content and a successor that navigates a wiki-link needs the *target*, not
+ * the label — see `docs/adr/0001-editor-path.md`.
+ */
+export interface WikiLinkToken {
+  readonly type: "wikilink";
+  readonly raw: string;
+  readonly slug: string;
+  readonly alias?: string;
+  readonly embed: boolean;
+  readonly tokens: Token[];
 }
 
 /**
- * Apply `WIKI_LINK` to one source line, emitting carriers. Callers own the fence toggle.
+ * The extension `src/render.ts` registers on its `Marked` instance.
  *
- * `![[target]]` renders as `embed: label` rather than dropping the `!` on the floor (the
- * plain-link case, `bang === undefined`, is unchanged — no glyph either way, since this
- * must read identically under both glyph tiers and needs no capability detection). The
- * `embed: ` prefix sits **outside** the carriers, exactly where it sat outside the SGR
- * pair before, so its bytes do not move.
+ * `level: "inline"` puts it in the inline loop, where `marked` tries extension tokenizers
+ * **first** at each position (`marked.cjs:1551-1563`) and then falls through to its own —
+ * which is exactly the precedence the plan's matrix enumerates row by row.
+ *
+ * `start` is the naive index of `[[`. Its only job is to stop `inlineText` from swallowing a
+ * position this tokenizer would have claimed: `marked` clips `cutSrc` for `inlineText` alone
+ * (`:1639-1652`), so a `start` that is merely *not too late* is sufficient and cannot break
+ * any other tokenizer's parse. A bang-aware backtrack is unnecessary — `inlineText`'s own
+ * stop-set already includes `!`.
+ *
+ * There is **no `renderer` field**, deliberately. `marked.use()` accepts a renderer-less
+ * extension, and a renderer here would be dead code: this repo owns the walk, so the token
+ * is dispatched by `TokenWalker` to `renderer.wikilink`, never by `marked`'s `Parser`.
  */
-export function markWikiLinks(line: string): string {
-  return line.replace(WIKI_LINK, (_match, bang: string | undefined, slug: string, alias?: string) => {
-    const label = markWikiLink(alias ?? slug);
-    return bang === undefined ? label : `embed: ${label}`;
-  });
-}
+export const wikiLinkExtension: TokenizerExtension = {
+  name: "wikilink",
+  level: "inline",
+  start(src: string): number {
+    return src.indexOf("[[");
+  },
+  tokenizer(this: TokenizerThis, src: string): WikiLinkToken | undefined {
+    const match = WIKI_LINK_TOKENIZER.exec(src);
+    if (!match) return undefined;
+
+    const [raw, bang, slug, alias] = match;
+    // noUncheckedIndexedAccess: group 2 is not optional in the pattern, but capture groups
+    // type as `string | undefined` regardless.
+    if (raw === undefined || slug === undefined) return undefined;
+
+    return {
+      type: "wikilink",
+      raw,
+      slug,
+      ...(alias === undefined ? {} : { alias }),
+      embed: bang !== undefined,
+      // **The label is `alias ?? slug`, lexed into children** (D5). `this` is `{ lexer }`
+      // and `inlineTokens` is synchronous and re-entrant-safe at `marked@14.1.4` — measured,
+      // not assumed (the plan's probe m), and pinned by the nested-markup witnesses.
+      tokens: this.lexer.inlineTokens(alias ?? slug),
+    };
+  },
+};
 
 /**
- * The post-walk pass: style each **balanced** carrier pair and remove every carrier.
+ * The prose visitor: render the label's children, style the result, prefix an embed.
  *
- * Runs over the fully rendered document, after the walk and after `extractCodeRanges` —
- * carriers are not newlines, so they cannot shift a code range's line numbers, and this
- * pass adds none either — and **before** `stripEmojiTrailingSpace`, which is the ordering
- * the plan specifies and which is load-bearing: that pass's regex tolerates trailing SGR
- * (`TRAILING_ANSI_SGR_SOURCE`) but knows nothing about carriers, so a carrier surviving
- * into it would suppress the strip in colourless mode only and split the two colour modes
- * apart on a line this change is not allowed to move.
+ * Three things here are contract rather than detail:
  *
- * **Unbalanced carriers degrade to stripping, never to leaked bytes.** An opener with no
- * closer, a closer with no opener, and a second opener inside an open span are all simply
- * removed; the visible text survives unstyled. That is the safe direction: the failure a
- * carrier scheme must not have is emitting a half-open style pair into a terminal.
+ * - **the children go through the walk's inline path**, so `strong`, `codespan`, `link` and
+ *   `url` children render exactly as they would in ordinary prose. A `url` child reaching
+ *   `renderLink` is what makes a URL-shaped slug emit a *well-formed* OSC-8 sequence: the
+ *   old carrier pass ran over the finished document, long after the OSC-8 was emitted, and
+ *   wrote this chain's close codes **inside the destination before the BEL** (grant C5);
+ * - **the chain is applied through `applyStyleChain`** — the one shared applicator, which
+ *   `src/table.ts`'s fragment emitter also calls. Under `formats` the cyan drops and the
+ *   underline stays; under `none` nothing is emitted at all;
+ * - **`embed: ` sits outside the styled span**, literal and unstyled, exactly where it sat
+ *   outside the carriers and outside the SGR pair before them. It is also outside the
+ *   *children*, so it is never lexed as markdown.
  *
- * Styling is `applyStyle` — the same emitter every other producer uses, gated on the
- * resolved policy — rather than a literal pair, which is the whole point of the package.
- * Two consequences follow from that and are deliberate:
- *
- * - a label whose rendered text carries a **nested** style that closes with one of this
- *   chain's own close codes (`\x1b[24m`, `\x1b[39m`) gets that code re-opened, per
- *   `chalk`'s `applyStyle`; the hardcoded pair left the rest of the label unstyled;
- * - a label that a wrap split across lines is **encased** — closed before each newline and
- *   reopened after — where the hardcoded pair emitted one open at the start and one close
- *   at the end regardless.
- *
- * Both make the wiki-link behave like every other styled span in the renderer. Neither can
- * move a visible character, since both only ever insert escape bytes, and neither can fire
- * at all with the policy off.
+ * **Styling now happens before the wrap, which is where every other styled span in this
+ * renderer already is** (grant C2). The old pass styled a label that `src/wrap.ts` had
+ * already split, so `applyStyle`'s line-break encasing closed and reopened the pair around
+ * every generated break; `wrapAnsi` synthesizes no such pair, so a wrapped label now carries
+ * one open and one close however many lines it crosses.
  */
-export function styleWikiLinkCarriers(text: string, gate: ColourGate): string {
-  if (!text.includes(WIKI_LINK_OPEN) && !text.includes(WIKI_LINK_CLOSE)) return text;
-
-  let out = "";
-  let cursor = 0;
-  for (;;) {
-    const open = text.indexOf(WIKI_LINK_OPEN, cursor);
-    if (open === -1) {
-      out += stripWikiLinkCarriers(text.slice(cursor));
-      break;
-    }
-    // Anything before the opener is ordinary text — plus, possibly, an orphaned closer.
-    out += stripWikiLinkCarriers(text.slice(cursor, open));
-
-    const close = text.indexOf(WIKI_LINK_CLOSE, open + 1);
-    if (close === -1) {
-      // Orphaned opener: no pair, so no style. Keep the label's characters, drop the mark.
-      out += stripWikiLinkCarriers(text.slice(open + 1));
-      break;
-    }
-
-    out += applyStyle(gate, WIKI_LINK_STYLE, stripWikiLinkCarriers(text.slice(open + 1, close)));
-    cursor = close + 1;
-  }
-  return out;
+export function styleWikiLabel(
+  ctx: LayoutContext,
+  token: WikiLinkToken,
+  parseInline: (tokens: Token[]) => string,
+): string {
+  const label = applyStyleChain(ctx, WIKI_LINK_STYLES, parseInline(token.tokens));
+  return token.embed ? `embed: ${label}` : label;
 }

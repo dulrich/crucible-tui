@@ -29,7 +29,7 @@ import { MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, isGuardShapedLine, stripAns
 import { TASK_GLYPHS, renderList, substituteBullets } from "./lists";
 import { TokenWalker, type WalkRendererMethods } from "./walk";
 import { NARROW_MEASURE, type Measure } from "./width";
-import { markWikiLinks, stripWikiLinkCarriers, styleWikiLinkCarriers } from "./wikilink";
+import { type WikiLinkToken, styleWikiLabel, wikiLinkExtension } from "./wikilink";
 
 // Obsidian's custom checkbox states aren't GFM tasklist syntax — marked's tasklist
 // extension only recognizes " ", "x", "X". Line pattern and state table are kept
@@ -250,13 +250,19 @@ function stripSentinelChar(body: string): string {
  */
 export function preprocessBody(body: string, glyphs: GlyphSet): string {
   let inFence = false;
-  // Strip all three carrier bytes from the incoming source before any mechanism runs —
-  // same reasoning for each, kept as three separate calls so no strip's implementation
-  // needs to know another's code point exists. `stripWikiLinkCarriers` joined the chain
-  // in WP-4 of `plans/colour-policy.md`, when the wiki-link pass stopped emitting SGR
-  // into the lexer's input and started emitting code points 2/3 instead: without it a
-  // document could write the carriers itself and forge a styled span.
-  return stripWikiLinkCarriers(stripTaskStateSentinel(stripSentinelChar(body)))
+  // Strip both sentinel bytes from the incoming source before any mechanism runs — same
+  // reasoning for each, kept as two separate calls so neither strip's implementation needs
+  // to know the other's code point exists. A NUL would forge a code range; a code point 1
+  // would forge a defeated-task-regex marker.
+  //
+  // **There were three, and the wiki-link pair left with the pre-pass** (WP-2 of
+  // `plans/wiki-link-tokenizer.md`). `stripWikiLinkCarriers` sanitized code points 2/3
+  // because the *carriers* had internal meaning and a document that wrote them itself could
+  // forge a styled span. Recognition is the lexer's now, nothing here emits a carrier, and
+  // so those two code points mean nothing to this renderer — under Decision 1's fidelity
+  // rule (`plans/colour-policy.md`) a byte this tool assigns no meaning passes through as
+  // content, which is grant C4 of the tokenizer plan.
+  return stripTaskStateSentinel(stripSentinelChar(body))
     .split("\n")
     .map((line) => {
       if (FENCE_LINE.test(line)) {
@@ -265,10 +271,15 @@ export function preprocessBody(body: string, glyphs: GlyphSet): string {
       }
       if (inFence) return line;
 
-      // Recognition is frozen at what it was (`plans/colour-policy.md`, WP-4 and the
-      // cycle-2 f4 disposition): the same regex, applied to the same lines, skipped
-      // inside fences by the same toggle. Only the emission moved — see `src/wikilink.ts`.
-      return markWikiLinks(rewriteTaskState(line, glyphs));
+      // **The wiki-link half of this pass is gone** (WP-2 of
+      // `plans/wiki-link-tokenizer.md`): `markWikiLinks` ran here, rewriting every `[[…]]`
+      // on every non-fence line before the lexer could tell prose from a link destination,
+      // an HTML attribute or an indented code block. `src/wikilink.ts`'s inline tokenizer
+      // extension does the recognition inside the lexing pass instead, where a verbatim
+      // context is protected by construction. What remains is the task-state pre-pass,
+      // which is `src/AGENTS.md`'s own separately-dispositioned, user-withheld ground —
+      // the two shared a mechanism, not a disposition.
+      return rewriteTaskState(line, glyphs);
     })
     .join("\n");
 }
@@ -859,6 +870,19 @@ export function renderDocumentDetailed(
   const processedBody = preprocessBody(body, glyphs);
 
   const instance = new Marked();
+  // **The one extension this repo registers** (WP-2 of `plans/wiki-link-tokenizer.md`).
+  //
+  // `use({ extensions })` writes `opts.extensions.inline` (`marked.cjs:2215-2222`) and
+  // `opts.extensions.startInline` (`:2232-2237`), which is what `instance.lexer(...)` reads
+  // — so this affects the **lexing** pass and nothing else. The walk is still this repo's:
+  // the extension carries no `renderer` field, so `opts.extensions.renderers` stays empty
+  // and `marked`'s own pre-dispatch hook has nothing to dispatch even in principle.
+  // `TokenWalker` routes the `wikilink` token to `renderer.wikilink` below.
+  //
+  // This is `marked` used one level deeper than before and still lexer-only: the
+  // dependency-classification rule (root `AGENTS.md`) is unmoved — a tokenizer extension is
+  // grammar, it reads no environment and writes no escape byte.
+  instance.use({ extensions: [wikiLinkExtension] });
   // WP-11 (representative-corpus): shortcode substitution follows the glyph tier.
   //
   // It was twice proposed to set `emoji: false` unconditionally to save ~468 KB in
@@ -1023,6 +1047,16 @@ export function renderDocumentDetailed(
     return renderLink(layout, token, (tokens) => this.parser.parseInline(tokens));
   };
   renderer.image = (token: Tokens.Image) => renderImage(token);
+  // The one visitor whose token is not `marked`'s (WP-2 of
+  // `plans/wiki-link-tokenizer.md`). It threads the full `LayoutContext` rather than a
+  // colour gate alone, because the label's children are dispatched through the inline walk
+  // and a `link`/`url` child reaches `renderLink` — which needs `hyperlinks` and `tmux`.
+  // That is the whole of grant C5: the label is lexed clean, so the OSC-8 a URL-shaped slug
+  // produces is well-formed instead of carrying this chain's close codes inside its
+  // destination.
+  renderer.wikilink = function ownedWikiLink(token: WikiLinkToken) {
+    return styleWikiLabel(layout, token, (tokens) => this.parser.parseInline(tokens));
+  };
 
   // Columns that block renderers still owe every line of whatever is being rendered
   // *right now*, because they are glued on only after that inner render returns: a
@@ -1259,17 +1293,16 @@ export function renderDocumentDetailed(
     // (see `src/wrap.ts`'s module comment, which names list items carrying live ANSI as
     // its reason to exist).
     //
-    // **This comment used to say the seam was "already exercised at every colour level"
-    // by `styleWikiLink`'s hard-coded escapes, and WP-4 of `plans/colour-policy.md`
-    // retired that producer.** What reaches this seam from a wiki-link now is a pair of
-    // carrier control characters (code points 2/3, `src/wikilink.ts`), which are *text*
-    // to `src/ansi.ts`'s scanner and **zero columns** to `Measure` — re-measured here at
-    // WP-4 and asserted in `tests/wikilink.test.ts`. So the segment occupies exactly the
-    // columns its visible text does, as it did when the escapes were the carrier, and the
-    // colourless wrap is unmoved. A carrier can be separated from its label by a
-    // hard-split of an over-long word, which is harmless: the pass that consumes them runs
-    // over the whole rendered document, and `applyStyle`'s line-break encasing is what
-    // styles a pair that ended up spanning a newline.
+    // **What a wiki-link contributes to this seam has changed twice, and it is now the
+    // ordinary case rather than a special one.** It was `styleWikiLink`'s hard-coded
+    // escapes; WP-4 of `plans/colour-policy.md` made it a pair of carrier control
+    // characters (code points 2/3), zero columns to `Measure` and *text* to
+    // `src/ansi.ts`'s scanner; and WP-2 of `plans/wiki-link-tokenizer.md` retired those
+    // too. A wiki label reaching this seam is now an ordinary styled span — SGR when the
+    // policy says so, nothing when it does not — indistinguishable here from a `strong` or
+    // a `link`, and handled by the same segmentation that already existed for them. The
+    // colourless wrap is unmoved either way, since the label's visible text is what it
+    // always was.
     const wrapAt = (width: number): string =>
       segments.map((segment) => wrapAnsi(segment, Math.max(1, width), measure).join("\n")).join("\n");
 
@@ -1534,31 +1567,25 @@ export function renderDocumentDetailed(
   // a bug in either one can never silently affect the other's bookkeeping.
   const cleanedBody = stripTaskStateSentinel(strippedBody);
 
-  // **The wiki-link carrier pass** (WP-4 of `plans/colour-policy.md`). Each balanced pair
-  // of code points 2/3 that `preprocessBody` put into the *source* is styled here, through
-  // `src/style.ts`'s emitter under the resolved policy, and every carrier is removed —
-  // balanced or not. It replaced `styleWikiLink`, which spelled a cyan/underline SGR pair
-  // by hand and injected it into the lexer's input at every colour level, colourless
-  // included; after this the renderer emits no escape byte that this repo does not spell,
-  // and none at all when the policy says no.
+  // **The wiki-link carrier pass stood here and is gone** (WP-2 of
+  // `plans/wiki-link-tokenizer.md`). It walked the finished document, styled each balanced
+  // pair of code points 2/3 that `preprocessBody` had put into the *source*, and stripped
+  // every carrier — an arrangement whose whole reason was that a pre-lexer pass could not
+  // make a styling decision and had to defer one to a pass that could. Recognition is the
+  // lexer's now and `renderer.wikilink` styles at emission, so there is no deferred decision
+  // and no carrier left to consume. Two consequences that used to be pinned here: a wrapped
+  // label is no longer encased per line (it is styled *before* the wrap, like every other
+  // styled span — grant C2), and a label in a table cell is styled per fragment by
+  // `src/table.ts` instead of by a document-wide pass that crossed padding and borders
+  // (grant C6a).
   //
-  // **Placed here on purpose, and both neighbours matter.** It runs after
-  // `extractCodeRanges` because carriers are not newlines and this pass adds none, so no
-  // code range's line numbers can shift either way — and running after keeps the ranges
-  // derived from exactly the bytes the walk produced. It runs *before*
-  // `stripEmojiTrailingSpace` because that pass's regex tolerates trailing SGR but knows
-  // nothing about carriers: a surviving carrier would suppress the strip with colour off
-  // and not with colour on, splitting the two modes apart on a line this package is not
-  // allowed to move.
-  const linkedBody = styleWikiLinkCarriers(cleanedBody, layout);
-
   // WP-11: one uniform pass over the body strips `insertEmojis`'s stray trailing
   // space wherever it survived to end-of-line, skipping fenced ranges. `bodyRanges`
   // (not the offset `codeRanges` below) is correct here — `cleanedBody`'s own line
   // numbering starts at 1 for the body, the same numbering `extractCodeRanges` used to
   // record `bodyRanges` in the first place; the `metaLineOffset` shift below is only
   // for the *returned* `codeRanges`, which describe the final `metaBlock`-prefixed text.
-  const emojiCleanedBody = stripEmojiTrailingSpace(linkedBody, bodyRanges);
+  const emojiCleanedBody = stripEmojiTrailingSpace(cleanedBody, bodyRanges);
 
   // `metaBlock` never passes through `code`/`rewriteTaskState`, so it never carries
   // either sentinel; its own line count is a fixed offset onto the body's ranges once

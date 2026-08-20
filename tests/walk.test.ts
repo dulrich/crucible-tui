@@ -3,6 +3,7 @@ import { Marked } from "marked";
 import type { Token, Tokens } from "marked";
 import { TokenWalker, type InlineRenderer, type WalkRendererMethods } from "../src/walk";
 import { renderDocument } from "../src/render";
+import { type WikiLinkToken, wikiLinkExtension } from "../src/wikilink";
 
 /**
  * **The all-token matrix for the owned walk** (WP-2 of `plans/own-the-token-walk.md`).
@@ -61,6 +62,14 @@ interface ProbeMethods {
   codespan?(this: ProbeHost, token: Tokens.Codespan): string;
   br?(this: ProbeHost, token: Tokens.Br): string;
   del?(this: ProbeHost, token: Tokens.Del): string;
+  /**
+   * This repo's own dispatched type (WP-2 of `plans/wiki-link-tokenizer.md`). Present on the
+   * *probe* shape so `ownedExtra` can carry it and so the required-methods sweep below can
+   * index by `keyof WalkRendererMethods`; it is **never** in `builtinProbeMethods`, because
+   * `marked.use()` throws on a renderer key it does not know and the marked side of the
+   * differential must stay legal.
+   */
+  wikilink?(this: ProbeHost, token: WikiLinkToken): string;
 }
 
 /**
@@ -76,10 +85,9 @@ interface ProbeMethods {
  * take an addition is what preserves the differential's meaning: both walkers still run the
  * identical renderer over every token type they both dispatch, which is the whole claim.
  *
- * Nothing passes `extra` yet — WP-2 of `plans/wiki-link-tokenizer.md` is what adds a token
- * type — and **no walker source changes belong to this package**: the seam is here so that
- * package's differential does not have to fork `bothWalkers` in the same commit that
- * changes the walk.
+ * WP-2 of that plan is what added the token type, and the seam did its job: the `wikilink`
+ * block below hands its method in through `extra`, and `bothWalkers` still gives `use()` a
+ * marked-legal object, so the 32-case differential above is untouched and stays green.
  */
 function probeRenderer(extra: ProbeMethods = {}): ProbeMethods {
   return {
@@ -535,8 +543,12 @@ describe("TokenWalker — the receiver, and what dropping marked.use() moved her
   });
 
   test("every one of the sixteen assigned methods is required", () => {
+    // Still sixteen: `wikilink` is dispatched but **not required** (like `space`), because a
+    // consumer that does not register `wikiLinkExtension` can never be handed the token. The
+    // `wikilink` block below pins the throw that covers the missing-method case instead.
     const names = Object.keys(probeRenderer()) as Array<keyof WalkRendererMethods>;
     expect(names).toHaveLength(16);
+    expect(names).not.toContain("wikilink");
     for (const name of names) {
       const incomplete = probeRenderer();
       delete incomplete[name];
@@ -550,6 +562,100 @@ describe("TokenWalker — the receiver, and what dropping marked.use() moved her
     // coercion is reproduced by construction rather than by a wrapper.
     const walker = new TokenWalker({ ...probeRenderer(), hr: () => "" });
     expect(walker.parse([{ type: "hr", raw: "---" } as Tokens.Hr])).toBe("");
+  });
+});
+
+/**
+ * **The `wikilink` case and the `parseInline` override contract** — WP-2 of
+ * `plans/wiki-link-tokenizer.md`, the plan's "WP-2 key change".
+ *
+ * This is the one inline case with no `marked.cjs` row behind it: the token comes from an
+ * inline **tokenizer extension** this repo registers on its own `Marked` instance, so nothing
+ * upstream defines what dispatching it means. Four things are contract, and each gets a
+ * direct test rather than being inferred from a rendered document:
+ *
+ * 1. the main renderer's `wikilink` is dispatched, with the walker as `this`;
+ * 2. an **override** passed to `parseInline` is the effective renderer for it too — the same
+ *    `override ?? main` rule every other inline case follows;
+ * 3. an override that does **not** carry the method takes the ordinary unknown-type throw,
+ *    with marked's own message, rather than silently rendering nothing;
+ * 4. the token's children recurse through the walk, so a label's own markup renders exactly
+ *    as it would in prose.
+ */
+describe("TokenWalker — the wikilink case and the parseInline override contract", () => {
+  /** Lex with the extension registered, exactly as `renderDocumentDetailed` does. */
+  const lexWithExtension = (source: string): Token[] => {
+    const instance = new Marked();
+    instance.use({ extensions: [wikiLinkExtension] });
+    return instance.lexer(source);
+  };
+
+  const wikiProbe: ProbeMethods = {
+    wikilink: function (this: ProbeHost, token: WikiLinkToken) {
+      return `[wiki:${token.embed ? "!" : ""}${token.slug}:${this.parser.parseInline(token.tokens)}]`;
+    },
+  };
+
+  test("the extension really produces the token, inside an ordinary paragraph", () => {
+    const tokens = lexWithExtension("a [[slug|the **label**]] b\n");
+    const paragraph = tokens[0] as Tokens.Paragraph;
+    expect(paragraph.tokens.map((token) => token.type)).toEqual(["text", "wikilink", "text"]);
+    const wiki = paragraph.tokens[1] as unknown as WikiLinkToken;
+    expect(wiki.raw).toBe("[[slug|the **label**]]");
+    expect(wiki.slug).toBe("slug");
+    expect(wiki.alias).toBe("the **label**");
+    expect(wiki.embed).toBe(false);
+  });
+
+  test("dispatch through the main renderer, with the walker as `this`", () => {
+    const walker = new TokenWalker(probeRenderer(wikiProbe));
+    expect(walker.parse(lexWithExtension("a [[slug]] b\n"))).toBe("[p:[t:a ][wiki:slug:[t:slug]][t: b]]");
+  });
+
+  test("child tokens recurse — a label's own markup walks like any other inline run", () => {
+    const walker = new TokenWalker(probeRenderer(wikiProbe));
+    expect(walker.parse(lexWithExtension("[[s|a **b** `c`]]\n"))).toBe(
+      "[p:[wiki:s:[t:a ][b:[t:b]][t: ][cs:c]]]",
+    );
+    // And an embed is the same token with `embed` set — the prefix is the *visitor's*, not
+    // the tokenizer's, so nothing in the walk knows about it.
+    expect(walker.parse(lexWithExtension("![[s]]\n"))).toBe("[p:[wiki:!s:[t:s]]]");
+  });
+
+  test("an override carrying the method is the effective renderer for a wikilink too", () => {
+    const walker = new TokenWalker(probeRenderer(wikiProbe));
+    const tokens = (lexWithExtension("a [[slug]] b\n")[0] as Tokens.Paragraph).tokens;
+    const override = {
+      ...probeRenderer(wikiProbe),
+      parser: walker,
+      wikilink: () => "[OVERRIDE]",
+    } as unknown as InlineRenderer;
+    // The override wins — dispatch goes through it, not through the walk's own renderer.
+    expect(walker.parseInline(tokens, override)).toBe("[t:a ][OVERRIDE][t: b]");
+    // ... and without it the main renderer's method is what runs, on the same tokens.
+    expect(walker.parseInline(tokens)).toBe("[t:a ][wiki:slug:[t:slug]][t: b]");
+  });
+
+  test("an override that lacks the method takes the unknown-type throw", () => {
+    const walker = new TokenWalker(probeRenderer(wikiProbe));
+    const tokens = (lexWithExtension("a [[slug]] b\n")[0] as Tokens.Paragraph).tokens;
+    const flattener = { ...probeRenderer(), parser: walker } as unknown as InlineRenderer;
+    expect(() => walker.parseInline(tokens, flattener)).toThrow('Token with "wikilink" type was not found.');
+  });
+
+  test("a main renderer without the method throws too — it is dispatched, not required", () => {
+    // Construction succeeds (the method is optional, like `space`), and the failure is the
+    // honest one at dispatch rather than a token rendering as nothing.
+    const walker = new TokenWalker(probeRenderer());
+    expect(() => walker.parse(lexWithExtension("a [[slug]] b\n"))).toThrow(
+      'Token with "wikilink" type was not found.',
+    );
+  });
+
+  test("a wikilink token at the block walk still throws — it is an inline type", () => {
+    const walker = new TokenWalker(probeRenderer(wikiProbe));
+    const wiki = (lexWithExtension("[[slug]]\n")[0] as Tokens.Paragraph).tokens[1 - 1] as Token;
+    expect(() => walker.parse([wiki])).toThrow('Token with "wikilink" type was not found.');
   });
 });
 

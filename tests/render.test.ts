@@ -39,10 +39,21 @@ describe("renderDocument — wiki-links", () => {
   // before asserting — and that is exactly why they could not see the defect: `styleWikiLink`
   // put a cyan/underline SGR pair into the markdown *source*, before the lexer, at every
   // colour level, so the default `renderDocument` call they make carried colour into a pipe
-  // with none requested. The mechanism and the gate are both pinned here; the carrier
-  // machinery itself is `tests/wikilink.test.ts`'s.
-  test("with no policy, a wiki-link emits no escape and no carrier", () => {
-    const output = renderDocument("See [[mdview]] for details.\n", 80);
+  // with none requested. The mechanism and the gate are both pinned here; recognition itself
+  // is `tests/wikilink.test.ts`'s.
+  //
+  // **Rephrased, not retired, at WP-2 of `plans/wiki-link-tokenizer.md`** (grant C4). Code
+  // points 2 and 3 were the carrier pair that marked a label through the lexer, and this
+  // asserted they never reached a terminal. The tokenizer needs no carriers, so those bytes
+  // now mean nothing to this renderer and an *authored* one passes through as content — see
+  // `tests/wikilink.test.ts`'s C4 pass-through witness. What survives here is the half that
+  // is still an invariant and is the one that mattered: **this tool generates no carrier
+  // byte**, so a source containing none produces none.
+  test("with no policy, a wiki-link emits no escape — and no tool-generated 2/3 for carrier-free input", () => {
+    const source = "See [[mdview]] for details.\n";
+    expect(source).not.toContain(String.fromCharCode(2));
+    expect(source).not.toContain(String.fromCharCode(3));
+    const output = renderDocument(source, 80);
     expect(output).toContain("mdview");
     expect(output).not.toContain(String.fromCharCode(27));
     expect(output).not.toContain(String.fromCharCode(2));
@@ -134,28 +145,40 @@ describe("renderDocument under `formats` — authored escapes, and the reset fra
   });
 });
 
-// The defect record — `src/AGENTS.md`, "The wiki-link carrier defect", and WP-1 of
-// `plans/colour-modes.md`. `markWikiLinks` (`src/wikilink.ts:116-121`, called from
-// `preprocessBody`, `src/render.ts:251-274`) is guarded only by `FENCE_LINE`
-// (` ``` `/`~~~`), so it fires on lines that later tokenize as indented code, block
-// HTML, or code nested under a blockquote or a list, exactly as it fires on ordinary
-// prose. **These tests assert the renderer's CURRENT output, byte-for-byte, in both
-// colour modes — recorded, not fixed.** If a future change moves any of these bytes,
-// one of these tests is the tripwire that is supposed to fail; the fix belongs to the
-// successor plan `src/AGENTS.md` names, not to this WP.
-describe("renderDocument — the wiki-link defect in verbatim contexts (plans/colour-modes.md WP-1, recorded not fixed)", () => {
+/**
+ * **The verbatim contexts, repaired** — grant C1 of `plans/wiki-link-tokenizer.md`, WP-2.
+ *
+ * These four were the defect record: `markWikiLinks` was a pre-lexer regex substitution
+ * guarded only by `FENCE_LINE` (` ``` `/`~~~`), so it fired on lines that later tokenized as
+ * indented code, block HTML, or code nested under a blockquote or a list exactly as it fired
+ * on prose — and the substitution was irreversible, so the authored `[[…]]`, the `|`, the
+ * `#fragment`, the `!` and (whenever an alias was given) the slug itself were gone before the
+ * lexer ran. Block HTML was the worst of them: it never passes through `wrapCode`, so
+ * `extractCodeRanges` recorded nothing and the corruption carried no class-C protection and
+ * no `--check`/sweep exemption at all.
+ *
+ * **Recognition is the lexer's now, so every one of these is protected by construction**: an
+ * inline tokenizer is never offered a position inside a `code` token, a block `html` token,
+ * or a container-nested code block. The four tests below assert the *repaired* bytes, and
+ * they are what grant C1 exists for — this is the one place in the plan authorized to change
+ * bytes **inside a recorded `codeRange`**.
+ *
+ * Two things every expectation here was measured for rather than derived:
+ *
+ * - **`codeRanges` are asserted per case and did not move.** A repair that also changed what
+ *   `--check` exempts would be a second, ungranted change.
+ * - **The coloured indented-code bytes were re-measured, never derived from the plain ones.**
+ *   The highlighter runs `highlightAuto` over the code range's *content*, and restoring the
+ *   brackets changes that content — so its guess moved, from `34m` on `here` to `31m` on the
+ *   brackets. That SGR is the highlighter's own and is deliberately not asserted away; what
+ *   *is* asserted is that no wiki-link SGR reaches a code range any more.
+ */
+describe("renderDocument — verbatim contexts keep their authored brackets (wiki-link-tokenizer WP-2, C1)", () => {
   const ESC = String.fromCharCode(27);
-  const CYAN_UNDERLINE_OPEN = `${ESC}[36m${ESC}[4m`;
-  const CYAN_UNDERLINE_CLOSE = `${ESC}[24m${ESC}[39m`;
-  // Migrated at WP-2 of `plans/colour-modes.md` (`color: true` -> `sgr: "full"`,
-  // `color: false` -> `sgr: "none"`). **Not one expected byte in this describe block
-  // moved with them**: these witnesses record the defect's current output and exist to
-  // trip when a future fix changes it, so a migration that also "tidied" an expectation
-  // would have destroyed the instrument.
   const PLAIN = { sgr: "none", hyperlinks: false, tmux: false } as const;
   const COLOUR = { sgr: "full", hyperlinks: false, tmux: false } as const;
 
-  test("defect record: indented code loses authored brackets — plain, alias, fragment, embed (pinned until the successor fix plan)", () => {
+  test("C1: indented code keeps every authored byte — plain, alias, fragment, embed", () => {
     const source =
       "Intro paragraph.\n\n" +
       "    See [[slug]] here\n" +
@@ -164,76 +187,79 @@ describe("renderDocument — the wiki-link defect in verbatim contexts (plans/co
       "    See ![[embed]] here\n";
 
     const plain = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, PLAIN);
+    // Every discarded piece is back: the brackets, the `|`, the `#head` fragment, the slug
+    // an alias used to replace, and the `!`.
     expect(plain.text).toBe(
       "Intro paragraph.\n\n" +
-        "    See slug here\n" +
-        "    See Alias here\n" +
-        "    See Alias here\n" +
-        "    See embed: embed here\n\n",
+        "    See [[slug]] here\n" +
+        "    See [[slug|Alias]] here\n" +
+        "    See [[slug#head|Alias]] here\n" +
+        "    See ![[embed]] here\n\n",
     );
     expect(plain.codeRanges).toEqual([[3, 6]]);
 
     const coloured = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, COLOUR);
     expect(coloured.text).toBe(
       `${ESC}[0mIntro paragraph.${ESC}[0m\n\n` +
-        `    See ${CYAN_UNDERLINE_OPEN}slug${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m\n` +
-        `    See ${CYAN_UNDERLINE_OPEN}Alias${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m\n` +
-        `    See ${CYAN_UNDERLINE_OPEN}Alias${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m\n` +
-        `    See embed: ${CYAN_UNDERLINE_OPEN}embed${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m\n\n`,
+        `    See ${ESC}[31m[[slug]]${ESC}[39m here\n` +
+        `    See ${ESC}[31m[[slug|Alias]]${ESC}[39m here\n` +
+        `    See ${ESC}[31m[[slug#head|Alias]]${ESC}[39m here\n` +
+        `    See !${ESC}[31m[[embed]]${ESC}[39m here\n\n`,
     );
-    // The blue on "here" is the syntax highlighter's own `highlightAuto` guess over the
-    // code range's content — never asserted away, per the brief: coloured code is
-    // intentionally passed through the highlighter, so "no SGR but the wiki-link's" would
-    // be the wrong claim to pin.
+    // **Re-measured, not derived.** The `31m` is `highlightAuto`'s own guess over the range's
+    // restored content; it used to colour `here` blue. The substantive claim is the next
+    // line: no wiki-link SGR reaches a code range any more.
+    expect(coloured.text).not.toContain(`${ESC}[36m`);
     expect(coloured.codeRanges).toEqual([[3, 6]]);
   });
 
-  test("defect record: block HTML loses authored brackets and carries no codeRange exemption", () => {
+  test("C1: block HTML keeps its authored brackets — the corruption with no codeRange to hide in", () => {
     const source = "<div>\nSee [[slug]] here\n</div>\n";
 
     const plain = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, PLAIN);
-    expect(plain.text).toBe("<div>\nSee slug here\n</div>\n");
-    // Unlike indented/blockquote/list-nested code, block HTML never passes through
-    // `wrapCode`, so `extractCodeRanges` records nothing here — this corruption carries
-    // no class-C protection and no `--check`/sweep exemption at all.
+    expect(plain.text).toBe("<div>\nSee [[slug]] here\n</div>\n");
+    // Still no `codeRange`, for the same structural reason as before — block HTML never
+    // passes through `wrapCode`. What changed is that there is nothing left to exempt.
     expect(plain.codeRanges).toEqual([]);
 
     const coloured = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, COLOUR);
+    // A block `html` token carries no `tokens` array at all, so the inline tokenizer is
+    // structurally unreachable here: the whole block is one grey run, brackets included.
     expect(coloured.text).toBe(
       `${ESC}[90m<div>${ESC}[39m\n` +
-        `${ESC}[90mSee ${CYAN_UNDERLINE_OPEN}slug${CYAN_UNDERLINE_CLOSE} here${ESC}[39m\n` +
+        `${ESC}[90mSee [[slug]] here${ESC}[39m\n` +
         `${ESC}[90m</div>${ESC}[39m\n` +
         `${ESC}[90m${ESC}[39m`,
     );
     expect(coloured.codeRanges).toEqual([]);
   });
 
-  test("defect record: indented code nested inside a blockquote loses authored brackets", () => {
+  test("C1: indented code nested inside a blockquote keeps its authored brackets", () => {
     const source = "> Intro\n\n>     See [[slug]] here\n";
 
     const plain = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, PLAIN);
-    expect(plain.text).toBe("    Intro\n\n        See slug here\n\n");
+    expect(plain.text).toBe("    Intro\n\n        See [[slug]] here\n\n");
     expect(plain.codeRanges).toEqual([[3, 3]]);
 
     const coloured = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, COLOUR);
     expect(coloured.text).toBe(
       `${ESC}[90m${ESC}[3m    ${ESC}[0mIntro${ESC}[0m${ESC}[23m${ESC}[39m\n\n` +
-        `${ESC}[90m${ESC}[3m        See ${CYAN_UNDERLINE_OPEN}slug${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m${ESC}[90m${ESC}[23m${ESC}[39m\n\n`,
+        `${ESC}[90m${ESC}[3m        See ${ESC}[31m[[slug]]${ESC}[39m${ESC}[90m here${ESC}[23m${ESC}[39m\n\n`,
     );
     expect(coloured.codeRanges).toEqual([[3, 3]]);
   });
 
-  test("defect record: indented code nested inside a list item loses authored brackets", () => {
+  test("C1: indented code nested inside a list item keeps its authored brackets", () => {
     const source = "- Intro\n\n      See [[slug]] here\n";
 
     const plain = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, PLAIN);
-    expect(plain.text).toBe("    • Intro\n          See slug here\n\n");
+    expect(plain.text).toBe("    • Intro\n          See [[slug]] here\n\n");
     expect(plain.codeRanges).toEqual([[2, 2]]);
 
     const coloured = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, undefined, undefined, undefined, COLOUR);
     expect(coloured.text).toBe(
       `    • ${ESC}[0m${ESC}[0m${ESC}[0mIntro${ESC}[0m${ESC}[0m${ESC}[0m\n` +
-        `      ${ESC}[0m    See ${CYAN_UNDERLINE_OPEN}slug${CYAN_UNDERLINE_CLOSE} ${ESC}[34mhere${ESC}[39m${ESC}[0m\n\n`,
+        `      ${ESC}[0m    See ${ESC}[31m[[slug]]${ESC}[39m here${ESC}[0m\n\n`,
     );
     expect(coloured.codeRanges).toEqual([[2, 2]]);
   });
@@ -1029,15 +1055,23 @@ describe("task-state adjacency — held unmodified through the tokenizer cutover
     {
       name: "a task item inside a blockquote — the position the line-anchored regex cannot reach",
       source: "> - [ ] quoted [[note]]\n",
+      // **The one held case whose *wiki-link* bytes moved at WP-2, `full` only** — the task
+      // state is byte-identical in every mode and both tiers, which is what this block is a
+      // fence around. What moved is one `90m`: the blockquote's own `gray` chain now re-opens
+      // after the wiki chain's `39m` close, because `applyStyle`'s nested-close surgery
+      // finally *sees* that close. It could not before — the old carrier pass styled the
+      // label over the finished document, long after `blockquote` had run. Parity, measured
+      // on the unchanged paths: `> - [ ] quoted [label](url)`, `~~struck~~` and `` `code` ``
+      // all emit exactly the same `90m` re-open today, because their closes are `39m` too.
       unicode: [
         "        • ○ quoted note\n\n",
         `${ESC}[3m        • ${ESC}[0m○ quoted ${ESC}[4mnote${ESC}[24m${ESC}[0m${ESC}[23m\n\n`,
-        `${ESC}[90m${ESC}[3m        • ${ESC}[0m○ quoted ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m${ESC}[23m${ESC}[39m\n\n`,
+        `${ESC}[90m${ESC}[3m        • ${ESC}[0m○ quoted ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[90m${ESC}[0m${ESC}[23m${ESC}[39m\n\n`,
       ],
       ascii: [
         "        - [ ] quoted note\n\n",
         `${ESC}[3m        - ${ESC}[0m[ ] quoted ${ESC}[4mnote${ESC}[24m${ESC}[0m${ESC}[23m\n\n`,
-        `${ESC}[90m${ESC}[3m        - ${ESC}[0m[ ] quoted ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[0m${ESC}[23m${ESC}[39m\n\n`,
+        `${ESC}[90m${ESC}[3m        - ${ESC}[0m[ ] quoted ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m${ESC}[90m${ESC}[0m${ESC}[23m${ESC}[39m\n\n`,
       ],
       codeRanges: [],
     },
@@ -1058,20 +1092,28 @@ describe("task-state adjacency — held unmodified through the tokenizer cutover
     },
     {
       name: "both pre-passes firing on one line inside a recorded codeRange",
-      // The sharp case. `[ ]` becomes the tier's glyph here *inside* a code range — the
-      // 84-line class-C defect this repo carries on purpose — and the wiki-link
-      // substitution corrupts the same line beside it. WP-2 repairs the second half under
-      // C1 and must leave the first byte-for-byte.
+      // **The sharp case, and the one this whole block exists to disambiguate.** `[ ]`
+      // becomes the tier's glyph here *inside* a code range — the 84-line class-C defect
+      // this repo carries on purpose, still carried — and the wiki-link substitution used to
+      // corrupt the same line beside it. WP-2 repairs the second half under C1: the authored
+      // `[[note]]` is back, byte for byte, on a line inside `codeRanges` `[[3, 3]]`.
+      //
+      // **The task-state half did not move**, which is the assertion that matters: the
+      // marker `    - `, the `○`/`[ ]` glyph and its column are identical to WP-1's pins in
+      // all six combinations, and the two tiers still differ from each other exactly as
+      // `glyphs.rewriteTaskStates` says they should. The `31m` under `full` is the syntax
+      // highlighter's own guess over the range's now-restored content, as in the fenced case
+      // above — re-measured, not derived.
       source: "Intro.\n\n    - [ ] indented [[note]]\n",
       unicode: [
-        "Intro.\n\n    - ○ indented note\n\n",
-        `${ESC}[0mIntro.${ESC}[0m\n\n    - ○ indented ${ESC}[4mnote${ESC}[24m\n\n`,
-        `${ESC}[0mIntro.${ESC}[0m\n\n    - ○ indented ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m\n\n`,
+        "Intro.\n\n    - ○ indented [[note]]\n\n",
+        `${ESC}[0mIntro.${ESC}[0m\n\n    - ○ indented [[note]]\n\n`,
+        `${ESC}[0mIntro.${ESC}[0m\n\n    - ○ indented ${ESC}[31m[[note]]${ESC}[39m\n\n`,
       ],
       ascii: [
-        "Intro.\n\n    - [ ] indented note\n\n",
-        `${ESC}[0mIntro.${ESC}[0m\n\n    - [ ] indented ${ESC}[4mnote${ESC}[24m\n\n`,
-        `${ESC}[0mIntro.${ESC}[0m\n\n    - [ ] indented ${ESC}[36m${ESC}[4mnote${ESC}[24m${ESC}[39m\n\n`,
+        "Intro.\n\n    - [ ] indented [[note]]\n\n",
+        `${ESC}[0mIntro.${ESC}[0m\n\n    - [ ] indented [[note]]\n\n`,
+        `${ESC}[0mIntro.${ESC}[0m\n\n    - [ ] indented ${ESC}[31m[[note]]${ESC}[39m\n\n`,
       ],
       codeRanges: [[3, 3]],
     },
@@ -1102,6 +1144,56 @@ describe("task-state adjacency — held unmodified through the tokenizer cutover
       });
     }
   }
+
+  /**
+   * **The held half, named directly** (WP-2).
+   *
+   * Two of the seven shapes above moved *wiki-link* bytes at the cutover, both authorized:
+   * the blockquote case gained one `90m` re-open under `full` (the enclosing chain's own
+   * nested-close surgery, which every other `39m`-closing span already triggers there), and
+   * the indented-code case had its authored `[[note]]` restored under grant C1. Because the
+   * pins above are whole-document and byte-exact, those two had to be re-measured — so this
+   * test states the invariant those pins are a *fence around* without any wiki-link bytes in
+   * it at all: the task-state rendering itself, glyph and column, is what WP-1 measured.
+   *
+   * Every expectation here is a substring of the corresponding WP-1 pin, unchanged.
+   */
+  test("every task-state glyph and its column are exactly WP-1's, in both tiers", () => {
+    const held: Array<[number, string, string]> = [
+      // [case index, unicode task-state run, ascii task-state run]
+      [0, "    • ○ todo with ", "    - [ ] todo with "],
+      [1, "    • ◐ partial with ", "    - [/] partial with "],
+      [2, "    • ○ plain todo", "    - [ ] plain todo"],
+      [3, "    • ○ real ", "    - [ ] real "],
+      [4, "        • ○ quoted ", "        - [ ] quoted "],
+      [5, "    1. ○ ordered ", "    1. [ ] ordered "],
+      [6, "    - ○ indented ", "    - [ ] indented "],
+    ];
+    expect(held.length).toBe(cases.length);
+
+    for (const [index, unicodeRun, asciiRun] of held) {
+      const entry = cases[index] as AdjacencyCase;
+      for (const [glyphs, run] of [
+        [UNICODE_GLYPHS, unicodeRun] as const,
+        [ASCII_GLYPHS, asciiRun] as const,
+      ]) {
+        for (const [, policy] of POLICIES) {
+          const { text } = renderDocumentDetailed(
+            entry.source,
+            80,
+            glyphs,
+            undefined,
+            undefined,
+            undefined,
+            policy,
+          );
+          // Asserted on *stripped* bytes, deliberately: the question is which glyph landed in
+          // which column, and a colour mode is not allowed to answer it differently.
+          expect(stripAnsi(text)).toContain(run);
+        }
+      }
+    }
+  });
 
   test("the axis is the full one the grant names — 7 shapes x 2 tiers x 3 modes", () => {
     // A guard on the guard: shrinking the axis is how a fence like this goes quietly

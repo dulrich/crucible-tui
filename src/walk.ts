@@ -1,4 +1,5 @@
 import type { MarkedToken, Token, Tokens } from "marked";
+import type { WikiLinkToken } from "./wikilink";
 
 /**
  * **The owned token walk** (WP-2 of `plans/own-the-token-walk.md`).
@@ -36,6 +37,20 @@ import type { MarkedToken, Token, Tokens } from "marked";
  * | `parseInline`'s optional renderer override | `:2013` | `parseInline`'s second parameter |
  * | unknown type **throws**, with that exact message | `:1995-2003`, `:2065-2073` | both `default` cases |
  * | the receiver every method is called with carries `.parser` | `:1905`, `:2262` | the constructor's `{ ...methods, parser: this }` |
+ *
+ * **One inline case is this repo's own and has no `marked.cjs` row: `wikilink`** (WP-2 of
+ * `plans/wiki-link-tokenizer.md`). It is produced by an inline **tokenizer extension**
+ * (`src/wikilink.ts`), which `marked`'s lexer dispatches at `:1551-1563` and which
+ * `marked`'s `Parser` would have routed through `options.extensions.renderers` — the
+ * pre-dispatch hook this walk deliberately does not carry over (see below). So the case
+ * below *is* that hook, for the one extension this repo registers, and the method it
+ * dispatches to is a first-class `WalkRendererMethods` entry rather than a side table.
+ *
+ * `wikilink` is **optional**, like `space` and for a related reason: it is the only
+ * dispatched type whose token a plain `marked` lex never produces, so a walk consumer that
+ * never registers the extension has nothing to supply. An effective renderer that lacks it
+ * and is handed one anyway takes the ordinary unknown-type throw, which is the honest
+ * answer — the alternative is a token silently rendering as nothing.
  *
  * `list_item` is a lexer-produced structural type consumed inside `list` (`src/lists.ts`), and
  * `def` is folded into `tokens.links` and never pushed onto the stream at all
@@ -119,7 +134,21 @@ export interface WalkRendererMethods {
   codespan(this: RendererHost, token: Tokens.Codespan): string;
   br(this: RendererHost, token: Tokens.Br): string;
   del(this: RendererHost, token: Tokens.Del): string;
+  /**
+   * The one dispatched type `marked` does not define — see the header. Optional because a
+   * consumer that does not register `wikiLinkExtension` can never be handed the token;
+   * `src/render.ts`, which does register it, assigns this on every render.
+   */
+  wikilink?(this: RendererHost, token: WikiLinkToken): string;
 }
+
+/**
+ * What the walk actually dispatches: `marked`'s own union plus this repo's one extension
+ * token. `MarkedToken` is closed, so the extension type has to be added here rather than
+ * cast away at each site — which is what keeps the `case "wikilink"` below exhaustive
+ * rather than merely reachable.
+ */
+export type WalkToken = MarkedToken | WikiLinkToken;
 
 /** The methods plus the `parser` back-reference — what a dispatch is actually made against. */
 export type WalkRenderer = RendererHost & WalkRendererMethods;
@@ -134,7 +163,7 @@ export type WalkRenderer = RendererHost & WalkRendererMethods;
  */
 export type InlineRenderer = Pick<
   WalkRenderer,
-  "parser" | "text" | "html" | "link" | "image" | "strong" | "em" | "codespan" | "br" | "del"
+  "parser" | "text" | "html" | "link" | "image" | "strong" | "em" | "codespan" | "br" | "del" | "wikilink"
 >;
 
 /**
@@ -301,12 +330,28 @@ export class TokenWalker {
    * routed to `text` (`:2028-2031`, which is why `src/render.ts:1053` types its `text` for
    * `Tokens.Escape`), and the renderer is a *parameter*, so an override dispatches to itself
    * rather than to this walk's renderer.
+   *
+   * **The override contract extends to `wikilink` unchanged, and that is the point.** The
+   * effective renderer is `override ?? main`, and the `wikilink` case dispatches through
+   * *it*, not through `this.renderer` — so a plain-text flattener handed in as an override
+   * gets to decide how a wiki-link flattens, exactly as it decides how a `link` does. An
+   * override that does not carry the method takes the unknown-type throw below, which is the
+   * same answer this walk gives for any type its renderer cannot render.
    */
   parseInline(tokens: Token[], renderer: InlineRenderer = this.renderer): string {
     let out = "";
     for (let i = 0; i < tokens.length; i++) {
-      const token = tokens[i] as MarkedToken;
+      const token = tokens[i] as WalkToken;
       switch (token.type) {
+        case "wikilink": {
+          // `src/wikilink.ts`'s extension token. Dispatched through the *effective*
+          // renderer, and throwing when that renderer has no method for it — see the
+          // override contract above and the header's note on why the method is optional.
+          const wikilink = renderer.wikilink;
+          if (wikilink === undefined) throw unknownTokenError(token.type);
+          out += wikilink.call(renderer, token);
+          break;
+        }
         case "escape": {
           out += renderer.text(token);
           break;
