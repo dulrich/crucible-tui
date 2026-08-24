@@ -2,7 +2,10 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { parseArgs, parseWidths, printColourAxis, printResult, stripColourModeArgs } from "../scripts/sweep";
+import { parseArgs, printColourAxis, printResult, stripColourModeArgs } from "../scripts/sweep";
+// `parseWidths` moved out of the sweep CLI into the leaf both CLIs share at WP-R1
+// (`plans/post-refactor-code-quality-remediation.md`); the parser itself is unchanged.
+import { parseWidths } from "../scripts/sweep-options";
 import {
   loadManifest,
   parseManifest,

@@ -125,7 +125,20 @@ src/overflow.ts     the width gate and the code-range exemption predicate — on
 corpus/             the bundled public-safe default manifest
 scripts/corpus.ts   corpus discovery + evaluation — the sweep's library half
 scripts/sweep.ts    the sweep CLI: flags, summary, exit code (see scripts/AGENTS.md)
+scripts/colour-axis.ts  the colour axis — the four children, the v2 wire record, G1/G2/G3
+                    and the join; a consumer of corpus.ts, never the reverse
+scripts/render-diff.ts  the differential CLI: flags, corpus selection, baseline I/O,
+                    pairing, printing, exit codes
+scripts/revision.ts one revision's renderer, materialized and loaded, plus the comparison
+                    tuple's vocabulary; reaches src/ only by dynamic absolute-path import
+scripts/diff-classify.ts  the differential's pure half — combo records, the four-channel
+                    diff, the class-A/B/C classification; no process, file, argv or clock
+scripts/hash.ts     sha256Hex — the one digest both instruments compare against archived
+                    runs; a leaf, imports nothing
+scripts/sweep-options.ts  DEFAULT_WIDTHS + parseWidths — the width grammar both CLIs
+                    parse; a leaf, imports nothing
 tests/              unit tests + markdown fixtures
+tests/scripts-acyclic.test.ts  the gate that keeps scripts/ a DAG (see scripts/AGENTS.md)
 tests/helpers/containment.ts  the publication guard's rules (see tests/AGENTS.md)
 dist/mdview         compiled binary (gitignored; see PATH install below)
 ```

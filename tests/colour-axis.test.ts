@@ -15,7 +15,7 @@ import {
   type ColourDigestRecord,
   type ColourDigestStream,
   type WireSequence,
-} from "../scripts/corpus";
+} from "../scripts/colour-axis";
 
 /**
  * The colour axis (WP-1, `plans/own-the-token-walk.md`; three exact gates since WP-5,

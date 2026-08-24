@@ -3,7 +3,9 @@
 The corpus sweep (`scripts/sweep.ts` and its library half `scripts/corpus.ts`), the
 manifests it resolves, what the corpus has actually measured, and the defect detectors
 that see *under* the width gate. **The root `AGENTS.md` is the parent document — read it
-first.** The sweep's own ambiguous-width policy — why it never reads `MDVIEW_AMBIGUOUS`,
+first**, and "These are nine modules and a DAG, not two files" below is the current
+module map — the prose here often says "the sweep" or "this axis" where the code now sits
+in a module of its own. The sweep's own ambiguous-width policy — why it never reads `MDVIEW_AMBIGUOUS`,
 never consults the cache and never probes — is documented with the rest of ambiguous
 width, in `docs/agents/ambiguous-width.md`'s "The sweep keeps the two axes independent, on
 purpose".
@@ -18,7 +20,7 @@ out — the dated full-corpus runs in the private archive's `measurements/` are 
 against the older set and have to stay comparable. It replaced a shell loop that spawned the ~102 MB binary per file, and is
 ~13× faster.
 
-**The sweep is two files, split in WP-4: `scripts/corpus.ts` is the library, and
+**The sweep is a library and a CLI, split in WP-4: `scripts/corpus.ts` is the library, and
 `scripts/sweep.ts` is its CLI.** The library owns the manifest, the walk, the sampling
 policy (`selectCorpusFiles`) and `sweepCorpus`; the CLI owns `parseArgs`, `printResult`
 and the exit code. The split is not tidiness — `scripts/emoji-audit.ts` is a second
@@ -26,6 +28,58 @@ consumer, and it had already **copied** the sampling predicate and drifted: its 
 ignored `--limit` entirely and read `--all` straight off `process.argv`, so the same flags
 selected different files depending on which script read them, and no gate could see it.
 Both now parse with `parseArgs` and select with `selectCorpusFiles`.
+
+##### These are nine modules and a DAG, not two files (WP-R1)
+
+**This section said "two files" until WP-R1 of
+`plans/post-refactor-code-quality-remediation.md`, and by then it had been wrong for three
+work packages** — `scripts/corpus.ts` had grown to 1,525 lines and `scripts/render-diff.ts`
+to 1,099, and the three instrument modules formed a cycle. Measured, on the pre-WP-R1 tree,
+by the gate below:
+
+```text
+scripts/corpus.ts      -> scripts/render-diff.ts   (sha256Hex)
+scripts/render-diff.ts -> scripts/sweep.ts         (parseWidths)
+scripts/sweep.ts       -> scripts/corpus.ts        (the sweep library)
+```
+
+The sweep's *library* imported two *CLIs* to reach one four-line hash function.
+`scripts/corpus.ts` carried a comment arguing the cycle was benign at run time — nothing
+called across it during module evaluation, every `import.meta.main` gate is false in a
+module that was imported rather than run, `sha256Hex` was a hoisted declaration — and that
+argument was **correct**, which is exactly how the cycle survived. Each of the three edges
+was one symbol wide. WP-R1 moved those symbols into leaves rather than re-arguing the
+benignness.
+
+Who imports whom now, top to bottom — every edge points down this list, and none points up:
+
+| Module | Owns | Imports (within `scripts/`) |
+|---|---|---|
+| `scripts/hash.ts` | `sha256Hex`, the one digest both instruments compare against archived runs | *nothing* |
+| `scripts/sweep-options.ts` | `DEFAULT_WIDTHS` and `parseWidths` — the width grammar both CLIs parse | *nothing* |
+| `scripts/revision.ts` | `materializeRevisionRoot`, `loadRevision`, and the comparison tuple's vocabulary (`GlyphTierName`, `AmbiguousModeName`, `ComboKey`, `DetectorCounts`, `ComboRecord`, `ComboErrorEntry`) | *nothing* — it reaches a revision's `src/` only through a dynamic absolute-path `import()`, deliberately |
+| `scripts/corpus.ts` | manifest parsing/resolution, the walk, `selectCorpusFiles`, `sweepCorpus`, and the two flag domains `SweepOptions` declares | *nothing* |
+| `scripts/diff-classify.ts` | `computeComboRecord`, `diffCombo`, `classifyDiffs` and the summary shapes — pure, reads no process, file, argument or clock | `hash`, `revision` |
+| `scripts/colour-axis.ts` | the four children, the v2 wire record, G1/G2/G3 and the join | `hash`, `corpus` |
+| `scripts/sweep.ts` | sweep CLI: flags, `printResult`, `printColourAxis`, the re-exec, the exit code | `corpus`, `colour-axis`, `sweep-options` |
+| `scripts/render-diff.ts` | differential CLI: flags, corpus selection, baseline I/O, `pairRecords`, printing, exit code | `corpus`, `revision`, `diff-classify`, `sweep-options` |
+| `scripts/emoji-audit.ts` | the emoji census | `corpus`, `sweep` |
+
+**`DEFAULT_WIDTHS` was declared twice, verbatim**, in `scripts/sweep.ts` and
+`scripts/render-diff.ts`, and the second copy carried a comment defending the duplication
+because the sweep CLI did not export it. Both the copy and its defence are gone; the five
+widths are one constant in `scripts/sweep-options.ts` and the "grows, never swaps" rule
+above is stated once.
+
+**`tests/scripts-acyclic.test.ts` is the gate.** It seeds a graph with every `.ts` file
+under `scripts/`, follows every relative import transitively (which reaches `src/` too),
+and asserts Tarjan finds no strongly connected component larger than one node, no
+self-import, and no relative specifier that resolves to nothing. Specifiers are read with
+Bun's own transpiler rather than a regex, because the header comments in this directory
+quote import lines in prose and a regex turns each of those sentences into a live edge.
+**It is checked against a real cycle, not only against today's zero**: three of its cases
+build synthetic cyclic modules in a temporary directory and require the same analyzer to
+report them. Run against the pre-WP-R1 tree it fails with exactly the component above.
 
 **Anything in the library that looks like a defect is a recorded measurement, not an
 oversight**, and `tests/sweep.test.ts` pins each one: `--limit` does nothing on a corpus
@@ -241,7 +295,11 @@ is downstream of the gate.
 `scripts/render-diff.ts` (WP-1 of `plans/marked-terminal-replacement.md`) is the committed
 form of the byte-comparison above — the same library-plus-CLI shape as
 `scripts/corpus.ts` + `scripts/sweep.ts`, with `import.meta.main` gating the CLI so
-`tests/render-diff.test.ts` imports the functions directly. It renders a
+`tests/render-diff.test.ts` imports the functions directly. Since WP-R1 the library half
+is two modules, `scripts/revision.ts` (materialize and load one revision's renderer) and
+`scripts/diff-classify.ts` (the pure diff/classification), and the CLI keeps its flags,
+baseline I/O, pairing, printing and exit codes; the module map above is the whole set. It
+renders a
 `(file × width × tier × ambiguous-mode)` grid on two revisions and records four channels
 per combo — `textSha`, `codeContentSha`, `codeRanges`, `detectors` — never bodies, so a
 baseline over the private corpus stays a reviewable artifact. **`codeContentSha` is the
@@ -292,7 +350,8 @@ with a different owner. The spelling is a contract, pinned in `tests/sweep.test.
 "correct" it to the American spelling or to the conventional flag name.
 
 **Each colour-axis child is a whole fresh process, and the reason it *had* to be is gone —
-the reason it *stays* is a different one.** `scripts/corpus.ts` statically imports
+the reason it *stays* is a different one.** `scripts/colour-axis.ts` (`scripts/corpus.ts`
+until WP-R1) statically imports
 `renderDocumentDetailed`, and `supports-color`, `cli-highlight`'s own `chalk` theme and
 `@colors/colors` each resolved their colour decision **at module load**, once, for the life
 of the process — so a second render in one process could not be in a different colour mode,
@@ -613,7 +672,7 @@ part, and each is the same mistake.
 | `src/blocks.ts`'s `reflowSection` | drops a trailing line that is blank once stripped |
 | `src/render.ts`'s `stripEmojiTrailingSpace` | the emoji trailing-space strip has to match *across* the SGR that closes the segment |
 | `src/detectors.ts:120,315,327,396,516,603,641` | measurement, not rendering — no rendered byte depends on these, but they read the same escapes |
-| `scripts/corpus.ts:693`, `:859` | the sweep's orphan line lookup, and this axis's own digest |
+| `scripts/corpus.ts`'s orphan line lookup (was `:693`), and `scripts/colour-axis.ts`'s own digest (was `scripts/corpus.ts:859`) | measurement, not rendering; the two moved apart at WP-R1 and the line numbers are dropped rather than re-pinned |
 
 **Final-output-consumers — a strip on the way out to a terminal or a file: there are
 none.** `src/cli.ts` writes the renderer's string through unchanged, and the width gate

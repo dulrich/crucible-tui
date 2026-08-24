@@ -3,25 +3,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
+// WP-R1 (`plans/post-refactor-code-quality-remediation.md`) split the harness into four
+// modules without changing a line of its behaviour: the CLI kept its flags, its baseline
+// I/O, its pairing and its printing; revision materialization/loading, the pure diff
+// classification, and the shared hash primitive each got their own home. These four import
+// lines are the same surface this file always exercised.
 import {
   assertOutsideRepo,
+  loadBaseline,
+  pairRecords,
+  parseArgs,
+  selectCorpora,
+  writeBaseline,
+  type BaselineArtifact,
+} from "../scripts/render-diff";
+import {
   classifyDiffs,
   computeComboRecord,
   diffCombo,
   extractCodeContent,
-  loadBaseline,
-  loadRevision,
-  materializeRevisionRoot,
-  pairRecords,
-  parseArgs,
-  selectCorpora,
-  sha256Hex,
-  writeBaseline,
-  type BaselineArtifact,
-  type ComboRecord,
   type PairedCombo,
-  type RevisionHandle,
-} from "../scripts/render-diff";
+} from "../scripts/diff-classify";
+import { loadRevision, materializeRevisionRoot, type ComboRecord, type RevisionHandle } from "../scripts/revision";
+import { sha256Hex } from "../scripts/hash";
 import { findContinuationOverIndent, findListOrphans } from "../src/detectors";
 import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
 import { findFirstOverflow } from "../src/overflow";

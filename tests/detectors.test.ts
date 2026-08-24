@@ -14,7 +14,7 @@ import {
 import { link as osc8Link } from "../src/ansi";
 import { stripAnsi } from "../src/list-lines";
 import { renderDocumentDetailed } from "../src/render";
-import { parseWidths } from "../scripts/sweep";
+import { parseWidths } from "../scripts/sweep-options";
 
 // ---------------------------------------------------------------------------
 // These detectors exist because **no width assertion can see the defects they
