@@ -1,8 +1,59 @@
 # mdview — `tests/`
 
 The publication containment guard — `tests/helpers/containment.ts` holds its rules,
-`tests/containment.test.ts` runs them — and the width-sensitive fixture trap. **The root
+`tests/containment.test.ts` runs them — the width-sensitive fixture trap, and where the
+five largest test files' `describe` groups now live after their WP-R3 split. **The root
 `AGENTS.md` is the parent document — read it first.**
+
+### The five-file split (WP-R3) — where a `describe` block landed, and why
+
+`plans/post-refactor-code-quality-remediation.md`'s WP-R3 split every test file at or
+above 1,000 lines along its own existing `describe` groups, mechanically — no assertion
+or fixture changed, only which file holds which block, and `LONG_PATH`
+("Width-sensitive fixtures are a trap here", below) travels intact everywhere it lands.
+
+`tests/render-lists.test.ts` became `tests/render-lists-wrapping.test.ts` (the loose- and
+tight-list double-wrap witnesses), `tests/render-lists-nesting.test.ts` (nested-list and
+blockquote continuation, including fenced code inside a list item) and
+`tests/render-lists-guards.test.ts` (the coalesced-path and colon-guard collision
+witnesses, and the three colour-cannot-move-a-character repairs).
+
+`tests/sweep.test.ts` became `tests/sweep-manifest.test.ts` (manifest parsing, corpus
+selection and symlink disclosure), `tests/sweep-cli.test.ts` (`parseArgs`'s ordinary
+measurement flags) and `tests/sweep-colour-axis.test.ts` (the colour-axis flags,
+`stripColourModeArgs`, `printColourAxis`, and `renderWithForcedColor`'s own
+non-vacuity — grouped there because what that block exercises is the coloured-render
+harness itself, not corpus selection, even though it sat between the manifest and
+symlink blocks in the original file).
+
+`tests/wikilink.test.ts` became `tests/wikilink-tokenizer.test.ts` (recognition — the
+tokenizer extension, the two regexes, the frozen cases, C4's pass-through grant, the
+lexer-input witness), `tests/wikilink-emission.test.ts` (the precedence matrix, C5's
+OSC-8 repair, C2's wrap repair, the ownership-class probe sweep, and the emoji/entity
+assumption) and `tests/wikilink-table.test.ts` (C6's table-cell span contract).
+
+`tests/table.test.ts` became `tests/table-normalization.test.ts` (`splitToken`,
+`wrapText`, `cellText`, and the three span-cell contract blocks), `tests/table-allocation.test.ts`
+(`allocateWidths` and every `renderTable` sizing/collapse/CJK/column-count invariant) and
+`tests/table-emission.test.ts` (per-cell padding, the border set, multi-line
+composition, `chromeWidth`, alignment, the chrome invariant, and border/head styling
+policy) — `LONG_PATH` is duplicated byte-for-byte into all three, since each
+independently asserts against it.
+
+`tests/render.test.ts` split by production owner rather than by a fixed three-way
+template, since the plan's contract for that file was to group by which production
+module each block actually exercises: `tests/render-wikilinks.test.ts` (wiki-links,
+verbatim contexts, embeds — all `src/wikilink.ts`'s), `tests/render-list-layout.test.ts`
+(list reflow and the WP-14 inline-markup-inside-a-list-item witness — both exercise
+`src/list-layout.ts`'s wrap paths, which is where WP-R2 moved `wrappedText` and the
+tight-item coalesce), `tests/render-frontmatter.test.ts` (frontmatter integration, the
+divider, and the codeRanges regression the divider's line offset causes — all
+`src/frontmatter.ts`'s), `tests/render-emoji.test.ts` (the emoji shortcode substitution
+witness — `src/inline.ts`'s emoji pass) and `tests/render-core.test.ts` (the
+`formats`-mode reset framing, width/prose coverage, the fenced-code exemption and
+sentinel walk, fence-language normalization, and the task-state pre-pass and its
+adjacency-to-wiki-links boundary — the parts of `renderDocument`/`renderDocumentDetailed`
+that are `src/render.ts`'s own orchestration rather than any one owned module's).
 
 ### Containment — this repo is published, and it grew up next to private ones
 
