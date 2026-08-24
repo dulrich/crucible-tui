@@ -8,11 +8,17 @@ import { applyStyle, createStyler } from "./style";
  * The owned inline visitors — `strong`, `em`, `codespan`, `del`, `br`, `link`, `image`
  * and inline `text`.
  *
- * WP-2 of `plans/marked-terminal-replacement.md`. This is the first group taken off
- * `marked-terminal`, and it is a strangler-fig step: the library stays installed and
- * still owns every block renderer. **Byte-identical output is the gate** (parity class A)
- * — the library's inline methods are deterministic string operations, so if rendered text
- * moves anywhere, that is a defect and not an improvement.
+ * **Every inline token this renderer dispatches is rendered here, and nowhere else.**
+ * `marked-terminal` is not a dependency — it has no entry in `package.json` — and the
+ * block renderers are `src/blocks.ts`'s and `src/lists.ts`'s. **Byte-identical output is
+ * still the gate** (parity class A): these are deterministic string operations, so if
+ * rendered text moves anywhere, that is a defect and not an improvement.
+ *
+ * *How that came to be true:* this was the first group taken off `marked-terminal` (WP-2 of
+ * `plans/marked-terminal-replacement.md`), a strangler-fig step taken while the library did
+ * still own every block renderer; WP-3 through WP-6 of that plan took the rest, method by
+ * method, and removed the package. The removal record is
+ * `docs/agents/dependency-history.md`.
  *
  * Everything here is written against `marked-terminal@7.3.0`'s `index.js` and reproduces
  * it deliberately, defects included. Where a behaviour looks wrong it is annotated as

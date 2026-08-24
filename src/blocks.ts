@@ -9,9 +9,14 @@ import { wrapAnsi } from "./wrap";
 /**
  * The owned block leaves — `code`, `hr`, `html`, `heading`, `paragraph` and `blockquote`.
  *
- * WP-3 of `plans/marked-terminal-replacement.md`, and the second strangler-fig step after
- * `src/inline.ts`. The library stays installed and still owns `list`, `listitem` and
- * `checkbox`; everything here used to be `marked-terminal`'s and is now this repo's.
+ * **These six leaves are this repo's outright, and so is every other renderer method.**
+ * `list`, `listitem` and `checkbox` are `src/lists.ts`'s; `marked-terminal` is not a
+ * dependency — it has no entry in `package.json`.
+ *
+ * *How that came to be true:* this was WP-3 of `plans/marked-terminal-replacement.md`, the
+ * second strangler-fig step after `src/inline.ts`, taken while the library did still own the
+ * three list methods; WP-4 took those and WP-6 removed the package. The removal record is
+ * `docs/agents/dependency-history.md`.
  *
  * **Two parity classes live in this one file, deliberately.**
  *

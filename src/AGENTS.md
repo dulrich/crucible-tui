@@ -53,8 +53,8 @@ because its subject changed; re-frame it.
 names `marked-terminal@7.3.0`, the terminal renderer this repo used until WP-2 through
 WP-6 of `plans/marked-terminal-replacement.md` replaced it method by method and then
 removed it. That package is **not installed** — the current renderer is entirely this
-repo's, spread over `src/render.ts`, `src/inline.ts`, `src/blocks.ts`, `src/lists.ts` and
-`src/table.ts`. The citations stay because the requirements below were derived *from that
+repo's, spread over `src/render.ts`, `src/list-layout.ts`, `src/inline.ts`, `src/blocks.ts`,
+`src/lists.ts` and `src/table.ts`. The citations stay because the requirements below were derived *from that
 source*, transcribed line by line under a byte-identical parity gate, and a future reader
 who wants to check a transcription needs the line numbers. `tests/helpers/containment.ts`'s
 `DOCUMENTED_FORMER_PACKAGES` exists so those citations do not read as findings to the
@@ -117,21 +117,36 @@ measured, and it was wrong.* Do not treat it as unmet scope.
 
 ### What each renderer method must do, and the defect behind it
 
-`src/render.ts` builds one extension object and assigns sixteen methods onto it. Every one
+`src/render.ts` builds one renderer object and assigns sixteen methods onto it. Every one
 is this repo's. Each exists for a measured reason — **do not remove or "simplify" one
 without re-running the corpus sweep and the parity harness**.
+
+**Assembly is `src/render.ts`'s; five of the sixteen bodies are `src/list-layout.ts`'s**
+(WP-R2 of `plans/post-refactor-code-quality-remediation.md`). `list`, `text`, `paragraph`,
+`heading` and `blockquote` share one per-render layout state — the `inlineDepth` counter
+that tells a tight list item's own block text token apart from an inline one, the
+`quoteColumns` counter `rewrapListBody`'s budget reads, and the pending-prefix stack they
+push and pop — and that state, with those five bodies and the module-level helpers only
+they call (`isHardBoundary`, `coalesceTightItemLines`, `currentListBudget`,
+`rewrapListBody`, `marksVisible`), is one factory now: `createListTextLayout(layout,
+sentinel)`, called once per `renderDocumentDetailed` invocation. **Nothing about a
+visitor's body, its `this`, or the order anything runs in changed in that move** — it
+landed byte-identical, which is the only class of diff that work package allowed, and
+`renderDocumentDetailed` kept lexing, context construction, visitor assembly, the walk and
+the post-processing pass. The table's "Lives in" column names the owning module, and it is
+the seam module rather than `src/render.ts` for those five.
 
 | Method | Lives in | The requirement, and the defect that established it |
 |---|---|---|
 | `table` | `src/table.ts` | Allocate to the **budget**, not the target width, and honour `token.align`. The library's table renderer never received the terminal width at all and dropped `token.align` entirely. Since WP-3 the allocator is handed `targetWidth - prefix.width()`, because a table inside a blockquote used to be allocated the full width, indented four columns, and then split down the middle of its border rows by a repair pass — output that satisfied the width gate by being wrong |
-| `list` | `src/lists.ts`, wrapped in `src/render.ts` | Own composition outright: markers, the blanket indent, the **per-item** budget, ordered numbering, task states, and the per-level de-drift. `listitem` and `checkbox` are reachable only from here (fact 2 above). The wrapper in `src/render.ts` adds exactly three things: depth tracking, the post-compose wrap for uncoalesced tight items, and bullet-glyph substitution at the outermost level |
+| `list` | `src/lists.ts`, wrapped in `src/list-layout.ts` | Own composition outright: markers, the blanket indent, the **per-item** budget, ordered numbering, task states, and the per-level de-drift. `listitem` and `checkbox` are reachable only from here (fact 2 above). The wrapper adds exactly three things: depth tracking, the post-compose wrap for uncoalesced tight items, and bullet-glyph substitution at the outermost level |
 | `hr` | `src/blocks.ts` | Emit the tier's rule character at the tier's width, and match the frontmatter divider exactly — one implementation (`renderRule`), two call sites. The library hardcoded its rule character |
 | `code` | `src/blocks.ts`, bracketed in `src/render.ts` | Never reflow; normalise `token.lang` through `src/lang.ts` before highlighting; bracket the rendered block in `SENTINEL` so `--check` and both sweeps can exempt it |
 | `html` | `src/blocks.ts` | Reflow at the real budget. A block-level tag (a line starting `<script>`) swallows a paragraph and the library returned it unreflowed |
 | `paragraph` | `src/blocks.ts` | **Wrap at the width the text will actually occupy** — target width minus everything still owed by enclosing blocks — measuring through `Measure`, not `.length`. This is where a *loose* list item's text is wrapped, and where quoted prose is |
 | `heading` | `src/blocks.ts` | The same, for the same reason: a heading is reachable inside both a list item and a blockquote, and had no budgeted path at all before WP-2g |
 | `blockquote` | `src/blocks.ts` | Push four columns for the duration of its children's render, and do not trim the first line's own indent away |
-| `text` | `src/inline.ts`, wrapped in `src/render.ts` | Parse a **tight** list item's inline markup — the one container in the whole renderer that reached the terminal as raw markdown — then coalesce and re-wrap what it coalesced |
+| `text` | `src/inline.ts`, wrapped in `src/list-layout.ts` | Parse a **tight** list item's inline markup — the one container in the whole renderer that reached the terminal as raw markdown — then coalesce and re-wrap what it coalesced |
 | `strong` `em` `del` `codespan` `link` `image` `br` | `src/inline.ts` | Reproduce the library's inline bytes exactly (parity class A), including two upstream defects kept deliberately: `fixHardReturn` and the substitution pass's stray trailing space. See `src/inline.ts` for each |
 
 **Four methods are deliberately unassigned: `listitem`, `checkbox`, `tablerow`,
@@ -344,7 +359,7 @@ no-op.
 match then fails.** Recorded, not fixed — WP-5 of `plans/renderer-deferred-work.md`, from an
 audit of what earlier packages in that plan had captured. `undoColon` is a `split`/`join` on
 the literal 9-character token `*#COLON|*`; that match needs the whole token intact on one
-line. The **coalesced** tight-item wrap (`src/render.ts`'s `text` override) measures and
+line. The **coalesced** tight-item wrap (`src/list-layout.ts`'s `text` override) measures and
 wraps `segments` that still carry the sentinel — `transform`/`undoColon` does not run until
 `composeItem` (`src/lists.ts`), *after* this wrap — so when a code span's colon sits inside an
 otherwise-unbroken run of non-whitespace characters (a `key:value`-shaped token with nothing
@@ -381,7 +396,7 @@ trailing blank-line padding is deliberately left *outside* the pair, so a range 
 the block's own content lines.)
 
 Every pass that rewrites already-rendered output therefore needs its own walk before it touches
-a line. **There are five of them today** — `rewrapListBody` (`src/render.ts`), and
+a line. **There are five of them today** — `rewrapListBody` (`src/list-layout.ts`), and
 `composeUnordered`, `composeOrdered`, `realignEmbeddedContinuations` and `substituteBullets`
 (`src/lists.ts`) — plus `extractCodeRanges`, which consumes the markers rather than avoiding
 them. (This file said "four" until WP-7: that count predates WP-5, which deleted
@@ -624,8 +639,8 @@ repairing the first:
 | `fixNestedLists` (`src/lists.ts`) | `\S` before a multiple-of-four indent matched an SGR reset's `m` | a join that does not exist, split at the escape — **7 lines of `"    ESC[0m"` in `nested-list.md` at width 80** |
 | the empty-line filter (`src/lists.ts`) | `line !== ""` on raw bytes | an encased blank line survived a filter written to drop it, and was then indented |
 | `wrapAnsi` (`src/wrap.ts`) | an escape-only run was a word | it consumed the pending space and left it trailing — `"…recorded at "` |
-| `isHardBoundary` (`src/render.ts`) | `HARD_BREAK_TAIL` anchored at end-of-*bytes* | a styled `<br />` stopped ending a line, merging two rendered lines into one |
-| the three marker-shape guards (`src/render.ts`) and `substituteBullets` (`src/lists.ts`) | anchored regexes over raw lines | the guards were **inert under colour** — not a missing space but a *different wrap*, because a seam that cannot see the collision does not re-wrap a column narrower either (`fenced-list.md` at width 116: 114 columns colourless, 116 under colour) |
+| `isHardBoundary` (`src/list-layout.ts`) | `HARD_BREAK_TAIL` anchored at end-of-*bytes* | a styled `<br />` stopped ending a line, merging two rendered lines into one |
+| the three marker-shape guards (`src/list-layout.ts`) and `substituteBullets` (`src/lists.ts`) | anchored regexes over raw lines | the guards were **inert under colour** — not a missing space but a *different wrap*, because a seam that cannot see the collision does not re-wrap a column narrower either (`fenced-list.md` at width 116: 114 columns colourless, 116 under colour) |
 
 The last row is the one worth remembering, because it is the reason this section exists.
 Those guards had been described here for three work packages as if they ran; they ran on

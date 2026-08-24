@@ -69,7 +69,12 @@ indexes, and the module's own header comment is longer than either.
 ```text
 src/cli.ts          arg parsing, width resolution, pager, --check, glyph flags
 src/render.ts       marked lexer wiring, the owned renderer object, the two sentinels and
-                    the code-range walk, the tight-item text seam, the post-compose wrap
+                    the code-range walk, the post-compose wrap; the list/text layout seam
+                    is src/list-layout.ts's
+src/list-layout.ts  the list/text layout state machine — five visitors that share one
+                    render's state (list, text, paragraph, heading, blockquote), the
+                    inlineDepth/quoteColumns counters, the tight-item coalesce, the
+                    per-level budget and the marker-collision guards
 src/walk.ts         the owned token walk — TokenWalker, which replaced marked's Parser as
                     the tree walker; the whole Parser contract, cited site by site, in its
                     header; dispatches one repo-local token type (wikilink) Parser lacked

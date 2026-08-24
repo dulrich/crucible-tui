@@ -11,6 +11,21 @@ file: it is an on-demand reference read, not a per-directory auto-loaded contrac
 **What this file settles:** composition, the two wrap paths, the de-drift, the claim
 domains, and the retained passes.
 
+**One live-code citation below is out of date on purpose, and here is the one correction
+that fixes all nine of them.** Every `src/render.ts` citation in this file that names a
+*seam* — the `text` override and its guards, `rewrapListBody`, `LIST_LINE_PREFIX`,
+`currentListBudget`, `isHardBoundary`, `coalesceTightItemLines`, the `LIST_INDENT_PER_LEVEL`
+grid, and the `{ columns, list: true }` push the `list` override makes — reads
+**`src/list-layout.ts`** now. WP-R2 of `plans/post-refactor-code-quality-remediation.md`
+moved the five visitors that share the per-render layout state (`list`, `text`, `paragraph`,
+`heading`, `blockquote`), that state itself, and the module-level helpers only they call out
+of `renderDocumentDetailed` into one factory, `createListTextLayout(layout, sentinel)`. It
+landed **byte-identical**: not one measurement, guard, ordering or conditional in this record
+changed, which is why the text below is left as it was written rather than re-edited around a
+file rename. `src/render.ts` still owns lexing, the `LayoutContext`, visitor assembly, the
+walk, the code-range sentinel (`wrapCode`/`extractCodeRanges`) and the post-processing pass.
+See `src/AGENTS.md`, "What each renderer method must do", for the live ownership table.
+
 ## The list pipeline
 
 Four defects live in this family, all of them variations on one theme — *a line has to be
