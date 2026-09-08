@@ -1,4 +1,4 @@
-.TH CRUCIBLE\-TUI 1 "2026-08-19" "crucible-tui" "User Commands"
+.TH CRUCIBLE\-TUI 1 "2026-09-07" "crucible-tui" "User Commands"
 .SH NAME
 crucible\-tui \- terminal markdown viewer (installed command: \fBmdview\fR)
 .SH SYNOPSIS
@@ -12,6 +12,7 @@ crucible\-tui \- terminal markdown viewer (installed command: \fBmdview\fR)
 [\fB\-\-no\-color\fR]
 [\fB\-\-plain\fR]
 [\fB\-\-hyperlinks\fR[=\fIWHEN\fR]]
+[\fB\-\-probe\fR]
 [\fB\-\-help\fR]
 [\fB\-\-licenses\fR]
 .br
@@ -238,6 +239,14 @@ is an error. See
 .B MDVIEW_HYPERLINKS
 under ENVIRONMENT for how this combines with the non\-TTY ceiling, which
 stays absolute regardless of this flag.
+Under tmux or GNU screen (any
+.B TERM
+beginning
+.B screen
+or
+.BR tmux ),
+the OSC\-8 sequence is wrapped in a DCS passthrough so it survives the
+multiplexer.
 .TP
 .B \-\-probe
 Run the terminal ambiguous\-width diagnostic and exit, exactly as
@@ -300,6 +309,29 @@ A
 .B [[...]]
 written inside a markdown link's label, or inside an image's alt text, no
 longer forms the outer link or image \(em the wiki\-link wins.
+.PP
+On a hyperlink\-capable terminal with hyperlinks on, a
+.B [[slug]]
+naming a file under the note's vault or repository root becomes a
+.B file://
+OSC\-8 hyperlink the terminal can open. The root is the nearest ancestor
+directory of the viewed file containing
+.B .obsidian
+or
+.BR .git ,
+else the file's own directory. The slug is resolved first as a path
+relative to that root (with or without
+.BR .md ),
+then as a unique basename anywhere under it, ties broken by fewest path
+segments and then by the lexicographically smaller path; matching tries the
+exact case first, then case\-insensitively. A slug that resolves to nothing
+renders exactly as before: styled, unlinked. Wiki\-links inside table cells
+are never linked. This link sits on the same
+.B \-\-hyperlinks
+axis as a markdown link, so
+.BR \-\-plain ,
+.B \-\-hyperlinks=never
+and piped output emit none of it.
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/mdview/config.json
