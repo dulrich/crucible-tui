@@ -18,7 +18,7 @@ remains the open successor work. What "mdview's own renderer overrides" (Decisio
 means has also changed shape: it is no longer `src/render.ts` alone but is spread across
 `src/inline.ts`, `src/blocks.ts`, `src/lists.ts` and `src/table.ts`. The decision text
 below — the OpenTUI recommendation, the Ink rejection, the source-mapping analysis —
-stands untouched; this note records what has moved since it was written.
+stands untouched; this note records what has moved since it was written. One behaviour has moved *toward* this ADR's subject without being it: since `plans/follow-wiki-links.md` the viewer **navigates** a wiki-link, by emitting an OSC-8 `file://` link the terminal follows — which is a hyperlink in a rendered string, not the document model with source coordinates that Decision 1 describes, and it neither depends on nor advances the widened return type.
 
 ## Context
 

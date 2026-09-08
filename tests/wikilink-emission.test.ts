@@ -50,11 +50,15 @@ const FORMATS_POLICY = { sgr: "formats", hyperlinks: false, tmux: false } as con
 const LINKS = { sgr: "full", hyperlinks: true, tmux: false } as const;
 const LINKS_TMUX = { sgr: "full", hyperlinks: true, tmux: true } as const;
 const LINKS_PLAIN = { sgr: "none", hyperlinks: true, tmux: false } as const;
+// `FORMATS_POLICY` with the hyperlink axis on — the fourth corner of the (sgr × hyperlinks)
+// square, needed only by the "following a wiki-link" witnesses at the end of this file.
+const FORMATS_LINKS = { sgr: "formats", hyperlinks: true, tmux: false } as const;
 
 type Policy =
   | typeof PLAIN
   | typeof COLOUR
   | typeof FORMATS_POLICY
+  | typeof FORMATS_LINKS
   | typeof LINKS
   | typeof LINKS_TMUX
   | typeof LINKS_PLAIN;
@@ -652,5 +656,146 @@ describe("Assumption 3 — the emoji and entity transforms still reach a styled 
     // `insertEmojis` appends a space that was never in the source; `stripEmojiTrailingSpace`
     // removes it at end of line. A label at end of line is the case that could double-strip.
     expect(at("See [[:rocket:]]\n", PLAIN)).toBe("See 🚀\n\n");
+  });
+});
+
+/**
+ * **Following a wiki-link — WP-2 of `plans/follow-wiki-links.md`.**
+ *
+ * The label was a styled span the terminal could not follow until this plan; it is an OSC-8
+ * hyperlink to the file the slug names now, wrapped around **exactly** the bytes the styled
+ * label already was. The claims are kept apart because they fail for different reasons:
+ *
+ * 1. **The wrap is `renderLink`'s shape** — style inside the sequence, `embed: ` outside it —
+ *    in all four block contexts a wiki-link reaches (paragraph, list item, heading,
+ *    blockquote), pinned as whole byte strings.
+ * 2. **Three separate ways to render byte-identically to before the plan**: no resolver, a
+ *    resolver that resolves nothing (D3), and `hyperlinks: false` with a resolver (D5). Each
+ *    is asserted against the *same render with the feature absent*, not against a transcribed
+ *    string, so it cannot drift.
+ * 3. **The fragment reaches the resolver** as `(slug, fragment)` with the `#` stripped, and
+ *    whatever the resolver returns is the destination — this file asserts the *contract*, not
+ *    the URI, which is `tests/wikiresolve.test.ts`'s.
+ * 4. **D7 — a child link owns the destination.** `src/ansi.ts`'s `link` has no nesting
+ *    contract, so a label that already emitted an OSC-8 open is left alone entirely.
+ * 5. **The policy axes**, parameterized: `formats`, `none` and tmux each frame the same
+ *    sequence differently and none of them changes whether it is emitted (audit E2).
+ */
+describe("following a wiki-link: the OSC-8 wrap, and the three ways it stays absent", () => {
+  const RESOLVED = "file:///v/note.md";
+  const OPEN = `${ESC}]8;;${RESOLVED}${BEL}`;
+  const CLOSE = `${ESC}]8;;${BEL}`;
+
+  /** Resolves exactly one slug, so every witness has an unresolved control beside it. */
+  const resolveNote = (slug: string): string | undefined => (slug === "note" ? RESOLVED : undefined);
+
+  /** `at`, plus the resolver — the trailing parameter `renderDocument` gained at WP-2. */
+  const following = (
+    source: string,
+    policy: Policy,
+    resolve: (slug: string, fragment?: string) => string | undefined = resolveNote,
+    width = 80,
+  ): string => renderDocument(source, width, UNICODE_GLYPHS, undefined, undefined, undefined, policy, resolve);
+
+  test("a paragraph label: OSC-8 open, today's styled label, OSC-8 close", () => {
+    expect(following("See [[note]] now.\n", LINKS)).toBe(
+      `${ESC}[0mSee ${OPEN}${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}${CLOSE} now.${ESC}[0m\n\n`,
+    );
+  });
+
+  test("a list item's label — the item's own chrome stays outside the sequence", () => {
+    expect(following("- See [[note]] now.\n", LINKS)).toBe(
+      `    • ${ESC}[0mSee ${OPEN}${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}${CLOSE} now.${ESC}[0m\n\n`,
+    );
+  });
+
+  test("a heading's label — the heading chain re-opens after the label, still inside the link", () => {
+    // `applyStyle`'s encasing re-opens the heading's own green *between* the label's close and
+    // the OSC-8 close. That is the existing chain behaviour, not this plan's: pinned so a
+    // future change to either has to say which one moved.
+    expect(following("## See [[note]] now\n", LINKS)).toBe(
+      `${ESC}[32m${ESC}[1m## See ${OPEN}${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}${ESC}[32m${CLOSE} now${ESC}[22m${ESC}[39m\n\n`,
+    );
+  });
+
+  test("a blockquote's label — the quote indent and its chain stay outside", () => {
+    expect(following("> See [[note]] now.\n", LINKS)).toBe(
+      `${ESC}[90m${ESC}[3m    ${ESC}[0mSee ${OPEN}${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}${ESC}[90m${CLOSE} now.${ESC}[0m${ESC}[23m${ESC}[39m\n\n`,
+    );
+  });
+
+  test("an embed's `embed: ` prefix is outside the sequence, as it is outside the style", () => {
+    expect(following("![[note]]\n", LINKS)).toBe(
+      `${ESC}[0membed: ${OPEN}${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}${CLOSE}${ESC}[0m\n\n`,
+    );
+  });
+
+  test("an unresolved slug is byte-identical to the render with no resolver at all (D3)", () => {
+    const source = "See [[missing]] now.\n";
+    expect(following(source, LINKS)).toBe(at(source, LINKS));
+    expect(following(source, LINKS)).not.toContain(`${ESC}]8;;`);
+    // And the two live side by side in one document: one link, one plain label.
+    const mixed = following("See [[note]] and [[missing]].\n", LINKS);
+    expect(mixed.split(`${ESC}]8;;`).length - 1).toBe(2); // one open, one close
+    expect(mixed).toContain(`${OPEN}${CYAN_UNDERLINE_OPEN}note`);
+    expect(mixed).toContain(`${CYAN_UNDERLINE_OPEN}missing${CYAN_UNDERLINE_CLOSE}.`);
+  });
+
+  test("hyperlinks off with a resolver present is byte-identical to today (D5)", () => {
+    for (const [policy, plain] of [
+      [COLOUR, COLOUR],
+      [PLAIN, PLAIN],
+      [FORMATS_POLICY, FORMATS_POLICY],
+    ] as const) {
+      const source = "See [[note]] now.\n";
+      expect(following(source, policy)).toBe(at(source, plain));
+      expect(following(source, policy)).not.toContain(`${ESC}]8;;`);
+    }
+  });
+
+  test("the resolver is handed (slug, fragment) with the `#` stripped, and owns the destination", () => {
+    const seen: Array<[string, string | undefined]> = [];
+    const record = (slug: string, fragment?: string): string => {
+      seen.push([slug, fragment]);
+      return `file:///v/note.md#${fragment ?? ""}`;
+    };
+    const output = following("See [[note#Heading two]] now.\n", LINKS, record);
+    expect(seen).toEqual([["note", "Heading two"]]);
+    // Whatever it returns is the destination, verbatim — this file does not own URI shape.
+    expect(output).toContain(`${ESC}]8;;file:///v/note.md#Heading two${BEL}`);
+    // A link with no fragment hands `undefined`, not `""`.
+    seen.length = 0;
+    following("See [[note]] now.\n", LINKS, record);
+    expect(seen).toEqual([["note", undefined]]);
+  });
+
+  test("D7 — a URL-shaped alias keeps its own link, and the wiki wrap is suppressed", () => {
+    // The child reached `renderLink` and emitted an OSC-8 open; `src/ansi.ts`'s `link` has no
+    // nesting contract, so wrapping would leave the rest of the line pointing at nothing.
+    const source = "See [[note|https://example.test/path]] now.\n";
+    // `note` resolves, so the resolver *would* have produced a destination — and is not asked.
+    expect(resolveNote("note")).toBe(RESOLVED);
+    expect(following(source, LINKS)).toBe(at(source, LINKS));
+    expect(following(source, LINKS)).not.toContain(RESOLVED);
+    // Exactly one pair: the child's open and its close, and nothing else.
+    expect(following(source, LINKS).split(`${ESC}]8;;`).length - 1).toBe(2);
+    // The same holds under tmux, where the envelope only doubles ESC around that substring.
+    expect(following(source, LINKS_TMUX)).toBe(at(source, LINKS_TMUX));
+  });
+
+  test.each([
+    [
+      "formats — the label is underline-only, the sequence is unchanged",
+      FORMATS_LINKS,
+      `${ESC}[0mSee ${OPEN}${UNDERLINE_OPEN}note${UNDERLINE_CLOSE}${CLOSE} now.${ESC}[0m\n\n`,
+    ],
+    ["none — the sequence wraps a bare label", LINKS_PLAIN, `See ${OPEN}note${CLOSE} now.\n\n`],
+    [
+      "tmux — the DCS envelope frames both the open and the close",
+      LINKS_TMUX,
+      `${ESC}[0mSee ${ESC}Ptmux;${ESC}${OPEN}${ESC}\\${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}${ESC}Ptmux;${ESC}${CLOSE}${ESC}\\ now.${ESC}[0m\n\n`,
+    ],
+  ])("the axes do not decide whether the link is emitted, only how it is framed: %s", (_name, policy, expected) => {
+    expect(following("See [[note]] now.\n", policy)).toBe(expected);
   });
 });

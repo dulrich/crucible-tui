@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { renderDocumentDetailed } from "./render";
+import { createWikiLinkResolver } from "./wikiresolve";
 import { findFirstOverflow } from "./overflow";
 import { resolveGlyphs, wideForcesAscii, type GlyphTier } from "./glyphs";
 import { loadConfig, writeHighlightAlias } from "./config";
@@ -82,7 +84,9 @@ OSC-8 hyperlinks are a separate axis, highest precedence first: --plain
 (absolute off), then the non-TTY ceiling (never off a terminal, whatever else
 is set), then --hyperlinks, then MDVIEW_HYPERLINKS=auto|always|never, then the
 config file's "hyperlinks" key, then terminal detection (what the terminal
-advertises).
+advertises). On the same axis, a [[wiki-link]] whose slug names a file under
+the note's own vault or repository root (the nearest ancestor directory holding
+.obsidian or .git) becomes a file:// hyperlink to that file.
 
 Ambiguous-width resolution (highest precedence first): MDVIEW_AMBIGUOUS=narrow|wide
 in the environment, then a cached probe result for this terminal, then a live
@@ -442,6 +446,16 @@ async function runView(args: string[]): Promise<void> {
         warn: (message) => process.stderr.write(`${message}\n`),
       });
 
+  // **The one place a wiki-link's destination is discovered** (WP-2 of
+  // `plans/follow-wiki-links.md`, D6). `createWikiLinkResolver` closes over the viewed
+  // file's absolute path and finds the vault root and builds its file index lazily — on the
+  // resolver's *first call*, which only happens if the document actually emits a wiki-link —
+  // so a note with none costs nothing. It is built only when the resolved policy has
+  // hyperlinks on, which `--plain` and the non-TTY ceiling have already decided by here, so
+  // there is no second gate to keep in step with `renderLink`'s: no hyperlinks, no resolver,
+  // and the renderer emits exactly the bytes it emitted before this plan.
+  const resolveWikiLink = policy.hyperlinks ? createWikiLinkResolver(resolve(options.file)) : undefined;
+
   const { text: output, codeRanges } = renderDocumentDetailed(
     source,
     targetWidth,
@@ -450,6 +464,7 @@ async function runView(args: string[]): Promise<void> {
     config.emoji,
     resolveFenceLanguageFor,
     policy,
+    resolveWikiLink,
   );
 
   if (options.check) {

@@ -26,6 +26,7 @@ title is unchanged, and each moved section leaves a pointer where it used to be.
 | Colourless gates cannot see colour-only defects | three measurements, one mechanism, the rule it earns, and the WP-3 closure (`charDiff` 31 → 0) |
 | Glyph tier | the tier, and the precedence that puts resolved `wide` above every flag |
 | Command-line surface | the CLI shape, the config asymmetry, and the resolver-as-value |
+| Following wiki-links | the seam, D1–D7, the measured vault, and why the gates stay byte-stable |
 | Rendering policy · The `emoji` re-decision | the unqualified rules, and the tier-follows decision |
 
 **The reference files — read the one you are working in.**
@@ -798,6 +799,25 @@ source, because the tool answers to two names and a reader who knows the project
 `crucible-tui` should not get "No manual entry" for typing it. That split is deliberate and
 settled — see "Two names, on purpose" at the top of the root `AGENTS.md`. Do not reconcile the
 two names.
+
+### Following wiki-links
+
+**A `[[slug]]` is a clickable OSC-8 `file://` link to the note it names** (`plans/follow-wiki-links.md`, WP-1/WP-2). The tool already recognised wiki-links structurally and already owned OSC-8 emission; what it did not do was connect the two, so a label was cyan, underlined, and unfollowable. It now resolves the slug against the note's own vault and wraps the *styled label* in `src/ansi.ts`'s `link` — style inside the sequence, `embed: ` outside it, exactly as `renderLink` does.
+
+**The seam is one optional context field, and that is the whole of the renderer's involvement.** `LayoutContext.resolveWikiLink?: (slug, fragment?) => string | undefined` sits beside `resolveFenceLanguage` and is filled by a new trailing parameter on `renderDocumentDetailed`/`renderDocument`. `src/cli.ts` is the only caller that fills it, and only when `policy.hyperlinks` is true. `src/wikiresolve.ts` owns everything that touches a directory — root discovery, the index, the resolution order, the URI — and is a pure function of an injected `{ exists, list }` pair, so its tests build trees under `os.tmpdir()` and the renderer keeps reading no filesystem and no process state (D6). The discovery is **lazy**: the root is found and the index built on the resolver's first call, so a document with no wiki-link in it never lists anything.
+
+The locked decisions, in brief — the full text is the plan's "Decisions locked":
+
+- **D1 — the root is Obsidian-style**: the nearest ancestor of the viewed file holding `.obsidian` or `.git` (either, and either as a file or a directory — a worktree's `.git` is a file); failing that, the file's own directory.
+- **D2 — resolution order**: exact path relative to root, then a unique basename anywhere under it, then a deterministic tiebreak (fewest path segments, then lexicographically smallest) — exact-case first, then the whole ladder case-insensitively, because Obsidian matches case-insensitively and Linux filesystems do not. A slug that is absolute or carries a `..` segment never resolves.
+- **D3 — unresolved is unchanged**: no link, no marker, byte-identical to before the plan.
+- **D4 — prose only.** Paragraphs, list items, headings and blockquotes link; **table cells do not**, and `src/table.ts` is untouched. Its flattener renders a cell's label as a styled span with no OSC-8, because the cell splitter would have to split sequences to allow one. Named as follow-up work, not as a defect.
+- **D5 — the existing hyperlink axis governs.** `ctx.hyperlinks` is the only gate, so `--plain`, `--hyperlinks=never`, a pipe and `--check` are unaffected by construction. There is no new flag, env var or config key.
+- **D7 — a child link owns the destination.** A label's children can already emit OSC-8 (a URL-shaped slug or alias reaches `renderLink` by design, grant C5), and `link` has **no nesting contract** — an inner open replaces the active destination and its close does not restore the outer one. So if the rendered label already contains an OSC-8 open, the wrap is suppressed and the resolver is not consulted. The test is the literal `ESC ] 8 ; ;`, which finds a tmux-enveloped child too, since the envelope only doubles `ESC`.
+
+**The premise is measured, on the corpus this tool actually views** (2026-09-07, the user's vault at its `.obsidian` root): **34,207 `.md` files** among 67,420 directory entries; one recursive index pass takes **68–100 ms** warm on Bun; **657 basenames are ambiguous** (≈1.9%), which is why the tiebreak is deterministic rather than "first hit"; and **~93% of the vault's ~50k wiki-links are path-shaped** (`folder/note`), which is why path-relative-to-root is rule (a) and basename search only the fallback.
+
+**Why every gate stayed byte-stable across this**, stated as the invariant rather than as an observation: the resolver is an *optional trailing parameter*, and neither `scripts/corpus.ts` nor `scripts/colour-axis.ts` passes one — both also render with hyperlinks off. A render with no resolver, or with `hyperlinks: false`, takes the identical path it took before the plan and emits the identical bytes. That is what makes this feature invisible to `bun run sweep`, the colour axis and `--check`, and it is also the reason the CLI witness has to force a **pseudo-TTY**: the non-TTY hyperlink ceiling (`src/colour.ts`) outranks `--hyperlinks=always`, so a run piped into `cat` can never show an OSC-8 byte, whatever the flag says.
 
 ### Colour: one owned decision — moved to `docs/agents/colour.md`
 

@@ -206,4 +206,44 @@ describe("C6 — table cells: fragment-scoped styling and ordinary normalization
     expect(bold).toContain(`${CYAN_UNDERLINE_OPEN}bold${CYAN_UNDERLINE_CLOSE}`);
     expect(bold).not.toContain(`${ESC}[1mbold`);
   });
+
+  test("D4 of `plans/follow-wiki-links.md`: a resolver reaches prose, never a cell", () => {
+    // The cells deferral, asserted rather than described. `styleWikiLabel` is the only place
+    // the resolver is consulted and `renderTable` never dispatches a cell token, so a cell's
+    // label is flattened by `src/table.ts` and cannot become a hyperlink however the policy
+    // and the resolver are set. The splitter would have to split the sequence to allow it;
+    // that is follow-up work, not this plan's.
+    const source = "| col |\n|---|\n| [[note]] |\n";
+    const resolveNote = (slug: string): string | undefined =>
+      slug === "note" ? "file:///v/note.md" : undefined;
+    const followed = renderDocument(
+      source,
+      80,
+      UNICODE_GLYPHS,
+      undefined,
+      undefined,
+      undefined,
+      LINKS,
+      resolveNote,
+    );
+    expect(followed).not.toContain(`${ESC}]8;;`);
+    // And byte-identical to the same render with no resolver at all — the cell path is
+    // unmoved by this plan.
+    expect(followed).toBe(at(source, LINKS));
+    expect(followed).toContain(`${CYAN_UNDERLINE_OPEN}note${CYAN_UNDERLINE_CLOSE}`);
+
+    // The same in a prose paragraph beside it, so the witness shows the seam rather than an
+    // absence: identical source text, one rendered inside a cell and one outside it.
+    const prose = renderDocument(
+      "See [[note]] now.\n",
+      80,
+      UNICODE_GLYPHS,
+      undefined,
+      undefined,
+      undefined,
+      LINKS,
+      resolveNote,
+    );
+    expect(prose).toContain(`${ESC}]8;;file:///v/note.md`);
+  });
 });

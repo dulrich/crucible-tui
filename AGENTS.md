@@ -84,7 +84,11 @@ src/inline.ts       the owned inline visitors, the emoji pass and the colon sent
 src/wikilink.ts     wiki-link recognition — the inline tokenizer extension marked's lexer
                     dispatches inside its own lexing pass, the WikiLinkToken it produces,
                     and styleWikiLabel, which styles a label at emission through
-                    src/style.ts's applyStyleChain
+                    src/style.ts's applyStyleChain and, when the context carries a
+                    resolver, wraps it in an OSC-8 link
+src/wikiresolve.ts  where a [[slug]] points — vault-root discovery, the lazy file index,
+                    D2's resolution order and the file:// URI; pure over an injected
+                    filesystem, built only by src/cli.ts, never by a visitor
 src/colour.ts       the one colour/hyperlink decision — resolveColourPolicy over the
                     ratified precedence matrix, and owned OSC-8 terminal detection; reads
                     no process state at all

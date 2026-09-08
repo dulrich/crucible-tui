@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -478,5 +478,100 @@ describe("main — --plain byte-equivalence, extended: escape-bearing synthetics
       );
       expect(plain.stdout).toBe(noneNoLinks.stdout);
     }
+  });
+});
+
+/**
+ * **Wiki-links become `file://` hyperlinks on the existing `--hyperlinks` axis** — WP-2 of
+ * `plans/follow-wiki-links.md`, at the one boundary that builds a resolver at all.
+ *
+ * `src/cli.ts` is the only place the filesystem is consulted for a wiki-link's target (D6):
+ * it builds `createWikiLinkResolver(resolve(options.file))` **only** when the resolved policy
+ * has hyperlinks on, so there is no second gate that could disagree with `renderLink`'s. The
+ * three runs below are that one decision seen from both sides.
+ *
+ * The tree is built under `os.tmpdir()` with `mkdtemp`, never spelled as a literal path — the
+ * publication guard (`tests/helpers/containment.ts`) forbids a home-path or sibling-directory
+ * name in tracked content, and a vault-root test has to name a root somewhere.
+ */
+describe("main — following wiki-links (--hyperlinks)", () => {
+  /** `<tmp>/.git/` + `note.md` (containing `[[target]]`) + `target.md`, cleaned up after. */
+  async function withVault<T>(run: (notePath: string, dir: string) => Promise<T>): Promise<T> {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-cli-wikilink-test-"));
+    try {
+      // `.git` is what makes this directory a vault root under D1 — the nearest ancestor
+      // holding `.obsidian` or `.git` — so the resolution is scoped to the temp tree and
+      // can never reach the checkout this suite runs in.
+      await mkdir(join(dir, ".git"));
+      const notePath = join(dir, "note.md");
+      await writeFile(notePath, "See [[target]] now.\n", "utf8");
+      await writeFile(join(dir, "target.md"), "# Target\n", "utf8");
+      return await run(notePath, dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("--plain and --hyperlinks=never emit no OSC-8 for a resolving wiki-link", async () => {
+    await withVault(async (notePath) => {
+      const plain = await captureIO(() => main([notePath, "--no-pager", "--plain"]));
+      expect(plain.stdout).not.toContain(`${ESC}]8`);
+      expect(plain.stdout).toContain("See target now.");
+
+      // Colour forced *on* and hyperlinks off: the two axes are independent, so this is the
+      // run that shows the link is gated by the hyperlink axis alone and not by colour.
+      const never = await captureIO(() =>
+        main([notePath, "--no-pager", "--hyperlinks=never", "--color=always"]),
+      );
+      expect(never.stdout).not.toContain(`${ESC}]8`);
+      expect(never.stdout).toContain("target");
+    });
+  });
+
+  test("--hyperlinks=always on a TTY links the label to the target's file:// URI", async () => {
+    await withVault(async (notePath) => {
+      // **The non-TTY ceiling outranks `--hyperlinks=always`** (`src/colour.ts`), so without
+      // this the flag decides nothing and the assertion below would be unreachable. Saved and
+      // restored exactly, including "was absent", like every other process-state test here.
+      const savedIsTTY = process.stdout.isTTY;
+      let output: string;
+      try {
+        process.stdout.isTTY = true;
+        output = (
+          await captureIO(() => main([notePath, "--no-pager", "--hyperlinks=always", "--color=always"]))
+        ).stdout;
+      } finally {
+        process.stdout.isTTY = savedIsTTY;
+      }
+
+      expect(output).toContain(`${ESC}]8;;file://`);
+      const destination = output.slice(output.indexOf(`${ESC}]8;;`) + 5, output.indexOf(BEL));
+      expect(destination.startsWith("file:///")).toBe(true);
+      // The resolver found the sibling note, not the note being viewed: the destination is
+      // `target.md` under the same temp root. The path is percent-encoded by
+      // `src/wikiresolve.ts`, and `mkdtemp`'s own suffix is unreserved, so it survives literal.
+      expect(destination.endsWith("/target.md")).toBe(true);
+      expect(output).toContain("target");
+    });
+  });
+
+  test("a slug naming nothing is left alone, on the same TTY run that links a resolving one", async () => {
+    await withVault(async (notePath, dir) => {
+      await writeFile(join(dir, "note.md"), "See [[target]] and [[nowhere]].\n", "utf8");
+      const savedIsTTY = process.stdout.isTTY;
+      let output: string;
+      try {
+        process.stdout.isTTY = true;
+        output = (
+          await captureIO(() => main([notePath, "--no-pager", "--hyperlinks=always", "--color=always"]))
+        ).stdout;
+      } finally {
+        process.stdout.isTTY = savedIsTTY;
+      }
+
+      // Exactly one pair — one open and one close — for the one slug that resolves (D3).
+      expect(output.split(`${ESC}]8;;`).length - 1).toBe(2);
+      expect(output).toContain("nowhere");
+    });
   });
 });

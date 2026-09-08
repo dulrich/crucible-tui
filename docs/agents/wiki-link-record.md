@@ -290,3 +290,6 @@ three env-pinned render-diff runs against the pre-cutover commit (`9c19997`):
 `combos=280 diffed=0 ok=true`, under `FORCE_COLOR=0`, `FORCE_COLOR=3`, and
 `MDVIEW_COLOR=never`. The context table, the precedence matrix and the witness-ownership
 table above are the full record this sentence used to point at.
+
+
+**And the successor this record kept naming has arrived for the viewer.** `WikiLinkToken` kept `slug` and `alias` "because a successor that navigates a wiki-link needs the *target*, not the label"; WP-2 of `plans/follow-wiki-links.md` is that successor, and it added `fragment` beside them for the same reason. A label whose slug names a file under the note's vault root is now wrapped in an OSC-8 `file://` link, on the existing `--hyperlinks` axis, with the resolution itself owned by `src/wikiresolve.ts` and reached through one optional `LayoutContext` field. **The live record of that seam is `src/AGENTS.md`, "Following wiki-links"** — D1–D7, the measured vault, the cells deferral and the byte-stability argument. What stays here is what this file has always been: why the *carrier* mechanism existed and how it was retired, which is the history the new behaviour is built on top of rather than part of.
