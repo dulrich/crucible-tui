@@ -19,7 +19,7 @@ import {
   renderStrong,
 } from "./inline";
 import { resolveFenceLanguage, type FenceLanguageResolver } from "./lang";
-import { createLayoutContext } from "./layout-context";
+import { createLayoutContext, type WikiLinkResolver } from "./layout-context";
 import { createListTextLayout } from "./list-layout";
 import { TASK_GLYPHS } from "./lists";
 import { TokenWalker, type WalkRendererMethods } from "./walk";
@@ -556,6 +556,14 @@ function defaultColourPolicy(): ColourPolicy {
  * `NARROW_MEASURE`, which is both `string-width`'s own default and rule 4 of that
  * resolution order, so every existing caller renders exactly as it did before.
  *
+ * **`resolveWikiLink` is threaded on the same channel and for the same reason** (WP-2 of
+ * `plans/follow-wiki-links.md`, D6). Answering "which file does `[[note]]` name?" means
+ * reading directories; this function reads no filesystem and no process state, so the answer
+ * arrives as a value the caller built — `src/cli.ts` alone, and only when the resolved policy
+ * has hyperlinks on. Omitted, it is `undefined` and every render is byte-identical to what it
+ * was before that plan, which is precisely what keeps `bun run sweep` and the colour axis —
+ * neither of which passes one — stable across it.
+ *
  * `renderDocument` is a thin wrapper over `renderDocumentDetailed` for callers that
  * only need the final text (every existing caller and test).
  */
@@ -567,6 +575,7 @@ export function renderDocumentDetailed(
   emojiOverride?: boolean,
   resolveFenceLanguageFor: FenceLanguageResolver = resolveFenceLanguage,
   policy: ColourPolicy = defaultColourPolicy(),
+  resolveWikiLink?: WikiLinkResolver,
 ): RenderResult {
   const { meta, body } = splitFrontmatter(source);
   // The divider is appended *into* `metaBlock` itself, before `metaLineOffset` below is
@@ -665,6 +674,7 @@ export function renderDocumentDetailed(
     glyphs,
     measure,
     resolveFenceLanguage: resolveFenceLanguageFor,
+    resolveWikiLink,
     emoji,
     sgr: policy.sgr,
     hyperlinks: policy.hyperlinks,
@@ -921,6 +931,7 @@ export function renderDocument(
   emojiOverride?: boolean,
   resolveFenceLanguageFor?: FenceLanguageResolver,
   policy?: ColourPolicy,
+  resolveWikiLink?: WikiLinkResolver,
 ): string {
   return renderDocumentDetailed(
     source,
@@ -930,5 +941,6 @@ export function renderDocument(
     emojiOverride,
     resolveFenceLanguageFor,
     policy,
+    resolveWikiLink,
   ).text;
 }

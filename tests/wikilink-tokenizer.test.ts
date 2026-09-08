@@ -121,6 +121,25 @@ describe("the tokenizer extension — shape, registration, and the token it prod
     expect(embed.slug).toBe("a note");
   });
 
+  test("the token carries the `#fragment`, `#` excluded, only when one is authored", () => {
+    // WP-2 of `plans/follow-wiki-links.md`: the fragment was matched and discarded before,
+    // so a `[[note#Heading]]` could not point a reader at the heading it names. It is a
+    // capture now, handed to `ctx.resolveWikiLink` at emission and never shown in the label.
+    expect(wikiToken("see [[a#b]] now\n").fragment).toBe("b");
+    expect(wikiToken("see [[a#b|c]] now\n").fragment).toBe("b");
+    expect(wikiToken("see [[a#b|c]] now\n").alias).toBe("c");
+    // Absent, not empty, when no `#` is authored — the same present-only-when-authored rule
+    // `alias` follows, so the two are distinguishable by the resolver.
+    expect(wikiToken("see [[a]] now\n").fragment).toBeUndefined();
+    expect(wikiToken("see [[a|c]] now\n").fragment).toBeUndefined();
+    // An authored-but-empty fragment is `""`: the `#` was written, so the group participated.
+    expect(wikiToken("see [[a#]] now\n").fragment).toBe("");
+    // A multi-word fragment survives whole; the slug never carries any of it.
+    const heading = wikiToken("see [[note#Heading two]] now\n");
+    expect(heading.slug).toBe("note");
+    expect(heading.fragment).toBe("Heading two");
+  });
+
   test("a bare slug's own markup is lexed too — D5's parity claim, at the token", () => {
     // The pre-pass wrote the label back into the *source*, so `[[**bold**]]` has always
     // rendered bold. Lexing `alias ?? slug` rather than only an alias is what preserves that.
@@ -146,8 +165,12 @@ describe("the two regexes — the provenance record and the lexer form", () => {
   });
 
   test("WIKI_LINK_TOKENIZER is that pattern anchored, non-global, with `\\n` excluded (D2)", () => {
+    // The fragment group is *capturing* here and non-capturing in `WIKI_LINK` — the one
+    // difference WP-2 of `plans/follow-wiki-links.md` added, and the reason this string is
+    // not `WIKI_LINK`'s with a `^`. It changes what the match exposes, never what it matches;
+    // the recognition witnesses below are what pin the second half of that claim.
     expect(WIKI_LINK_TOKENIZER.source).toBe(
-      "^(!)?\\[\\[([^\\]|#\\n]+)(?:#[^\\]|\\n]*)?(?:\\|([^\\]\\n]+))?\\]\\]",
+      "^(!)?\\[\\[([^\\]|#\\n]+)(?:#([^\\]|\\n]*))?(?:\\|([^\\]\\n]+))?\\]\\]",
     );
     expect(WIKI_LINK_TOKENIZER.flags).toBe("");
     // The three differences, each asserted rather than described: anchored (so the lexer's

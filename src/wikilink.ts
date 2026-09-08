@@ -74,6 +74,7 @@
  */
 import type { Token } from "marked";
 import type { TokenizerExtension, TokenizerThis } from "marked";
+import { link as osc8Link } from "./ansi";
 import type { LayoutContext } from "./layout-context";
 import { type StyleName, applyStyleChain } from "./style";
 
@@ -88,7 +89,8 @@ export const WIKI_LINK = /(!)?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
 /**
  * The same pattern in the form an inline tokenizer needs.
  *
- * Two differences from `WIKI_LINK`, both required and both narrow:
+ * Three differences from `WIKI_LINK`, each required and each narrow — the first two decide
+ * what matches, the third only what the match hands back:
  *
  * - **anchored and non-global.** `marked`'s inline loop offers a tokenizer the remaining
  *   source and asks "does a token start *here*"; a `g`-flagged, unanchored regex would carry
@@ -99,8 +101,16 @@ export const WIKI_LINK = /(!)?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
  *   could never be in the same string and a multiline `[[a\nb]]` did not match. The lexer
  *   offers whole inline runs, newlines included, so without this exclusion the tokenizer
  *   would start matching a construct that has never been a wiki-link here (locked D2).
+ * - **the `#fragment` is captured** (group 3, `#` itself excluded), which shifts the alias to
+ *   group 4. Added by WP-2 of `plans/follow-wiki-links.md` so `styleWikiLabel` can hand the
+ *   fragment to the resolver and the `file://` URI can carry it; the group is *non-capturing
+ *   in `WIKI_LINK`* and stays that way, because that regex is the provenance record shared
+ *   with an in-house web renderer and this repo does not edit it. Adding parentheses changes
+ *   **what the match exposes, never what it matches** — the recognition set is byte-for-byte
+ *   what it was, which is what the recognition witnesses in `tests/wikilink-tokenizer.test.ts`
+ *   pin.
  */
-export const WIKI_LINK_TOKENIZER = /^(!)?\[\[([^\]|#\n]+)(?:#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/;
+export const WIKI_LINK_TOKENIZER = /^(!)?\[\[([^\]|#\n]+)(?:#([^\]|\n]*))?(?:\|([^\]\n]+))?\]\]/;
 
 /**
  * Cyan + underline, as an ordered chain of names rather than a prebuilt `Styler`.
@@ -122,13 +132,24 @@ export const WIKI_LINK_STYLES: readonly StyleName[] = ["cyan", "underline"];
  * tokenize time, so the walk renders them exactly as it renders any other inline run.
  * `slug` and `alias` are kept even though the label is derived from them, because they are
  * the authored content and a successor that navigates a wiki-link needs the *target*, not
- * the label — see `docs/adr/0001-editor-path.md`.
+ * the label — see `docs/adr/0001-editor-path.md`. **That successor arrived for the viewer**
+ * (`plans/follow-wiki-links.md`): `styleWikiLabel` below hands `slug` and `fragment` to the
+ * resolver on the context, and the label becomes an OSC-8 `file://` link to the note the
+ * slug names.
  */
 export interface WikiLinkToken {
   readonly type: "wikilink";
   readonly raw: string;
   readonly slug: string;
   readonly alias?: string;
+  /**
+   * The `#…` text with the `#` removed — the heading or block an Obsidian link points
+   * *inside* the target note at. Present only when authored, exactly like `alias`, so a
+   * `[[a]]` and a `[[a#]]` are distinguishable (the latter carries `""`; it authored an
+   * empty fragment and the resolver is handed one). Never part of `slug`: the fragment
+   * group has always been excluded from it, and the label has never shown it.
+   */
+  readonly fragment?: string;
   readonly embed: boolean;
   readonly tokens: Token[];
 }
@@ -160,7 +181,7 @@ export const wikiLinkExtension: TokenizerExtension = {
     const match = WIKI_LINK_TOKENIZER.exec(src);
     if (!match) return undefined;
 
-    const [raw, bang, slug, alias] = match;
+    const [raw, bang, slug, fragment, alias] = match;
     // noUncheckedIndexedAccess: group 2 is not optional in the pattern, but capture groups
     // type as `string | undefined` regardless.
     if (raw === undefined || slug === undefined) return undefined;
@@ -169,6 +190,7 @@ export const wikiLinkExtension: TokenizerExtension = {
       type: "wikilink",
       raw,
       slug,
+      ...(fragment === undefined ? {} : { fragment }),
       ...(alias === undefined ? {} : { alias }),
       embed: bang !== undefined,
       // **The label is `alias ?? slug`, lexed into children** (D5). `this` is `{ lexer }`
@@ -201,6 +223,36 @@ export const wikiLinkExtension: TokenizerExtension = {
  * already split, so `applyStyle`'s line-break encasing closed and reopened the pair around
  * every generated break; `wrapAnsi` synthesizes no such pair, so a wrapped label now carries
  * one open and one close however many lines it crosses.
+ *
+ * ## Following the link (WP-2 of `plans/follow-wiki-links.md`)
+ *
+ * A styled label the terminal cannot follow was the whole of this visitor until that plan. It
+ * now wraps that label in an OSC-8 hyperlink to the note the slug names, on exactly the terms
+ * `renderLink` uses (`src/inline.ts`) — **style inside the sequence, `embed: ` outside it** —
+ * and under exactly the same gate, `ctx.hyperlinks`, so `--plain`, `--hyperlinks=never`, a
+ * pipe and `--check` are unaffected by construction (D5).
+ *
+ * Three conditions, all of which must hold, and each of which is why a render can be
+ * byte-identical to the pre-plan one:
+ *
+ * - **`ctx.hyperlinks`** — the resolved hyperlink axis, the same field `renderLink` reads;
+ * - **`ctx.resolveWikiLink` is present.** It is an optional context field (D6), so the
+ *   renderer never touches the filesystem itself and a caller that hands no resolver —
+ *   `bun run sweep`, the colour axis, every test that does not ask for this — renders exactly
+ *   what it rendered before;
+ * - **the styled label carries no OSC-8 open of its own (D7).** A label's children may already
+ *   have emitted one: a URL-shaped slug or alias reaches `renderLink` by design (grant C5), and
+ *   `src/ansi.ts`'s `link` has no nesting contract — an inner open replaces the active
+ *   destination and its close does not restore the outer one, so wrapping would leave the rest
+ *   of the line pointing at nothing. The child link wins and the resolver is not even consulted.
+ *   The test is the literal introducer `ESC ] 8 ; ;`, which finds a tmux-enveloped child too:
+ *   the envelope only doubles `ESC`, so the substring survives inside it.
+ *
+ * Only then is `ctx.resolveWikiLink(token.slug, token.fragment)` called, and only a defined
+ * return wraps: an unresolved slug renders byte-identically to today, with no marker of any
+ * kind (D3). The `+` → `%20` replace `renderLink` applies is deliberately **not** applied here
+ * — that is `marked-terminal`'s own workaround for its `textLength`, not part of the sequence
+ * grammar and not part of a `file://` URI, which `src/wikiresolve.ts` has already percent-encoded.
  */
 export function styleWikiLabel(
   ctx: LayoutContext,
@@ -208,5 +260,27 @@ export function styleWikiLabel(
   parseInline: (tokens: Token[]) => string,
 ): string {
   const label = applyStyleChain(ctx, WIKI_LINK_STYLES, parseInline(token.tokens));
-  return token.embed ? `embed: ${label}` : label;
+  const linked = followWikiLink(ctx, token, label);
+  return token.embed ? `embed: ${linked}` : linked;
+}
+
+/** ESC, U+001B. Built, never pasted — `src/ansi.ts`'s convention, for the same reason. */
+const ESC = String.fromCharCode(0x1b);
+/**
+ * The OSC-8 introducer with its empty parameter field, `ESC ] 8 ; ;` — D7's test, and the
+ * only place outside `src/ansi.ts` this repo spells any part of a sequence. It is a *probe*,
+ * never emitted: `osc8Link` remains the one emitter.
+ */
+const OSC8_OPEN = `${ESC}]8;;`;
+
+/**
+ * D7's guard and the wrap itself, kept out of `styleWikiLabel` so the three conditions read as
+ * one expression rather than a nest. Returns the label unchanged whenever any of them fails,
+ * which is every render before this plan and every render the gates make.
+ */
+function followWikiLink(ctx: LayoutContext, token: WikiLinkToken, label: string): string {
+  if (!ctx.hyperlinks || ctx.resolveWikiLink === undefined) return label;
+  if (label.includes(OSC8_OPEN)) return label;
+  const href = ctx.resolveWikiLink(token.slug, token.fragment);
+  return href === undefined ? label : osc8Link(label, href, ctx.tmux);
 }

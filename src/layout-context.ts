@@ -3,6 +3,17 @@ import { type GlyphSet } from "./glyphs";
 import { type Measure } from "./width";
 
 /**
+ * Wiki-link slug → destination URI, or `undefined` for "this slug names nothing here".
+ *
+ * Declared here rather than in `src/wikilink.ts` because this is the module that owns the
+ * **seam** — the field below is what the renderer sees, `src/render.ts`'s trailing parameter
+ * is how a caller fills it, and `src/wikiresolve.ts` is one implementation of it rather than
+ * its definition. `fragment` is the `#…` text with the `#` removed, present only when the
+ * link authored one (`WikiLinkToken.fragment`).
+ */
+export type WikiLinkResolver = (slug: string, fragment?: string) => string | undefined;
+
+/**
  * The one value every owned renderer visitor is handed.
  *
  * `plans/marked-terminal-replacement.md`'s decision 5 carries this over from the code
@@ -45,6 +56,25 @@ export interface LayoutContext {
    * alias map an immutable field there is already a place to put it.
    */
   readonly resolveFenceLanguage: (rawLang: string | undefined) => string | undefined;
+  /**
+   * How a wiki-link's slug becomes a destination — **absent means no navigation**, which is
+   * the behaviour every render had before `plans/follow-wiki-links.md` and the behaviour
+   * every caller that does not opt in still has (the sweep, the colour axis, every test that
+   * does not ask for it). `src/wikilink.ts`'s `styleWikiLabel` calls it, and only when
+   * `hyperlinks` is on and the label carries no OSC-8 of its own.
+   *
+   * **It is a resolver-shaped field for the reason `resolveFenceLanguage` above is** (D6):
+   * answering "which file is `[[note]]`?" means reading directories, and the renderer reads
+   * no filesystem and no process state. `src/cli.ts` is the one place the answer is built —
+   * `createWikiLinkResolver` (`src/wikiresolve.ts`) — and it arrives here as a value, so a
+   * test varies it by handing in a different function rather than by building a tree.
+   *
+   * The return is a complete URI (a percent-encoded `file://` one today), never a path:
+   * this field's consumer hands it straight to `src/ansi.ts`'s `link` and does not
+   * interpret it. `undefined` means the slug resolved to nothing, and the label renders
+   * exactly as it would with no resolver at all (D3).
+   */
+  readonly resolveWikiLink?: WikiLinkResolver;
   /**
    * Whether `:shortcode:` substitution runs. Computed once per render as
    * `emojiOverride ?? (glyphs.tier === "unicode")` — see `renderDocumentDetailed`'s
@@ -208,6 +238,8 @@ export interface LayoutContextInit {
   glyphs: GlyphSet;
   measure: Measure;
   resolveFenceLanguage: (rawLang: string | undefined) => string | undefined;
+  /** Optional for the same reason the field is: absent means "no navigation". */
+  resolveWikiLink?: WikiLinkResolver;
   emoji: boolean;
   /**
    * The resolved colour mode. **`color` is deliberately absent from this interface** —
@@ -240,6 +272,7 @@ export function createLayoutContext(init: LayoutContextInit): LayoutContext {
     measure: init.measure,
     prefix: createPrefixColumns(),
     resolveFenceLanguage: init.resolveFenceLanguage,
+    resolveWikiLink: init.resolveWikiLink,
     emoji: init.emoji,
     sgr: init.sgr,
     // The derived field, and the only place it is ever computed.
