@@ -1,5 +1,6 @@
 {
   "name": "mdview",
+  "description": "Terminal markdown viewer: lossless wide tables, list reflow, wiki-links",
   "private": true,
   "type": "module",
   "scripts": {

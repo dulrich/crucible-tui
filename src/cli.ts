@@ -78,7 +78,9 @@ then --color, then MDVIEW_COLOR=auto|always|never, then NO_COLOR (present at
 all, even empty, means never), then FORCE_COLOR (0/false mean never; empty,
 true and 1-3 mean always; any other value decides nothing), then the config
 file's "color" key, then whether stdout is a terminal. Piped output is
-therefore colourless unless you ask for colour explicitly.
+therefore colourless unless you ask for colour explicitly. An explicit never
+drops colour but keeps bold, dim, italic, underline and strikethrough (the
+formats level); --plain is what removes those too.
 
 OSC-8 hyperlinks are a separate axis, highest precedence first: --plain
 (absolute off), then the non-TTY ceiling (never off a terminal, whatever else
@@ -114,11 +116,12 @@ const HIGHLIGHT_AS_USAGE = `usage: mdview highlight-as <fence> <language>
                 highlight.js's supported list before anything is written
   --help, -h    print this message and exit
 
-Records "<fence> -> <language>" into the user config (the XDG config path;
-see \`mdview help\` for its precedence), layered over the built-in aliases
-(dataviewjs -> javascript, dataview -> sql). A user entry for a fence that
-also has a built-in default wins. The write only ever touches this one entry:
-every other config key, and every other highlight-as mapping, is left as-is.
+Records "<fence> -> <language>" into the user config
+($XDG_CONFIG_HOME/mdview/config.json, default ~/.config/mdview/config.json),
+layered over the built-in aliases (dataviewjs -> javascript, dataview -> sql).
+A user entry for a fence that also has a built-in default wins. The write only
+ever touches this one entry: every other config key, and every other
+highlight-as mapping, is left as-is.
 `;
 
 const PROBE_USAGE = `usage: mdview probe [--refresh] [--no-cache] [--timeout MS]

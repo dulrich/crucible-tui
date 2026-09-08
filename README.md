@@ -171,7 +171,8 @@ page still carries its bold, dim, italic, underline and strikethrough formatting
 
 **OSC-8 hyperlinks are a separate axis.** What gets hyperlinked is markdown links
 (`[text](url)`), wrapped as an OSC-8 escape sequence and DCS-wrapped when running inside
-tmux so the sequence survives the multiplexer. They are never emitted off a terminal,
+tmux or GNU screen (any `TERM` beginning `screen` or `tmux`) so the sequence survives the
+multiplexer. They are never emitted off a terminal,
 whatever the colour setting says — a pipe cannot render one — and `--plain` turns them
 off absolutely. On a terminal, resolution order is `--hyperlinks=auto|always|never`
 (bare `--hyperlinks` = `always`), then `MDVIEW_HYPERLINKS=auto|always|never`, then the
@@ -193,6 +194,17 @@ afterward. Four forms:
 The label renders cyan and underlined under the resolved colour policy (`formats` keeps
 the underline and drops the cyan; `none` emits neither). A URL-shaped slug emits a
 well-formed OSC-8 hyperlink under the same conditions a markdown link does.
+
+On a hyperlink-capable terminal with hyperlinks on, a `[[slug]]` that names a file under
+the note's vault or repository root also becomes a `file://` OSC-8 hyperlink the
+terminal can open. The root is the nearest ancestor directory of the viewed file
+containing `.obsidian` or `.git`, else the file's own directory. The slug is resolved
+first as a path relative to that root (with or without `.md`), then as a unique basename
+anywhere under it, ties broken by fewest path segments and then by the lexicographically
+smaller path; matching tries the exact case first, then case-insensitively. A slug that
+resolves to nothing renders exactly as before: styled, unlinked. Wiki-links inside table
+cells are never linked. This link sits on the same `--hyperlinks` axis as a markdown
+link, so `--plain`, `--hyperlinks=never` and piped output emit none of it.
 
 Because recognition happens inside the lexer's own pass, verbatim contexts are literal
 by construction: fenced and indented code, block HTML, a formed codespan (`` `[[note]]` ``
