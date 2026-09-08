@@ -2,7 +2,7 @@
 
 Status: accepted. Recorded 2026-07-28 (WP-6b), from the field-position research in
 `plans/crucible-tui-launch.md` (see its "Architecture finding that shapes the roadmap"
-paragraph, `plans/crucible-tui-launch.md:22`), so the OpenTUI/document-model direction
+paragraph, `plans/crucible-tui-launch.md:26`), so the OpenTUI/document-model direction
 below is not re-derived the next time this comes up.
 
 Context historicized 2026-08-19: `marked-terminal` and `cli-table3`, both named in the

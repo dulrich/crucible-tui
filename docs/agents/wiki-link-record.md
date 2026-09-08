@@ -49,14 +49,14 @@ both colour policies (`{sgr:"none",hyperlinks:false,tmux:false}` /
 
 | Context | Behaviour | Status | Witness |
 |---|---|---|---|
-| Indented code | `[[slug]]`, `[[slug\|Alias]]`, `[[slug#head\|Alias]]` and `![[embed]]` all keep every authored byte — the label survives inside the recorded `codeRange`, brackets and all; `codeRanges` are unchanged from the pre-fix pins | **fixed** | `tests/render.test.ts`, "C1: indented code keeps every authored byte — plain, alias, fragment, embed" |
-| Fenced code | Left untouched — `FENCE_LINE`'s toggle skips every line between a pair of ` ``` `/`~~~` fences (unchanged; the tokenizer protects it too, redundantly, by construction) | guarded-by-FENCE_LINE | `tests/wikilink.test.ts`, "a fenced [[slug]] example is verbatim in both modes — now by construction" |
-| Block HTML | `[[slug]]` keeps its authored brackets — no `codeRange` was ever needed for this fix, because the tokenizer never fires inside a block `html` token in the first place | **fixed** | `tests/render.test.ts`, "C1: block HTML keeps its authored brackets — the corruption with no codeRange to hide in" |
-| Blockquote-nested code | Same repair, at the code's own nested position, inside a recorded `codeRange` | **fixed** | `tests/render.test.ts`, "C1: indented code nested inside a blockquote keeps its authored brackets" |
-| List-nested code | Same repair, inside a recorded `codeRange` | **fixed** | `tests/render.test.ts`, "C1: indented code nested inside a list item keeps its authored brackets" |
-| Codespan interior | `` `[[note]]` `` is now **literal** — the tokenizer can never be offered a position inside a codespan that syntactically forms, retiring colour-modes Decision 7's "kept-recognizing" row (locked D1). **Scope note — the landed outcome, not the plan's prediction:** when a `[[` opens *before* a backtick and the match's `]]` lands inside the would-be codespan, the wikilink still wins the position — that ownership decision is parity — but the label is now lexed in its own scope (D5), so its unmatched backtick has nothing left to pair with outside the match: **both backticks render literal** now, not the single-codespan-forms-inside-the-label shape the old pass produced. See the precedence-matrix row below for the falsified byte prediction | **literal (D1)** | `tests/wikilink.test.ts`, "a codespan's interior is literal now — locked D1"; the cross-boundary case is "D1 scope note: a match opening before a backtick still wins positionally" |
-| Inline-HTML interior | `<span>[[note]]</span>` still recognizes and styles the label — unchanged, deliberately (probe f): the tokenizer fires inside the inline `text` run between the two `html` tag tokens, exactly as it does in ordinary prose | kept-recognizing, unchanged | `tests/wikilink.test.ts`, "an inline-HTML interior is still recognized — unchanged, and asserted as unchanged" |
-| Link labels (a wiki-link's own alias containing a Markdown link) | Still does not match `WIKI_LINK_TOKENIZER` at all — the alias group excludes `]`, and a nested `[label](url)` contains one — passes through as literal text, unaffected by any of this | recorded-unchanged | `tests/wikilink.test.ts`, "an alias containing a Markdown link does not match, and continues not to" |
+| Indented code | `[[slug]]`, `[[slug\|Alias]]`, `[[slug#head\|Alias]]` and `![[embed]]` all keep every authored byte — the label survives inside the recorded `codeRange`, brackets and all; `codeRanges` are unchanged from the pre-fix pins | **fixed** | `tests/render-wikilinks.test.ts`, "C1: indented code keeps every authored byte — plain, alias, fragment, embed" |
+| Fenced code | Left untouched — `FENCE_LINE`'s toggle skips every line between a pair of ` ``` `/`~~~` fences (unchanged; the tokenizer protects it too, redundantly, by construction) | guarded-by-FENCE_LINE | `tests/wikilink-tokenizer.test.ts`, "a fenced [[slug]] example is verbatim in both modes — now by construction" |
+| Block HTML | `[[slug]]` keeps its authored brackets — no `codeRange` was ever needed for this fix, because the tokenizer never fires inside a block `html` token in the first place | **fixed** | `tests/render-wikilinks.test.ts`, "C1: block HTML keeps its authored brackets — the corruption with no codeRange to hide in" |
+| Blockquote-nested code | Same repair, at the code's own nested position, inside a recorded `codeRange` | **fixed** | `tests/render-wikilinks.test.ts`, "C1: indented code nested inside a blockquote keeps its authored brackets" |
+| List-nested code | Same repair, inside a recorded `codeRange` | **fixed** | `tests/render-wikilinks.test.ts`, "C1: indented code nested inside a list item keeps its authored brackets" |
+| Codespan interior | `` `[[note]]` `` is now **literal** — the tokenizer can never be offered a position inside a codespan that syntactically forms, retiring colour-modes Decision 7's "kept-recognizing" row (locked D1). **Scope note — the landed outcome, not the plan's prediction:** when a `[[` opens *before* a backtick and the match's `]]` lands inside the would-be codespan, the wikilink still wins the position — that ownership decision is parity — but the label is now lexed in its own scope (D5), so its unmatched backtick has nothing left to pair with outside the match: **both backticks render literal** now, not the single-codespan-forms-inside-the-label shape the old pass produced. See the precedence-matrix row below for the falsified byte prediction | **literal (D1)** | `tests/wikilink-emission.test.ts`, "a codespan's interior is literal now — locked D1"; the cross-boundary case is "D1 scope note: a match opening before a backtick still wins positionally" |
+| Inline-HTML interior | `<span>[[note]]</span>` still recognizes and styles the label — unchanged, deliberately (probe f): the tokenizer fires inside the inline `text` run between the two `html` tag tokens, exactly as it does in ordinary prose | kept-recognizing, unchanged | `tests/wikilink-emission.test.ts`, "an inline-HTML interior is still recognized — unchanged, and asserted as unchanged" |
+| Link labels (a wiki-link's own alias containing a Markdown link) | Still does not match `WIKI_LINK_TOKENIZER` at all — the alias group excludes `]`, and a nested `[label](url)` contains one — passes through as literal text, unaffected by any of this | recorded-unchanged | `tests/wikilink-tokenizer.test.ts`, "an alias containing a Markdown link does not match, and continues not to" |
 
 #### The surface was wider than verbatim contexts: the precedence matrix — fixed, WP-2
 
@@ -84,7 +84,7 @@ fires inside marked's own lexing pass instead, so none of them is reachable by i
 | Image alt text — all four forms | one image token, alt rewritten | image does not form; `text + wikilink` plus a literal suffix. Same loss shape | **C3 loss (landed)** |
 | Cross-boundary greedy match — `` [[a `code [[y]] z` end]] `` | the wikilink won positionally; a codespan formed *inside* the label, across the match boundary | the wikilink still wins the position (the ownership decision is parity), but **both backticks are now literal** — the label is lexed in its own scope (D5), so its unmatched backtick has nothing to pair with outside the match. The plan's byte prediction ("identical") was falsified and user-accepted at landing (WP-2's finding 1); the *decision* is parity, the *bytes* are not | **D1 scope note (landed)** |
 
-**Witnesses:** `tests/wikilink.test.ts`, "the precedence matrix — the candidate's bytes for
+**Witnesses:** `tests/wikilink-emission.test.ts`, "the precedence matrix — the candidate's bytes for
 every changing row (WP-2, C3)", plus **"the ownership-class probe sweep — every built-in
 inline shape, the candidate's bytes"** — the completeness instrument: eighteen shapes
 covering every built-in inline ownership class in marked's tokenizer order, each
@@ -106,7 +106,7 @@ the three ever showed up in a green run before this plan.
   destination, before the BEL**: `ESC]8;;https://example.test/path` + `ESC[24m` `ESC[39m` +
   BEL, which no terminal resolves. Under the tokenizer the label is lexed into children at
   tokenize time, so the `url` child reaches `renderLink` with a clean destination and the
-  OSC-8 sequence is well-formed. Witness: `tests/wikilink.test.ts`, "C5 — a URL-shaped label
+  OSC-8 sequence is well-formed. Witness: `tests/wikilink-emission.test.ts`, "C5 — a URL-shaped label
   emits a well-formed OSC-8 (WP-2, repaired)", pinned with hyperlinks off/on and the tmux DCS
   envelope, plus "the destination is sanitized at emission — an authored control byte cannot
   escape it".
@@ -119,7 +119,7 @@ the three ever showed up in a green run before this plan.
   `| [[abcdefghijklmnopqrstuvwxyz]] | y |`: the `y` column used to render between a cyan
   open and its close on a row whose own cell held no wiki-link. The span-cell contract
   styles each fragment independently now, so no sequence crosses a cell's padding or a
-  border. Witness: `tests/wikilink.test.ts`, "C6a: a wrapped label is styled per fragment —
+  border. Witness: `tests/wikilink-table.test.ts`, "C6a: a wrapped label is styled per fragment —
   nothing crosses padding or a border", plus the bleed-inversion assertions in "C6a: a body
   cell and a header cell…" and the alignment/prose-adjacency cases beside it.
 - **A label's boundary whitespace no longer survives cell normalization as an accident
@@ -131,14 +131,14 @@ the three ever showed up in a green run before this plan.
   cell's text: `| [[ b ]] |` renders a **one**-column label. This is a **deliberate behaviour
   change, not a restoration** — the old three-column form was itself the defect (an artifact
   of the carriers, not an authored intent), and the fix is that wiki labels stopped being a
-  special case. Witness: `tests/wikilink.test.ts`, "C6b: a label's boundary whitespace
+  special case. Witness: `tests/wikilink-table.test.ts`, "C6b: a label's boundary whitespace
   normalizes like every other cell text", plus "C6b: the normalization edge grid — edges,
   adjacency, internal runs, entities, embeds".
 
 The contract that makes all three possible — `{ text, spans }` carried through the cell
 pipeline so styling applies **per wrapped fragment at emission**, where a sequence cannot
 cross padding or a border, over text normalized like every other cell's — landed
-byte-identically at WP-1 with a synthetic-span battery (`tests/table.test.ts`) driving every
+byte-identically at WP-1 with a synthetic-span battery (`tests/table-normalization.test.ts`) driving every
 clipping, wrapping, padding, measurement and nesting path before any producer existed; the
 `wikilink` span producer that puts real spans into it is WP-2's (`src/table.ts`).
 
@@ -207,7 +207,7 @@ the carrier machinery — `markWikiLinks`, `markWikiLink`, `stripWikiLinkCarrier
 entirely. Rendered bytes changed **inside recorded `codeRanges`**, exactly as the grant
 authorized (C1) and not one byte further: **the task-state surface stayed untouched and
 user-withheld** — `src/render.ts:193-213` (`rewriteTaskState`) is hash-identical across the
-cutover, enforced directly by `tests/render.test.ts`'s "task-state adjacency — held
+cutover, enforced directly by `tests/render-core.test.ts`'s "task-state adjacency — held
 unmodified through the tokenizer cutover". Two of WP-1's 42 whole-document task-state pins
 could not hold unedited on their *wiki-link* half — one is C1's own granted repair, landing
 inside a recorded `codeRange`; the other gained one `ESC[90m` blockquote-gray re-open that
@@ -230,9 +230,9 @@ strip — they still have internal meaning. The invariant that survives is rephr
 retired: **the tool generates no carrier byte and no escape byte that enters the lexer** —
 asserted by comparing authored-ESC positions and counts across `preprocessBody`, now
 *absolutely* rather than merely relatively identical, plus a dedicated pass-through witness.
-Witnesses: `tests/wikilink.test.ts`, "C4 — authored code points 2 and 3 pass through, and
+Witnesses: `tests/wikilink-tokenizer.test.ts`, "C4 — authored code points 2 and 3 pass through, and
 0/1 still do not" (survives preprocessing and reaches the output; forges nothing; passes
-through inside a fence too; 0/1 still stripped); `tests/render.test.ts`, "with no policy, a
+through inside a fence too; 0/1 still stripped); `tests/render-wikilinks.test.ts`, "with no policy, a
 wiki-link emits no escape — and no tool-generated 2/3 for carrier-free input".
 
 **D4 — an unescaped `|` inside a cell's `[[…]]` splits the cell, and that is GFM, not a
@@ -241,7 +241,7 @@ is built, so the authored-correct spelling in a cell is the escaped `[[s\|Alias]
 unescaped `[[s|Alias]]` is read as two cells by GFM's own row-splitting rule, exactly as any
 other cell content containing a bare `|` would be — the tokenizer is never handed a
 contiguous string to recognize. Recorded here **so a future "defect" report can be answered
-from the record**: author `\|`. Witness: `tests/wikilink.test.ts`, "D4: an escaped pipe
+from the record**: author `\|`. Witness: `tests/wikilink-table.test.ts`, "D4: an escaped pipe
 keeps the alias in one cell; an unescaped one splits it, per GFM".
 
 #### Witness ownership — which tests fence what
@@ -251,15 +251,15 @@ containment and the fixture trap.
 
 | Surface | Lives in | Fenced by |
 |---|---|---|
-| The extension itself (shape, `start`, the two regexes, D5's lexing) | `src/wikilink.ts` | `tests/wikilink.test.ts`, "the tokenizer extension — shape, registration, and the token it produces"; "the two regexes — the provenance record and the lexer form" |
+| The extension itself (shape, `start`, the two regexes, D5's lexing) | `src/wikilink.ts` | `tests/wikilink-tokenizer.test.ts`, "the tokenizer extension — shape, registration, and the token it produces"; "the two regexes — the provenance record and the lexer form" |
 | The walker's `wikilink` dispatch, the override contract, the block-walk throw | `src/walk.ts` | `tests/walk.test.ts`, "TokenWalker — the wikilink case and the parseInline override contract" (7 tests) |
-| Verbatim-context protection (C1) | `src/wikilink.ts`'s tokenizer, by construction | `tests/render.test.ts`, "renderDocument — verbatim contexts keep their authored brackets (wiki-link-tokenizer WP-2, C1)" |
-| The precedence matrix — fixes and losses (C3), the D1 scope note, the ownership-class sweep | `src/wikilink.ts` + `src/walk.ts`'s dispatch | `tests/wikilink.test.ts`, "the precedence matrix — the candidate's bytes for every changing row (WP-2, C3)"; "the ownership-class probe sweep — every built-in inline shape, the candidate's bytes" |
-| C4 (authored 2/3 pass through), the lexer-input witness | `src/render.ts`'s `preprocessBody` (no wiki-link strip left in it) | `tests/wikilink.test.ts`, "C4 — authored code points 2 and 3 pass through, and 0/1 still do not"; "the lexer-input witness: preprocessing introduces no NEW ESC byte and no carrier" |
-| C5 (OSC-8 repair) | `styleWikiLabel` → `renderLink` (`src/wikilink.ts`, `src/inline.ts`) | `tests/wikilink.test.ts`, "C5 — a URL-shaped label emits a well-formed OSC-8 (WP-2, repaired)" |
-| C2 (wrapped prose labels carry one pair, not one per line) | `styleWikiLabel`/`applyStyleChain` (`src/wikilink.ts`, `src/style.ts`) | `tests/wikilink.test.ts`, "C2 — a wrapped prose label carries one pair, not one per line (WP-2, repaired)" |
-| C6a/C6b (cells), D3 (no OSC-8/nested SGR in cells), D4 (the GFM pipe) | the `wikilink` span producer (`src/table.ts`) | `tests/wikilink.test.ts`, "C6 — table cells: fragment-scoped styling and ordinary normalization (WP-2, repaired)"; `tests/table.test.ts`'s production span-producer block |
-| Task-state adjacency, held unmodified (C1's own limit) | `src/render.ts`'s `rewriteTaskState` (untouched, hash-identical) | `tests/render.test.ts`, "task-state adjacency — held unmodified through the tokenizer cutover"; "every task-state glyph and its column are exactly WP-1's, in both tiers" |
+| Verbatim-context protection (C1) | `src/wikilink.ts`'s tokenizer, by construction | `tests/render-wikilinks.test.ts`, "renderDocument — verbatim contexts keep their authored brackets (wiki-link-tokenizer WP-2, C1)" |
+| The precedence matrix — fixes and losses (C3), the D1 scope note, the ownership-class sweep | `src/wikilink.ts` + `src/walk.ts`'s dispatch | `tests/wikilink-emission.test.ts`, "the precedence matrix — the candidate's bytes for every changing row (WP-2, C3)"; "the ownership-class probe sweep — every built-in inline shape, the candidate's bytes" |
+| C4 (authored 2/3 pass through), the lexer-input witness | `src/render.ts`'s `preprocessBody` (no wiki-link strip left in it) | `tests/wikilink-tokenizer.test.ts`, "C4 — authored code points 2 and 3 pass through, and 0/1 still do not"; "the lexer-input witness: preprocessing introduces no NEW ESC byte and no carrier" |
+| C5 (OSC-8 repair) | `styleWikiLabel` → `renderLink` (`src/wikilink.ts`, `src/inline.ts`) | `tests/wikilink-emission.test.ts`, "C5 — a URL-shaped label emits a well-formed OSC-8 (WP-2, repaired)" |
+| C2 (wrapped prose labels carry one pair, not one per line) | `styleWikiLabel`/`applyStyleChain` (`src/wikilink.ts`, `src/style.ts`) | `tests/wikilink-emission.test.ts`, "C2 — a wrapped prose label carries one pair, not one per line (WP-2, repaired)" |
+| C6a/C6b (cells), D3 (no OSC-8/nested SGR in cells), D4 (the GFM pipe) | the `wikilink` span producer (`src/table.ts`) | `tests/wikilink-table.test.ts`, "C6 — table cells: fragment-scoped styling and ordinary normalization (WP-2, repaired)"; `tests/table-normalization.test.ts`'s production span-producer block |
+| Task-state adjacency, held unmodified (C1's own limit) | `src/render.ts`'s `rewriteTaskState` (untouched, hash-identical) | `tests/render-core.test.ts`, "task-state adjacency — held unmodified through the tokenizer cutover"; "every task-state glyph and its column are exactly WP-1's, in both tiers" |
 | The applicator lift (`applyStyleChain`: one definition, two call sites) | `src/style.ts` | `tests/style.test.ts`, the carrier-absence assertion rephrased per C4 |
 
 #### The same closure told from the dependency-ownership rule — merged from the root `AGENTS.md`

@@ -11,9 +11,10 @@ import { NARROW_MEASURE } from "../src/width";
 // directly: the state is **per render**, exactly as it was when `inlineDepth` and
 // `quoteColumns` were `let` bindings inside the render function.
 //
-// The rendered bytes themselves are graded where they always were —
-// `tests/render-lists.test.ts`, `tests/render.test.ts`, `tests/witnesses.test.ts` and the
-// differential harness — because the work package's whole gate is that they did not move.
+// The rendered bytes themselves are graded where they always were — the render-lists-*
+// and render-* split files (since split; see tests/AGENTS.md's WP-R3 record),
+// `tests/witnesses.test.ts` and the differential harness — because the work package's
+// whole gate is that they did not move.
 
 const context = (): ReturnType<typeof createLayoutContext> =>
   createLayoutContext({

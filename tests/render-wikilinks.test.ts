@@ -37,13 +37,13 @@ describe("renderDocument — wiki-links", () => {
   // put a cyan/underline SGR pair into the markdown *source*, before the lexer, at every
   // colour level, so the default `renderDocument` call they make carried colour into a pipe
   // with none requested. The mechanism and the gate are both pinned here; recognition itself
-  // is `tests/wikilink.test.ts`'s.
+  // is `tests/wikilink-tokenizer.test.ts`'s.
   //
   // **Rephrased, not retired, at WP-2 of `plans/wiki-link-tokenizer.md`** (grant C4). Code
   // points 2 and 3 were the carrier pair that marked a label through the lexer, and this
   // asserted they never reached a terminal. The tokenizer needs no carriers, so those bytes
   // now mean nothing to this renderer and an *authored* one passes through as content — see
-  // `tests/wikilink.test.ts`'s C4 pass-through witness. What survives here is the half that
+  // `tests/wikilink-tokenizer.test.ts`'s C4 pass-through witness. What survives here is the half that
   // is still an invariant and is the one that mattered: **this tool generates no carrier
   // byte**, so a source containing none produces none.
   test("with no policy, a wiki-link emits no escape — and no tool-generated 2/3 for carrier-free input", () => {

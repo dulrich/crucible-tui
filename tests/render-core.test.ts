@@ -13,8 +13,8 @@ import { renderDocument, renderDocumentDetailed } from "../src/render";
  *
  * Two obligations that only a whole-document render can witness, plus the framing Decision 8
  * governs. Everything else about the mode is pinned at its own producer with exact-pair
- * assertions (`tests/inline.test.ts`, `tests/table.test.ts`, `tests/frontmatter.test.ts`,
- * `tests/wikilink.test.ts`, `tests/blocks.test.ts`), deliberately: cycle-3 f6 established
+ * assertions (`tests/inline.test.ts`, `tests/table-emission.test.ts`, `tests/frontmatter.test.ts`,
+ * `tests/wikilink-emission.test.ts`, `tests/blocks.test.ts`), deliberately: cycle-3 f6 established
  * that a document-level probe is masked by the paragraph `reset` and cannot fail when the
  * hue filter is dead.
  *

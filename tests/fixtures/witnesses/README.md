@@ -52,7 +52,8 @@ just test data, it is evidence, and the reason it exists has to survive next to 
 ## The tests do not all live in one file
 
 WP-10's witnesses are asserted in `tests/witnesses.test.ts`; WP-14's is asserted in
-`tests/render.test.ts`, because `plans/representative-corpus.md` assigns that WP that file.
+`tests/render-list-layout.test.ts` (since split; `plans/representative-corpus.md`
+originally assigned that WP `tests/render.test.ts`).
 Each record's `test_file` and `describe` fields are authoritative — read those rather than
 assuming a single test file.
 
@@ -82,7 +83,7 @@ itself must never become a manifest entry** — `tests/gate-corpus.test.ts`'s el
 assertion rejects any entry ending `README.md`, independent of the exact-set pin.
 
 These fixtures are still read directly by their own tests first and foremost — the
-manifest entry does not replace `tests/witnesses.test.ts`/`tests/render.test.ts`'s
+manifest entry does not replace `tests/witnesses.test.ts`/`tests/render-list-layout.test.ts`'s
 assertions, it only adds the four clean ones to the gate corpus every sweep runs over.
 All six are, and always were, scanned by the containment guard
 (`tests/containment.test.ts`'s containment describe, which walks the whole tree outside

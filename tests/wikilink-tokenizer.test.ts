@@ -27,7 +27,7 @@ import {
  *    excluded (locked D2) and applied by the lexer rather than to raw lines. Every case
  *    below is pinned as an expected output rather than discovered.
  * 2. **The verbatim contexts and the precedence surface are repaired**, row by row, against
- *    WP-1's today-pins. The four verbatim-context witnesses live in `tests/render.test.ts`;
+ *    WP-1's today-pins. The four verbatim-context witnesses live in `tests/render-wikilinks.test.ts`;
  *    the non-verbatim precedence matrix and the ownership-class sweep are here.
  * 3. **The three measured defects are fixed**: the malformed OSC-8 a URL-shaped label
  *    produced (C5), the wrapped-label encasing (C2), and the two table-cell defects — the

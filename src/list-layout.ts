@@ -790,7 +790,7 @@ export function createListTextLayout(layout: LayoutContext, sentinel: string): L
       // progressively narrower until no line starts marker-shaped was tried here and
       // rejected — it did not close the detector regression it was aimed at (see this
       // package's report), it costs an extra full paragraph render per attempt, and it
-      // defeats `tests/render-lists.test.ts`'s own guard fixture by avoiding the
+      // defeats `tests/render-lists-guards.test.ts`'s own guard fixture by avoiding the
       // situation the fixture exists to reproduce.
       return renderBlockParagraph(layout, token, parseInline, Math.max(1, budget - 1))
         .split("\n")

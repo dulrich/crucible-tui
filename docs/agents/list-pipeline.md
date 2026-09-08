@@ -128,7 +128,7 @@ paragraph. At column 0 the renumbering half of the hazard genuinely does not app
 legibility half does, and the cost is one paragraph re-wrapped a column narrower.
 
 **No width gate can see the defect this closes**: an orphaned line is *under* the target
-width. It is covered by the orphan metric in `tests/render.test.ts` against
+width. It is covered by the orphan metric in `tests/render-lists-wrapping.test.ts` against
 `tests/fixtures/loose-list.md`, by the detector ratchet in the parity harness, and by
 nothing else.
 
@@ -286,7 +286,7 @@ happens *after* the guard: `undoColon` shrinks the 9-byte sentinel back to one `
 the one guard space in front of it is untouched by that shrink, so the rendered line
 is one column wider than an unguarded continuation of the same item — the exact
 punctuation-leading artifact the older plan recorded. Witnessed at
-`tests/fixtures/coalesced-colon-guard-continuation.md` (`tests/render-lists.test.ts`,
+`tests/fixtures/coalesced-colon-guard-continuation.md` (`tests/render-lists-guards.test.ts`,
 "the coalesced colon-guard continuation drift"), reproducing at widths 50, 60, 90 and
 101 in both glyph tiers, from repo-local content — no private corpus needed, unlike the
 evidence the older plan pointed a future package at and that turned out to live in an

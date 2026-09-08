@@ -43,7 +43,7 @@ import { WIKI_LINK_STYLES, type WikiLinkToken } from "./wikilink";
  *
  * Critically, a *cell* width INCLUDES its padding while an allocated *content* width
  * does not; treating one as the other is the +2-per-column overshoot that the
- * prototype of this allocator shipped, and `tests/table.test.ts` still asserts
+ * prototype of this allocator shipped, and `tests/table-emission.test.ts` still asserts
  * `maxWidth(output) !== target + 2` because of it. `cellWidth()` is the only place
  * that conversion happens.
  */
@@ -660,7 +660,7 @@ interface BorderChars {
  * `GlyphSet.tableChars` is `undefined` for that tier — it used to mean "let the library
  * keep its default" and now means "use this", so the constant has to reproduce the
  * library's defaults byte-for-byte or the Unicode tier's output would change. It does;
- * `tests/table.test.ts`'s `RULES` set is the standing check that these are the glyphs
+ * `tests/table-allocation.test.ts`'s `RULES` set is the standing check that these are the glyphs
  * being emitted.
  */
 const UNICODE_BORDER: BorderChars = {
@@ -735,7 +735,7 @@ function resolveBorderChars(chars: Readonly<Record<string, string>> | undefined)
  * producer where the split is most visible**: `gray` is hue-class and `bold` is
  * format-class, so under `formats` a table keeps its **bold heads** and loses its **grey
  * borders** — the glyphs are unchanged and unstyled, the geometry is untouched (styling
- * never moves a column here), and `tests/table.test.ts` pins the exact pairs in all three
+ * never moves a column here), and `tests/table-emission.test.ts` pins the exact pairs in all three
  * modes. This module applies no filter of its own; it hands the mode to `applyStyle`,
  * which owns the classification.
  */
@@ -921,7 +921,7 @@ function composeTable(
  *
  * **One pass, no repair.** Every cell is wrapped to its allocated content width and
  * padded back out to it with the same `Measure`, so the rendered geometry *is* the
- * allocated geometry — `tests/table.test.ts` asserts `maxWidth(output) ===
+ * allocated geometry — `tests/table-emission.test.ts` asserts `maxWidth(output) ===
  * allocation.totalWidth` directly. That equality is what makes a corrective render
  * pass unnecessary rather than merely absent.
  *
@@ -930,7 +930,7 @@ function composeTable(
  * and direct test call wants, and the one a forgotten argument should produce.
  * `src/render.ts` passes `ctx.sgr`. Styling never changes the geometry — head and border
  * styles wrap already measured strings — so the equality above holds at every mode, and
- * `tests/table.test.ts` asserts it at all three.
+ * `tests/table-emission.test.ts` asserts it at all three.
  */
 export function renderTable(
   token: Tokens.Table,
@@ -947,7 +947,7 @@ export function renderTable(
  *
  * Split out so the span pipeline has a seam a caller can hand spans to. Nothing in `src/`
  * produces a non-empty `CellSpan` yet — the producer is WP-2's — and a contract whose only
- * exercise is its own future producer is a contract nobody has run: `tests/table.test.ts`'s
+ * exercise is its own future producer is a contract nobody has run: `tests/table-normalization.test.ts`'s
  * synthetic-span battery drives every clipping, wrapping, padding and nesting path through
  * here with hand-built spans, **before** any production span exists. With `spans` empty
  * this is byte-for-byte the function `renderTable` always was.

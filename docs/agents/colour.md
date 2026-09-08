@@ -227,6 +227,7 @@ anywhere is a defect. The wiki-link verbatim defect ("The wiki-link carrier defe
 `docs/agents/wiki-link-record.md`)
 was still recorded-not-fixed at the time this package landed — its pinned witnesses in
 `tests/render.test.ts` and `tests/wikilink.test.ts` had only their policy literals migrated
+(since split; now `tests/render-wikilinks.test.ts` and `tests/wikilink-tokenizer.test.ts`)
 here (`color: true` → `sgr: "full"`, `color: false` → `sgr: "none"`) with **not one expected
 byte moved**, because they were the instrument a future fix would have to trip, and a
 migration that also tidied an expectation would have destroyed it. **It has since been

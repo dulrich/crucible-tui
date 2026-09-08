@@ -62,8 +62,9 @@ describe("renderDocument — list reflow (WP-4a)", () => {
 // `tests/fixtures/witnesses/witness-index.json` (id `wp14-list-item-inline-markup`)
 // carry the evidence, and this describe block is the test half. It lives here rather
 // than in `tests/witnesses.test.ts` because the plan assigns WP-14
-// `tests/render.test.ts`, and the index's `test_file` field points at this file
-// accordingly.
+// `tests/render.test.ts` (since split; this describe block landed in this file,
+// `tests/render-list-layout.test.ts`), and the index's `test_file` field points at
+// this file accordingly.
 //
 // What it witnesses: before the fix, `marked-terminal`'s `Renderer.prototype.text`
 // (`index.js:84-89`) returned a list item's raw markdown source, so `**bold**`,

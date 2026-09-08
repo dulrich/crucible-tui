@@ -115,8 +115,9 @@ src/text.ts         grapheme splitting + display-width padding, shared by table.
                     and wrap.ts (which used to reach into table.ts for them)
 src/wrap.ts         ANSI-safe prose wrapping — the renderer's reflow engine; span-native
                     at both split paths, so no sequence is ever cut
-src/glyphs.ts       Unicode/ASCII capability tier — the only module that reads env
-                    (src/colour.ts is handed one instead of reading it)
+src/glyphs.ts       Unicode/ASCII capability tier — handed an env object by cli.ts, like
+                    colour.ts; process.env itself is read only in cli.ts, config.ts,
+                    width.ts and render.ts
 src/width.ts        display-width measurement + the East Asian Ambiguous probe; the only
                     module that imports string-width
 src/lang.ts         fence-language alias map + the supportsLanguage() fallback,
@@ -134,6 +135,9 @@ src/overflow.ts     the width gate and the code-range exemption predicate — on
 corpus/             the bundled public-safe default manifest
 scripts/corpus.ts   corpus discovery + evaluation — the sweep's library half
 scripts/sweep.ts    the sweep CLI: flags, summary, exit code (see scripts/AGENTS.md)
+scripts/emoji-audit.ts  the emoji shortcode behavioural audit — renders every :shortcode:
+                    in the corpus twice, substitution forced on then off, and keeps only
+                    tokens whose bytes differ; a second consumer of corpus.ts and sweep.ts
 scripts/colour-axis.ts  the colour axis — the four children, the v2 wire record, G1/G2/G3
                     and the join; a consumer of corpus.ts, never the reverse
 scripts/render-diff.ts  the differential CLI: flags, corpus selection, baseline I/O,
@@ -146,9 +150,25 @@ scripts/hash.ts     sha256Hex — the one digest both instruments compare agains
                     runs; a leaf, imports nothing
 scripts/sweep-options.ts  DEFAULT_WIDTHS + parseWidths — the width grammar both CLIs
                     parse; a leaf, imports nothing
+scripts/gen-licenses.ts  generates THIRD-PARTY-LICENSES.txt from the actual installed
+                    runtime dependency closure (dependencies + optionalDependencies,
+                    transitively) — never devDependencies or all of node_modules
+scripts/verify.ts   the canonical bun run verify entrypoint — every gate in fail-fast
+                    order plus the build/smoke/license-freshness gates; a leaf, imports
+                    nothing from scripts/
 tests/              unit tests + markdown fixtures
 tests/scripts-acyclic.test.ts  the gate that keeps scripts/ a DAG (see scripts/AGENTS.md)
 tests/helpers/containment.ts  the publication guard's rules (see tests/AGENTS.md)
+tests/helpers/block-parity.ts  the block-leaf parity table — code/hr/html against
+                    marked-terminal, byte for byte
+tests/helpers/block-parity-golden.ts  the frozen marked-terminal block-leaf byte
+                    table, captured before removal
+tests/helpers/color.ts  the forced-colour subprocess fixture — runs a table under
+                    FORCE_COLOR=3 for the colour-on half of a parity test
+tests/helpers/inline-parity.ts  the inline parity table — every owned inline visitor
+                    against the marked-terminal method it replaced, byte for byte
+tests/helpers/inline-parity-golden.ts  the frozen marked-terminal inline byte table,
+                    captured before removal
 dist/mdview         compiled binary (gitignored; see PATH install below)
 ```
 

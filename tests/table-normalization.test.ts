@@ -149,7 +149,7 @@ describe("cellText", () => {
  * The problem the contract solves: a wiki-link in a cell is styled today by a pass that
  * runs over the **whole finished document**, so its style crosses cell padding, border
  * glyphs and row boundaries and bleeds into the neighbouring cell (addendum P14, pinned in
- * `tests/wikilink.test.ts`). `src/table.ts` could not do better, because `flattenInline`
+ * `tests/wikilink-table.test.ts`). `src/table.ts` could not do better, because `flattenInline`
  * stringified a cell irreversibly and nothing downstream knew which characters had been a
  * label.
  *
@@ -230,7 +230,7 @@ describe("the span-cell contract — text and offsets", () => {
  *
  * Offsets are recorded in *raw* walk coordinates and carried through `normalizeCell`, so a
  * label normalizes like every other cell text (grant C6b). Rendered bytes for all of this are
- * in `tests/wikilink.test.ts`; what is asserted here is the `{text, spans}` value itself,
+ * in `tests/wikilink-table.test.ts`; what is asserted here is the `{text, spans}` value itself,
  * because an offset that is right by accident in one table is a defect waiting for another.
  */
 describe("the span-cell contract — the wiki-link producer (WP-2)", () => {
@@ -400,7 +400,7 @@ describe("the span-cell contract — the synthetic-span battery (WP-1 proof, bef
     // Stated as the invariant as well as the bytes, which is what generalizes past this
     // one fixture: **every rendered line closes every pair it opens**. That is precisely
     // what today's document-pass styling does not do, and it is why the neighbouring cell
-    // could render inside the label's cyan — see `tests/wikilink.test.ts`, C6a.
+    // could render inside the label's cyan — see `tests/wikilink-table.test.ts`, C6a.
     // Counted on the wiki chain's own pair rather than on `39m`, which grey also closes
     // with — the point is that *this* chain is balanced per line, not that no `39m` exists.
     for (const line of output.split("\n").filter((candidate) => candidate !== "")) {

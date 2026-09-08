@@ -64,6 +64,8 @@ Who imports whom now, top to bottom — every edge points down this list, and no
 | `scripts/sweep.ts` | sweep CLI: flags, `printResult`, `printColourAxis`, the re-exec, the exit code | `corpus`, `colour-axis`, `sweep-options` |
 | `scripts/render-diff.ts` | differential CLI: flags, corpus selection, baseline I/O, `pairRecords`, printing, exit code | `corpus`, `revision`, `diff-classify`, `sweep-options` |
 | `scripts/emoji-audit.ts` | the emoji census | `corpus`, `sweep` |
+| `scripts/gen-licenses.ts` | generates `THIRD-PARTY-LICENSES.txt` from the actual installed runtime dependency closure (`dependencies` + `optionalDependencies`, transitively) | *nothing* |
+| `scripts/verify.ts` | the canonical `bun run verify` entrypoint — every gate in fail-fast order; runs `package.json` scripts as subprocesses | *nothing* |
 
 **`DEFAULT_WIDTHS` was declared twice, verbatim**, in `scripts/sweep.ts` and
 `scripts/render-diff.ts`, and the second copy carried a comment defending the duplication
@@ -82,7 +84,7 @@ build synthetic cyclic modules in a temporary directory and require the same ana
 report them. Run against the pre-WP-R1 tree it fails with exactly the component above.
 
 **Anything in the library that looks like a defect is a recorded measurement, not an
-oversight**, and `tests/sweep.test.ts` pins each one: `--limit` does nothing on a corpus
+oversight**, and `tests/sweep-manifest.test.ts`/`tests/sweep-cli.test.ts` pin each one (since split): `--limit` does nothing on a corpus
 that declares no `sample`; the missing-root result reports a hardcoded `elapsedSeconds:
 0` where every other path measures wall time; `shearsUnmapped` accumulates the **orphan**
 count; a file-read error is unprefixed while a render error carries `width N: `; widths
@@ -346,7 +348,7 @@ measurement, and the instrument silently changed what it was reading. **Neither 
 installed now and the spelling still stands**: `mdview`'s own `--color` flag is a real
 directive (`src/cli.ts`, the top slot of the ratified precedence matrix), so a harness flag
 by that name would now be read by the *renderer* rather than by a library — the same failure
-with a different owner. The spelling is a contract, pinned in `tests/sweep.test.ts`; do not
+with a different owner. The spelling is a contract, pinned in `tests/sweep-colour-axis.test.ts`; do not
 "correct" it to the American spelling or to the conventional flag name.
 
 **Each colour-axis child is a whole fresh process, and the reason it *had* to be is gone —
@@ -437,7 +439,7 @@ it reads finished text; that is why a G1 failure record carries the sequence's r
 rather than only a count, and why `tests/colour-axis.test.ts`'s `authored.md` fixture pins
 this deliberately (`g1Failures` names it at every width) rather than expecting the gate
 corpus's own zero to generalise to every possible document. **The fixed gate corpus itself
-is asserted ESC-free** (`tests/wikilink.test.ts`), which is the fact that makes today's
+is asserted ESC-free** (`tests/wikilink-tokenizer.test.ts`), which is the fact that makes today's
 `g1=0` mean "no leak", not merely "no authored escape happened to be in the sample".
 
 **The seed history below is kept for provenance — the ratchets it describes are gone.**
@@ -491,7 +493,7 @@ uncommitted byte pair, its OSC-8 arm against a real (non-tmux) hyperlink from
 hyperlink from the same function (the injected-tmux non-vacuity case cycle-3 f7 asks for)
 and a hostile DCS frame whose payload is not a valid OSC-8 sequence. The gate corpus
 deliberately contains no authored-escape file, which is asserted directly in
-`tests/wikilink.test.ts` rather than assumed, since a `g1=0` reading over that corpus
+`tests/wikilink-tokenizer.test.ts` rather than assumed, since a `g1=0` reading over that corpus
 depends on it.
 
 **The `formats` child's two arms have their own non-vacuity seeds (WP-4,
@@ -752,12 +754,13 @@ Seven things about this module are load-bearing:
   `--check` and both sweeps were blind by construction. **Do not read a guard-shaped line as
   verified by this detector.** The only instrument that catches this class is a committed
   witness asserted per width — `tests/fixtures/coalesced-guard-collision.md` and the WP-1
-  group in `tests/render-lists.test.ts` — and any future change to either wrapping seam's
+  group in `tests/render-lists-guards.test.ts` — and any future change to either wrapping seam's
   guard owes one. **Do not "fix" the detector to cover it**: its counts are historical, every
   dated figure in the private archive's `measurements/` was taken with this body, and a
   drift there looks exactly like a fix.
 - **`findListOrphans` is history.** It is the metric every number WP-2, WP-2b and WP-2c
-  recorded was measured with, moved here from `tests/render.test.ts` unchanged. Editing
+  recorded was measured with, moved here from `tests/render.test.ts` unchanged (since
+  split; its own unit tests are now `tests/detectors.test.ts`). Editing
   its body silently invalidates every dated figure in the private archive's
   `measurements/`, and since the numbers only go down, a drift **looks exactly like a
   fix**. Add a detector; do not loosen this one. The move was verified against 58

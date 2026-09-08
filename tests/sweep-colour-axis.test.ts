@@ -17,7 +17,7 @@ describe("renderWithForcedColor", () => {
   // would now fail forever by design, not by defect. A positive control proving the
   // console.error capture mechanism itself still works when a message *is* genuinely
   // emitted (calling the owned colorizer directly, bypassing the now-total normalization)
-  // lives in `tests/render.test.ts`, so this flip cannot pass vacuously.
+  // lives in `tests/render-core.test.ts`, so this flip cannot pass vacuously.
   test("a fence language that used to leak a highlight.js diagnostic under forced color now captures nothing (WP-3)", async () => {
     const { messages } = await renderWithForcedColor(unsupportedLangFence, 80);
     expect(messages).toEqual([]);

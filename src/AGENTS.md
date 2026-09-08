@@ -526,7 +526,7 @@ Across **35,614 files** there is **no blockquoted task item of any kind**, GFM o
 custom, and **no non-GFM state in an ordered list**: **0 hits in 0 files**, by three independent
 measurements — a token walk over every list item at every nesting depth, a fence-gated source
 scan, and a deliberately conservative fence-*un*gated upper bound that counts matches even inside
-code. `tests/render-lists.test.ts`'s *"an Obsidian custom state inside a blockquote is still
+code. `tests/lists.test.ts`'s *"an Obsidian custom state inside a blockquote is still
 literal — the deferred residue"* stays exactly as it is, and now carries the extra fact that the
 residue it grades is a population **the corpus does not contain**. The gap is real; the win from
 closing it is not measurable on this data.
@@ -573,7 +573,7 @@ disposition:
   tiers**, all tight, none carrying an indented continuation. `overflow` and all three detector
   counts stay 0, so **no gate sees this either.**
 
-`tests/fixtures/task-ordered-text.md` and its test in `tests/render-lists.test.ts` pin today's
+`tests/fixtures/task-ordered-text.md` and its test in `tests/lists.test.ts` pin today's
 correct output. **A package that deletes the pre-pass owns that test**, and owes a repair for the
 nested lex — suppressing it for task items is real design work, not a side effect.
 
@@ -600,7 +600,7 @@ in it.** Every gate `bun run verify` runs is colourless, so none of them can fai
 |---|---|
 | `extractCodeRanges`' proposed narrowing (WP-2, above) | the predicate counts a code block's own SGR brackets as the "non-whitespace" that triggers narrowing, tripling the affected population and dropping genuine ranges |
 | `TASK_STATE_SENTINEL` (WP-4) | the sentinel reaches the syntax highlighter *inside* a code block; the highlighter wraps it in an SGR pair; the strip removes the character and leaves the pair |
-| the ASCII tier's "byte-identical round-trip" | asserted here, pinned by `tests/glyphs.test.ts` and `tests/render-lists.test.ts` — **true colourless, false under colour** |
+| the ASCII tier's "byte-identical round-trip" | asserted here, pinned by `tests/glyphs.test.ts` and `tests/render-lists-guards.test.ts` — **true colourless, false under colour** |
 
 The task-state case, measured: the same axis set gives `classC=2` colourless and `classC=3` under
 `FORCE_COLOR=3`, the extra combo being the **ASCII** tier of a file whose unicode tier already
@@ -924,10 +924,9 @@ verify". **The glyph tier itself stays above** — its precedence rule's top slo
   | Columns | Target | Rendered | Arithmetic |
   |---|---|---|---|
   | 9 | 80 | 82 | 9 × (6 + 2 padding) + 10 borders |
-  | 19 | 100 | 153 | 19 × (6 + 2 padding) + 20 borders |
+  | 19 | 100 | 172 | 19 × (6 + 2 padding) + 20 borders |
 
-  **This is arithmetic, not a bug to be fixed in the allocator** — a 19-column table cannot be
-  rendered in 100 columns. Any "fix" is a choice of *degradation* (drop cell padding, transpose
+  **This is arithmetic, not a bug to be fixed in the allocator** — a 19-column table cannot be rendered in 100 columns, **provided every column is naturally at least `MIN_COLUMN_WIDTH` (6) columns wide**: `floorWidths` (`src/table.ts:379-383`) floors each column at `min(natural, 6)`, so a naturally narrower column stays narrower rather than being padded up to the floor, and the same 19 columns with one-character headers render at 106, not 172. Any "fix" is a choice of *degradation* (drop cell padding, transpose
   to a record-per-row layout, or overflow deliberately), and each trades away something the tool
   currently guarantees. Incidence is a few thousandths of a percent of full-corpus combos — the
   dated counts live in the private archive's `measurements/`, not here — so the choice has been
@@ -1019,7 +1018,7 @@ cache would have made substitution depend on whether a paragraph happened to sit
 item. WP-3 deleted both caches and WP-6 deleted the last construction, so the value is computed
 **once** and has exactly one consumer: the `LayoutContext`. **There are zero constructions now**;
 the invariant is held by construction rather than by remembering to pass an option three times.
-Pinned in `tests/render.test.ts`'s emoji-tier describe block.
+Pinned in `tests/render-emoji.test.ts`'s emoji-tier describe block.
 
 The measured defect went with it: the stray space the substitution appends (`emojiSign + ' '`,
 never in the source, surviving as trailing whitespace at end of paragraph, heading or list item
@@ -1049,6 +1048,6 @@ properly, as the two explicit roots this section now measures against. Any "veri
 whole corpus" claim made before 2026-07-29 still carries the hole that the swept corpus was
 missing those two roots; it does not carry a hole shaped like "12,363 files of real markdown no
 gate has ever rendered," because most of that set was never real markdown in the first place.
-The glyph-tier work above has since superseded the old pins: see `tests/render.test.ts`'s
+The glyph-tier work above has since superseded the old pins: see `tests/render-emoji.test.ts`'s
 emoji-tier describe block for the behaviour now asserted per tier, including the trailing-space
 defect those pins had only recorded.

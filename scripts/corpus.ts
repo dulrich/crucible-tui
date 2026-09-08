@@ -30,7 +30,8 @@
  * invalidating every archived comparison. Anything here that looks like a defect —
  * `--limit` doing nothing without `sample`, the hardcoded `elapsedSeconds: 0` on the
  * missing-root state, `shearsUnmapped` accumulating the orphan count, the two different
- * error-string shapes — is recorded behaviour, pinned in `tests/sweep.test.ts`, and is
+ * error-string shapes — is recorded behaviour, pinned in `tests/sweep-manifest.test.ts`/
+ * `tests/sweep-cli.test.ts` (since split), and is
  * changed only as a deliberate decision that re-baselines the archive.
  *
  * Corpus roots are never hardcoded: they load from a versioned JSON manifest, resolved
@@ -609,7 +610,7 @@ function corpusResult(
  * Render one corpus at every requested width and report what it found.
  *
  * Two things about the shape of this loop are load-bearing and are pinned in
- * `tests/sweep.test.ts`: the widths are iterated **in the order given** (which fixes
+ * `tests/sweep-cli.test.ts`: the widths are iterated **in the order given** (which fixes
  * which file-width lands in `overflow[0]` and the `line` recorded on each `DetectEntry`),
  * and the two error channels keep different shapes — a file that could not be read failed
  * once for the whole file and carries no width, a render that threw failed at one width
@@ -712,7 +713,7 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
             const foundShears = findShearOrphans(text, width, blockEnds, { codeRanges, measure });
             // Adds the **orphan** count, not a shear count. It reads like a bug and is the
             // recorded metric: an unmapped document's hits are the ones the classifier
-            // could not label, and that is a count of orphans. Pinned in tests/sweep.test.ts.
+            // could not label, and that is a count of orphans. Pinned in tests/sweep-cli.test.ts.
             if (!blockEnds.mapped) shearsUnmapped += foundOrphans.length;
             if (foundShears.length > 0) {
               shears.push({
