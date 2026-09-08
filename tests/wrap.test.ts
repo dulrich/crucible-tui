@@ -6,7 +6,8 @@ import { stripAnsi } from "../src/list-lines";
 import { graphemes, wrapAnsi } from "../src/wrap";
 
 // Built via `String.fromCharCode`, not a literal control byte or a `\x1b` source
-// escape, matching the convention already used in `tests/table.test.ts`.
+// escape, matching the convention already used in `tests/table-normalization.test.ts`
+// and `tests/table-emission.test.ts` (since split).
 const ESC = String.fromCharCode(27);
 
 function styled(label: string): string {

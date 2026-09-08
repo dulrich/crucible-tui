@@ -37,8 +37,8 @@
  *
  * Committing them is what lets both packages leave the runtime closure without the
  * forced-colour render moving a byte; the per-producer byte comparisons in
- * `tests/style.test.ts`, `tests/highlight.test.ts` and `tests/table.test.ts` are what
- * proves it did not.
+ * `tests/style.test.ts`, `tests/highlight.test.ts` and `tests/table-emission.test.ts` are
+ * what proves it did not.
  *
  * ## Two application modes, because the producers really do differ
  *

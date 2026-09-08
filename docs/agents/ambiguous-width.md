@@ -240,7 +240,7 @@ green width gate was never evidence about this.
 allocation used and the same one `--check` grades the result with. The disagreement is not
 repaired, it is **impossible by construction**; the retry loop, `MAX_FIT_PASSES` and
 `maxRenderedWidth` are gone with it, and the rendered geometry now *equals* the allocated
-geometry (`tests/table.test.ts` asserts that equality directly).
+geometry (`tests/table-emission.test.ts` asserts that equality directly).
 
 Measured over this repo's own 41 markdown files at six widths, both tiers, both ambiguous modes
 — 984 renders:

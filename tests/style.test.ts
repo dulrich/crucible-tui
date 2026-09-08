@@ -430,7 +430,7 @@ describe("the styling inventory — every producer emits, under an injected TTY 
   // were the carrier pair, and this asserted the pass stripped them unconditionally. There is
   // no pass and no carrier now, so the claim is the one that survives the mechanism: **the
   // tool generates none**, therefore a source containing none produces none. An *authored*
-  // 2 or 3 passes through as content — pinned in `tests/wikilink.test.ts`.
+  // 2 or 3 passes through as content — pinned in `tests/wikilink-tokenizer.test.ts`.
   test("with the policy off, no producer emits an escape at all", () => {
     const escapes = [...plain.matchAll(ANSI)].map((match) => match[0]);
     expect(escapes).toEqual([]);

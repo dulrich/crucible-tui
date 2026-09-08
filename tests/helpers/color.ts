@@ -49,11 +49,12 @@ import { resolve } from "node:path";
  * import — regardless of which file or whether it is static or dynamic —
  * resolves chalk's level once for the whole process, and every later dynamic
  * import of the same specifier (even with a cache-busting query string, which I
- * also tried) returns the already-cached module. `tests/render.test.ts` and
- * `tests/cli.test.ts` both import `src/render.ts` (the former via a top-level
- * `await import`), and both sort alphabetically before `tests/sweep.test.ts`, so
- * this is not a hypothetical — it reproduces on every `bun test tests` run, not
- * just in isolation.
+ * also tried) returns the already-cached module. The render-*.test.ts files (since
+ * split; `tests/render.test.ts` no longer exists as one file) and `tests/cli.test.ts`
+ * both import `src/render.ts`, and both sort alphabetically before the sweep-*.test.ts
+ * files (since split; `tests/sweep.test.ts` no longer exists as one file), so this is
+ * not a hypothetical — it reproduces on every `bun test tests` run, not just in
+ * isolation.
  *
  * The fix: run the render in a genuinely fresh `bun` **subprocess**, with
  * `FORCE_COLOR=3` set in that subprocess's environment before its own module

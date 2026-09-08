@@ -26,7 +26,8 @@
  * ## The counts here are load-bearing history
  *
  * `findListOrphans` is the metric every number WP-2, WP-2b and WP-2c recorded was
- * measured with. It was moved here from `tests/render.test.ts` **unchanged** — if
+ * measured with. It was moved here from `tests/render.test.ts` **unchanged** (since
+ * split; its own unit tests are now `tests/detectors.test.ts`) — if
  * you edit its body, every dated figure in the private archive's `measurements/`
  * silently stops being comparable, and because the numbers only ever go down, a
  * drift looks exactly like a fix. Add a new detector instead of loosening this one.
@@ -95,7 +96,7 @@ const isExempt = (lineNumber: number, codeRanges: CodeRanges | undefined): boole
 
 /**
  * Orphaned lines inside rendered list items — the WP-2/2b/2c metric, moved here
- * verbatim from `tests/render.test.ts`.
+ * verbatim from `tests/render.test.ts` (since split; see `tests/detectors.test.ts`).
  *
  * An orphan is: a line inside a rendered list item that carries <= 2 words, whose
  * preceding line is nearly full (>= width - 10), and which is *followed by more

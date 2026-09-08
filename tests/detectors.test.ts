@@ -25,8 +25,8 @@ import { parseWidths } from "../scripts/sweep-options";
 //
 // `findListOrphans` additionally carries history: it is the metric every number
 // WP-2, WP-2b and WP-2c recorded was measured with. WP-2d moved it out of
-// `tests/render.test.ts` into `src/detectors.ts` unchanged, and verified the move
-// changed no count. The cases below are the *unit* half of that guarantee — the
+// `tests/render.test.ts` (since split) into `src/detectors.ts` unchanged, and verified
+// the move changed no count. The cases below are the *unit* half of that guarantee — the
 // corpus half is the differential recorded in the WP-2d report.
 // ---------------------------------------------------------------------------
 

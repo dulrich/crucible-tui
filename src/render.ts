@@ -230,7 +230,7 @@ function stripSentinelChar(body: string): string {
  * The whole of what this tool does to a document *before* `marked`'s lexer sees it.
  *
  * **Exported for one reason, and it is a gate rather than a convenience** (WP-4 of
- * `plans/colour-policy.md`): the lexer-input witness in `tests/wikilink.test.ts` asserts
+ * `plans/colour-policy.md`): the lexer-input witness in `tests/wikilink-tokenizer.test.ts` asserts
  * that this function introduces **no new ESC byte**, by comparing the positions and counts
  * of authored ESC before and after it and by transforming ESC-free sources directly. That
  * claim is about this function's output specifically, and it is not observable from
@@ -630,7 +630,7 @@ export function renderDocumentDetailed(
   // depend on whether a paragraph happened to sit inside a list. WP-3 deleted both caches
   // (the owned block renderers take the budget as a parameter) and WP-6 deleted the last
   // construction, so this value now has exactly one consumer: the `LayoutContext` built on
-  // the next statement. Pinned in `tests/render.test.ts`'s emoji-tier describe block.
+  // the next statement. Pinned in `tests/render-emoji.test.ts`'s emoji-tier describe block.
   //
   // `insertEmojis` (`src/inline.ts`, transcribed from `marked-terminal`) appends a stray
   // space after every glyph (`emojiSign + ' '`) that was never in the source. Reflow

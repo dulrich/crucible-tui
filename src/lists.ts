@@ -74,7 +74,7 @@
  * checking: `fixNestedLists`' `POINT_REGEX` must find the literal `*` on the hybrid join
  * line (F10) to split it, so composition-time glyphs would leave every tight item's
  * nested list glued to its parent's text. Pinned by the blockquote-tier test in
- * `tests/render-lists.test.ts`.
+ * `tests/render-lists-nesting.test.ts`.
  */
 import type { Token, Tokens } from "marked";
 import { hasSequences, scan } from "./ansi";
