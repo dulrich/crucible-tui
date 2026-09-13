@@ -31,7 +31,7 @@ const scratch = async (): Promise<string> => mkdtemp(join(tmpdir(), "mdview-widt
 describe("string-width has exactly one importer", () => {
   /**
    * The property this WP is built on: the ambiguous-width setting is a per-call option
-   * in `string-width@7`, so a module that imports it directly silently opts out of
+   * in `string-width` (`@7` when written, `@8.2.2` since `plans/pictograph-width.md`), so a module that imports it directly silently opts out of
    * whatever mode was resolved. **No width gate can catch that** — a check measured
    * with the wrong ruler passes — so it is asserted structurally instead.
    */

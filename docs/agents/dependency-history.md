@@ -180,3 +180,17 @@ per-token-class byte comparison against `src/highlight.ts`'s theme (the `10.x` c
 vocabulary is what that theme is total over — `11.x` renamed several scopes), and its own
 corpus pass. Recorded here so a future pass does not "fix" the staleness by bumping a
 major version with nothing else in place.
+
+## `string-width` — the one bump, and what it cost (WP-3 of `plans/pictograph-width.md`)
+
+*The live fact is the root `AGENTS.md` Pins paragraph: `string-width@8.2.2`. This is the record of the only time a pin in this repo has moved upward, and why it needed a plan.*
+
+**The defect.** `string-width@7.2.0` tested every grapheme cluster against `emoji-regex@10.6.0`'s RGI pattern, which lists text-presentation pictographs with an *optional* VS16 — so `⚠` bare, `⚠︎` (U+FE0E, text) and `⚠️` (U+FE0F, emoji) all measured 2, while a terminal draws the first two at 1. Every RGI-listed character whose `Emoji_Presentation` is No (`⚠ ☑ ✔ ✘ ℹ ✈ ↔ ©` …) was one column wide to the terminal and two to `Measure`, and a table row ending in one was one column short at its border (user report, 2026-09-12, Ghostty in zellij). `docs/agents/ambiguous-width.md` had already recorded U+26A0 as "1 column to `@4` and 2 to `@7`"; the bug entered with the `@7` pin.
+
+**The fix at the source.** `8.2.2` replaced the `emoji-regex` test with `get-east-asian-width`'s per-code-point lookup plus its own presentation logic, and `emoji-regex` left the closure (14 → 13 packages). The user chose the upstream fix over owning a narrow correction on 7.2.0, so this repo keeps no slice of emoji data.
+
+**The cost, and the cache that paid it.** Uncached, 8.2.2 took `Measure` from 15 ms to 439 ms on a 443-line plan (4,042 calls / 68,267 chars; render 149 → 563 ms wall). A per-`Measure` grapheme-cluster cache (`src/width.ts`, WP-2 — segment once, sum, call `stringWidth` only on a miss, strip terminal sequences first with a local transcription of `ansi-regex@6.2.2`) brought it to 33.6 ms colourless / 37.2 ms under `FORCE_COLOR=3`; render wall 1.07×–1.17× of 7.2.0 on both measured files, inside the plan's ~1.5× / 3× budget. The one residual no cache removes: 8.2.2 pays a ~18 ms lazy initialisation on its first non-ASCII call, fixed per invocation and independent of document size. The ESC-bail design (skip the cache on any string carrying ESC) was measured and rejected — 90.5 ms colour-on against a 63.7 ms ceiling.
+
+**The classification rule, applied.** The 8.2.2 closure (`get-east-asian-width@1.6.0`, `strip-ansi@7.2.0`, `ansi-regex@6.2.2`) was inspected at the bump: zero `process`/TTY/env reads, zero escape emission — the only `\u001B` in any of them is inside a *matching* pattern. All three are data/algorithm packages under the rule.
+
+**Parity.** Class B by construction (a width change moves bytes, never characters). Gate corpus: 280 combos, `diffed=0`. Fleet manifest (22 repos, 723 files, width 100 / unicode / narrow): 9 class-B diffs, 0 class C, 0 overflow or detector regressions, every one attributable to `↔ ✔ ✘ © ⚠ ☑ ✈ ℹ`. Both diffs ran against a directory revision with its own `node_modules` — `scripts/revision.ts` symlinks the invoking checkout's `node_modules` into a git-ref revision, so a git-ref comparison across a dependency bump compares the renderer against itself and reports zero (the plan's audit caught exactly that).

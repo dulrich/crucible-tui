@@ -12,9 +12,10 @@ import stringWidth from "string-width";
  * `…` `≥` `×` `•` `○` `─` `│` — is East Asian **Ambiguous** (Unicode TR11). An
  * ambiguous character is one that a terminal renders at *either* 1 or 2 columns
  * depending on its own configuration and locale, and there is no way to know which
- * from the byte alone. `string-width@7` defaults to narrow (`ambiguousIsNarrow:
- * true`), which is also what TR11 itself recommends when the context cannot be
- * established — and until this WP that default was hardcoded at 26 call sites across
+ * from the byte alone. `string-width` defaults to narrow (`ambiguousIsNarrow:
+ * true` — in `@7`, where this was written, and still in the `@8.2.2` pinned since
+ * WP-3 of `plans/pictograph-width.md`), which is also what TR11 itself recommends when
+ * the context cannot be established — and until this WP that default was hardcoded at 26 call sites across
  * 7 modules, because `string-width` takes the setting as a **per-call option** and
  * offers no global switch.
  *
