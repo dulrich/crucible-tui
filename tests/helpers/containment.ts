@@ -500,6 +500,16 @@ export function buildContext(root: string, listed: Set<string> = new Set()): Con
 export const EXEMPT_ROOT_DIRS = new Set(["runs"]);
 
 /**
+ * Top-level *files* exempted from the scan (user decision 2026-09-12). `FEEDBACK.md` is
+ * the user's own scratchpad by fleet contract — agent-read, never agent-written, and
+ * never publication-facing — and it records defects by pasting the real command line
+ * that produced them — a shell prompt carrying an absolute home path, which is exactly
+ * the shape rule 3 flags (`4300d6e` tripped the guard on `FEEDBACK.md:27`). Root-only
+ * and by exact name, like `EXEMPT_ROOT_DIRS`: a narrow, named carve-out, not a pattern.
+ */
+export const EXEMPT_ROOT_FILES = new Set(["FEEDBACK.md"]);
+
+/**
  * Every file under `root`, skipping generated and vendored trees.
  *
  * **`SKIP_DIRS` is matched by name, before the entry's type is consulted, and that
@@ -518,6 +528,7 @@ export function collectFiles(root: string): string[] {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (SKIP_DIRS.has(entry.name)) continue;
       if (isRoot && entry.isDirectory() && EXEMPT_ROOT_DIRS.has(entry.name)) continue;
+      if (isRoot && entry.isFile() && EXEMPT_ROOT_FILES.has(entry.name)) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         recurse(full, false);

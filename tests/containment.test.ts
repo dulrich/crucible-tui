@@ -172,6 +172,22 @@ describe("the runs/ exemption is exactly that narrow (WP-12d)", () => {
     }
   });
 
+  test("collectFiles skips a top-level FEEDBACK.md and nothing else by that name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-feedback-collect-"));
+    try {
+      await mkdir(join(dir, "docs"), { recursive: true });
+      await writeFile(join(dir, "FEEDBACK.md"), "user scratchpad\n");
+      await writeFile(join(dir, "docs", "FEEDBACK.md"), "not the scratchpad\n");
+      await writeFile(join(dir, "keep.md"), "# keep\n");
+      const files = collectFiles(dir);
+      expect(files.some((f) => f.endsWith("keep.md"))).toBe(true);
+      expect(files.some((f) => f === join(dir, "FEEDBACK.md"))).toBe(false);
+      expect(files.some((f) => f === join(dir, "docs", "FEEDBACK.md"))).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a nested directory literally named runs/ (not at the repo root) is not exempt", async () => {
     // The exemption is root-relative and top-level only — `<root>/runs/**`, never a
     // directory that merely happens to be named `runs` somewhere deeper in the tree.
