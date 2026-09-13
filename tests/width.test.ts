@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import stringWidth from "string-width";
 import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,6 +78,78 @@ describe("Measure", () => {
   test("ANSI escapes stay zero-width in both modes", () => {
     expect(NARROW_MEASURE("\x1b[36mtext\x1b[39m")).toBe(4);
     expect(WIDE_MEASURE("\x1b[36mtext\x1b[39m")).toBe(4);
+  });
+});
+
+describe("the per-cluster cache", () => {
+  /**
+   * `Measure` segments and caches per grapheme cluster rather than calling `stringWidth`
+   * on the whole string, so the property that has to hold is that the sum equals what
+   * `stringWidth` would have returned — for every kind of cluster this corpus contains,
+   * and under both rulers. Raw `stringWidth` is imported *here* on purpose: the
+   * single-importer test above scans `src/` and `scripts/`, never `tests/`.
+   */
+  const FIXTURES = [
+    "",
+    "plain ascii text",
+    "—·→",
+    "日本語",
+    "⚠",
+    "⚠\uFE0E",
+    "⚠\uFE0F",
+    "↔",
+    "👨\u200D👩\u200D👧",
+    "1\uFE0F\u20E3",
+    "\x1b[36mtext\x1b[39m",
+    "\x1b]8;;https://example.com\x07label\x1b]8;;\x07",
+    "\x1b]8;;https://example.com\x1b\\label\x1b]8;;\x1b\\",
+    "\x1bPtmux;\x1b\x1b]8;;https://example.com\x07\x1b\\label",
+  ];
+
+  test("sums to exactly what stringWidth returns, in both modes", () => {
+    for (const s of FIXTURES) {
+      expect(NARROW_MEASURE(s)).toBe(stringWidth(s));
+      expect(WIDE_MEASURE(s)).toBe(stringWidth(s, { ambiguousIsNarrow: false }));
+    }
+  });
+
+  /**
+   * The strip is a local transcription of the pattern `string-width`'s own `strip-ansi`
+   * applies (see `src/width.ts`), so it must remove the same bytes — including an 8-bit
+   * CSI, which is one character rather than an ESC pair and would survive a naive
+   * `includes("\x1b")` bail.
+   */
+  test("the local ANSI strip leaves terminal sequences zero-width", () => {
+    expect(NARROW_MEASURE("\x1b[36mtext\x1b[39m")).toBe(4);
+    expect(NARROW_MEASURE("\x9b36mtext")).toBe(stringWidth("\x9b36mtext"));
+    expect(WIDE_MEASURE("\x9b36mtext")).toBe(stringWidth("\x9b36mtext", { ambiguousIsNarrow: false }));
+  });
+
+  /**
+   * The bound clears the map wholesale rather than evicting; the only observable
+   * consequence must be a re-warm, never a wrong answer. Measured peak in a real render
+   * is 103 distinct clusters, so this drives it ~40× past anything a document reaches.
+   * The map itself is private and deliberately not asserted on.
+   */
+  test("correctness survives the cache bound being exceeded", () => {
+    const early = "日本語 — ⚠\uFE0E";
+    expect(NARROW_MEASURE(early)).toBe(stringWidth(early));
+
+    let flood = "";
+    for (let cp = 0x4e00; cp < 0x4e00 + 4200; cp += 1) flood += String.fromCodePoint(cp);
+    expect(NARROW_MEASURE(flood)).toBe(stringWidth(flood));
+
+    expect(NARROW_MEASURE(early)).toBe(stringWidth(early));
+    expect(NARROW_MEASURE("—")).toBe(1);
+  });
+
+  /** One map per `Measure`: the two rulers disagree on every Ambiguous cluster. */
+  test("narrow and wide never share a cached entry, in either order", () => {
+    expect(NARROW_MEASURE("—")).toBe(1);
+    expect(WIDE_MEASURE("—")).toBe(2);
+
+    expect(WIDE_MEASURE("○")).toBe(2);
+    expect(NARROW_MEASURE("○")).toBe(1);
   });
 });
 
