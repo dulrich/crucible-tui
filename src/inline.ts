@@ -1,8 +1,47 @@
 import * as nodeEmoji from "node-emoji";
-import type { Token, Tokens } from "marked";
+import type { Token, Tokenizer, Tokens } from "marked";
 import { link as osc8Link } from "./ansi";
 import type { LayoutContext } from "./layout-context";
 import { applyStyle, createStyler } from "./style";
+
+/**
+ * `del` — the owned **tokenizer** for `~text~` / `~~text~~` (2026-09-12 defect).
+ *
+ * `marked@14`'s own `del` runs its regex on the *raw* source, unlike `emStrong`, which
+ * the lexer hands a `maskedSrc` with code spans, links and autolinks blanked out
+ * (`marked.esm.js:1537`, the `blockSkip` pass). So `a ~300-line sidecar … the persona
+ * `~/.codex/AGENTS.md`` lexed as one strikethrough from `~300` to the `~` *inside* the
+ * later code span — the code span's opening backtick became literal text and every code
+ * span after it in the paragraph inverted (yellow prose, plain code) until the paragraph
+ * ended. GFM resolves this by precedence: a code span wins over a delimiter run, so the
+ * closer inside backticks is not a closer. This override reproduces marked's `del`
+ * exactly, but finds the closer on a `blockSkip`-masked copy (length-preserving, so the
+ * slice offsets apply to the real source) and takes `raw`/`text` from the real source.
+ * A closer that only exists inside a code span, link target or autolink no longer
+ * matches; a `~text~` pair in plain prose still does.
+ */
+export const DEL_TOKENIZER = {
+  del(this: Tokenizer, src: string): Tokens.Del | undefined {
+    const blockSkip = this.rules.inline.blockSkip;
+    let masked = src;
+    let match: RegExpExecArray | null;
+    blockSkip.lastIndex = 0;
+    while ((match = blockSkip.exec(masked)) !== null) {
+      masked =
+        masked.slice(0, match.index) +
+        "[" +
+        "a".repeat(match[0].length - 2) +
+        "]" +
+        masked.slice(blockSkip.lastIndex);
+    }
+    const cap = this.rules.inline.del.exec(masked);
+    const delim = cap?.[1];
+    if (!cap || delim === undefined) return undefined;
+    const raw = src.slice(0, cap[0].length);
+    const text = src.slice(delim.length, cap[0].length - delim.length);
+    return { type: "del", raw, text, tokens: this.lexer.inlineTokens(text) };
+  },
+};
 
 /**
  * The owned inline visitors — `strong`, `em`, `codespan`, `del`, `br`, `link`, `image`
