@@ -44,6 +44,24 @@ import stringWidth from "string-width";
  * those 26 sites used to make — every existing caller is unchanged **by
  * construction**, not by measurement.
  *
+ * ## The per-cluster cache
+ *
+ * `fn` segments the string once and sums a per-cluster `Map`, calling `stringWidth`
+ * only on a miss. Measured 2026-09-12 on a 443-line plan in a sibling repo (4,042
+ * calls / 68,267 chars): `string-width@8.2.2` takes `Measure` from **15 ms to 439 ms**
+ * uncached, and the cache brings it back to **33.6 ms** colourless / **37.2 ms** under
+ * `FORCE_COLOR=3`. That is what the cache is for; it lands here first on 7.2.0, where
+ * it moves no byte, because 7.2.0's `stringWidth` is itself a per-cluster loop.
+ *
+ * The ANSI strip is the local transcription below, not a bail to whole-string
+ * `stringWidth`: the bail is correct but re-segments every SGR-bearing string, which
+ * left colour-on `Measure` at 90.5 ms against a 63.7 ms ceiling. It cannot use
+ * `src/ansi.ts`'s scanner either — that module imports *this* one, and
+ * `tests/scripts-acyclic.test.ts` forbids the cycle.
+ *
+ * Narrow and wide never share a map: they disagree on every Ambiguous cluster, so one
+ * shared entry for `—` would hand whichever ruler asked second the other's answer.
+ *
  * ## Resolution order (highest first) — mirrors `resolveGlyphs`
  *
  * 1. `MDVIEW_AMBIGUOUS=narrow|wide` in the environment. Any other value — including
@@ -90,16 +108,81 @@ export interface Measure {
   readonly ambiguous: AmbiguousWidth;
 }
 
+/**
+ * Terminal sequences, stripped before measuring — transcribed from `ansi-regex@6.2.2`,
+ * which is the pattern `string-width`'s own `strip-ansi` applies, so this module removes
+ * exactly the bytes `stringWidth` would have removed and the two agree by construction.
+ * Transcribed rather than imported for the reason above: the repo's own grammar lives in
+ * `src/ansi.ts`, which imports this module.
+ */
+const ANSI_SEQUENCE = /(?:\u001B\][\s\S]*?(?:\u0007|\u001B\u005C|\u009C))|[\u001B\u009B][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]/g; // eslint-disable-line no-control-regex
+
+/**
+ * Grapheme segmentation for the per-cluster width cache below.
+ *
+ * Duplicated from `src/text.ts`'s `GRAPHEMES` rather than imported: `text.ts` imports
+ * *this* module, so the reverse import would close the two-node cycle
+ * `tests/scripts-acyclic.test.ts` forbids. The one-liner is the cheaper of the two
+ * duplications (the alternative is moving `GRAPHEMES`/`graphemes` here and re-exporting
+ * from `text.ts`, which moves a prose primitive into the ruler module for no gain).
+ */
+const WIDTH_GRAPHEMES = new Intl.Segmenter("en", { granularity: "grapheme" });
+
+/**
+ * Cluster-cache bound. Distinct clusters are a property of the *script* being rendered,
+ * not of document length: the measured peak is **103 distinct clusters in any single
+ * render**, across the two WP-1 timing files and every fixture in `tests/fixtures/`
+ * (2026-09-12), and 4096 is ≥40× that headroom. So this bound is never reached on real
+ * corpora and exists only so a pathological input (generated CJK, dense emoji) cannot
+ * grow the map without end.
+ * On overflow the map is cleared wholesale rather than evicted one entry at a time — the
+ * next render re-warms it in a few hundred `stringWidth` calls, which is cheaper than
+ * carrying LRU bookkeeping on every hit.
+ */
+const WIDTH_CACHE_LIMIT = 4096;
+
 function makeMeasure(ambiguous: AmbiguousWidth): Measure {
   // The narrow branch deliberately passes **no options object**: `{ ambiguousIsNarrow:
   // true }` is string-width@7's documented default, but "identical to the default" and
   // "the default" are not the same claim, and this WP's binding acceptance criterion is
   // that narrow-mode output is byte-identical to the parent commit. Calling exactly the
   // function the parent commit called makes that true by construction.
-  const fn =
+  const raw =
     ambiguous === "wide"
       ? (text: string): number => stringWidth(text, { ambiguousIsNarrow: false })
       : (text: string): number => stringWidth(text);
+
+  // One cache per `Measure`, never shared: the two rulers disagree by construction on
+  // every East Asian Ambiguous cluster, so a shared map would hand `WIDE_MEASURE` the
+  // narrow answer for `—` the moment `NARROW_MEASURE` saw it first.
+  const cache = new Map<string, number>();
+
+  const fn = (text: string): number => {
+    // ANSI: strip locally, then measure the plain text through the cache. Bailing to a
+    // whole-string `stringWidth` instead (the first design) is correct but costs the
+    // whole colour-on budget — measured 2026-09-12, it left `Measure` at 90.5 ms on the
+    // 443-line plan under `FORCE_COLOR=3` against a 63.7 ms ceiling, because 139 of the
+    // measured strings carry SGR and each one pays full segmentation. The strip cannot
+    // go through `src/ansi.ts`'s scanner: `ansi.ts` imports *this* module, and
+    // `tests/scripts-acyclic.test.ts` forbids the cycle.
+    const plain =
+      text.includes("\u001B") || text.includes("\u009B") ? text.replace(ANSI_SEQUENCE, "") : text;
+
+    let total = 0;
+    for (const { segment } of WIDTH_GRAPHEMES.segment(plain)) {
+      const hit = cache.get(segment);
+      if (hit !== undefined) {
+        total += hit;
+        continue;
+      }
+      const width = raw(segment);
+      if (cache.size >= WIDTH_CACHE_LIMIT) cache.clear();
+      cache.set(segment, width);
+      total += width;
+    }
+    return total;
+  };
+
   return Object.assign(fn, { ambiguous }) as Measure;
 }
 
