@@ -350,7 +350,7 @@ above is what a future plan that does own it will still have to satisfy.
 runtime — present in every Bun-compiled binary regardless of what a project imports.
 The actual runtime dependency closure — `marked`, `highlight.js`, `node-emoji`,
 `string-width`, `yaml`, and everything each pulls in transitively — is
-**14 packages** (measured at WP-3 of `plans/colour-policy.md`, which removed
+**13 packages** (measured at WP-3 of `plans/pictograph-width.md`, whose `string-width` 7.2.0 → 8.2.2 bump dropped `emoji-regex`; **14** at WP-3 of `plans/colour-policy.md`, which removed
 `ansi-escapes` and, with it, `environment`; **16** after WP-2 of the same plan, which
 removed `@colors/colors` and `cli-highlight`; **45** after WP-1, **46, ~8.6 MB**
 at WP-7 before that; `bun run gen-licenses --check` walks exactly that closure and prints
@@ -393,7 +393,7 @@ history. The wiki-link carrier's own retirement paragraph is
 
 **Pins.** `package.json`'s `dependencies` are pinned to the exact versions already
 installed and exercised by this test suite — `marked@14.1.4`, `highlight.js@10.7.3`,
-`node-emoji@2.2.0`, `string-width@7.2.0`, `yaml@2.9.0` — rather
+`node-emoji@2.2.0`, `string-width@8.2.2`, `yaml@2.9.0` — rather
 than left on `^` ranges that could silently
 resolve to an untested minor on a fresh `bun install` on a different machine. The four
 promoted from transitive to direct in WP-6 of `plans/marked-terminal-replacement.md`
@@ -412,7 +412,7 @@ and it is not a version a session bumps unilaterally.** Major versions change *w
 it emits*, so every fenced block in the corpus can change its forced-colour bytes — parity
 class C. What a bump owes before it lands, and why the pin was transitive until WP-2 of
 `plans/colour-policy.md` made it this repo's own, is `docs/agents/dependency-history.md`,
-"`highlight.js` — the one keeper with a pin history".
+"`highlight.js` — the one keeper with a pin history". **`string-width` has had one deliberate bump, 7.2.0 → 8.2.2 (`plans/pictograph-width.md`)**, and it is the worked example of what a pin bump owes: a measured render-time budget in both colour modes, a per-cluster cache in `src/width.ts` to meet it, and a cross-bump corpus pass with every class-B diff attributed — `docs/agents/dependency-history.md`, "`string-width` — the one bump, and what it cost".
 
 Plans: the founding pair is `plans/mdview.md` (the original build) and
 `plans/vault-readiness.md` (glyph tier, fence languages, divider, embeds, and the

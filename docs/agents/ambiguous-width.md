@@ -26,7 +26,7 @@ record of what it padded wrongly and what the owned emitter fixed is below.
 Unicode's answer is "one or two, depending on the terminal, and you cannot tell from the
 character" — and almost every non-ASCII character in this corpus is in that class
 (`— – → ← … ≥ × • ○` and the whole box-drawing set; 90 em dashes in one real document).
-`string-width@7` defaults to narrow, which is also TR11's own recommendation when the context
+`string-width` defaults to narrow (`@7` when this was written; still true of the `@8.2.2` pinned since WP-3 of `plans/pictograph-width.md`), which is also TR11's own recommendation when the context
 cannot be established, and that default was hardcoded at **26 call sites across 7 modules**
 because the library takes the setting as a *per-call option* and offers no global switch.
 
@@ -260,7 +260,7 @@ WP-2 of `plans/colour-policy.md`, and the two style pairs are committed literals
 `src/style.ts`.) It is *not* byte-identical in general: a
 narrow-mode table carrying U+26A0 changes, and improves — that glyph is 1 column to
 `string-width@4` and 2 to `@7`, which is the original reconciliation bug, and its edge went from
-a spread of 3 to 0.
+a spread of 3 to 0. (The `@7` answer was itself the wrong one for the bare and VS15 forms — a terminal draws them at 1 — and `string-width@8.2.2`, pinned at WP-3 of `plans/pictograph-width.md`, measures them 1 again; `docs/agents/dependency-history.md`, "`string-width` — the one bump, and what it cost".)
 
 **`cli-table3` is gone from the tree entirely as of WP-6**, which removed the last thing
 requiring it. The finding above is why `src/table.ts` stopped importing it; the dependency
