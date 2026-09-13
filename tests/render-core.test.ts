@@ -491,3 +491,21 @@ describe("task-state adjacency — held unmodified through the tokenizer cutover
     expect(POLICIES.length).toBe(3);
   });
 });
+
+describe("del tokenizer — a closer inside a code span is not a closer (2026-09-12)", () => {
+  // marked's own `del` matched `~300 … `~/.x`` as one strikethrough, swallowing the code
+  // span's opening backtick and inverting every code span after it in the paragraph.
+  const source = "a ~300-line thing and the persona `~/.codex/AGENTS.md` is `unreachable` here\n";
+  test("single tilde followed by a code-span tilde stays literal; code spans stay code", async () => {
+    const plain = stripAnsi(renderDocument(source, 100));
+    expect(plain).toContain("~300-line thing and the persona ~/.codex/AGENTS.md is unreachable here");
+    const { text } = await renderWithForcedColor(source, 100);
+    expect(text).not.toContain("\u001b[9m");
+    expect(text).toContain("\u001b[33m~/.codex/AGENTS.md\u001b[39m");
+    expect(text).toContain("\u001b[33munreachable\u001b[39m");
+  });
+  test("a real ~~strike~~ and a plain ~strike~ still tokenize", async () => {
+    const { text } = await renderWithForcedColor("x ~~gone~~ y ~also~ z\n", 100);
+    expect(text.split("\u001b[9m").length - 1).toBe(2);
+  });
+});

@@ -10,6 +10,7 @@ import { formatMetaBlockDetailed, splitFrontmatter } from "./frontmatter";
 import { resolveColourPolicy, type ColourPolicy } from "./colour";
 import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
 import {
+  DEL_TOKENIZER,
   renderBr,
   renderCodespan,
   renderDel,
@@ -593,7 +594,8 @@ export function renderDocumentDetailed(
   const processedBody = preprocessBody(body, glyphs);
 
   const instance = new Marked();
-  // **The one extension this repo registers** (WP-2 of `plans/wiki-link-tokenizer.md`).
+  // **The one extension this repo registers** (WP-2 of `plans/wiki-link-tokenizer.md`) —
+  // plus, since 2026-09-12, one tokenizer *override* (`DEL_TOKENIZER`, registered next).
   //
   // `use({ extensions })` writes `opts.extensions.inline` (`marked.cjs:2215-2222`) and
   // `opts.extensions.startInline` (`:2232-2237`), which is what `instance.lexer(...)` reads
@@ -606,6 +608,9 @@ export function renderDocumentDetailed(
   // dependency-classification rule (root `AGENTS.md`) is unmoved — a tokenizer extension is
   // grammar, it reads no environment and writes no escape byte.
   instance.use({ extensions: [wikiLinkExtension] });
+  // The owned `del` tokenizer (`src/inline.ts`, `DEL_TOKENIZER`): marked's own matches a
+  // strikethrough closer inside a later code span; this one masks code spans first.
+  instance.use({ tokenizer: DEL_TOKENIZER });
   // WP-11 (representative-corpus): shortcode substitution follows the glyph tier.
   //
   // It was twice proposed to set `emoji: false` unconditionally to save ~468 KB in
