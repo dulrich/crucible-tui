@@ -34,8 +34,8 @@ import { basename, dirname, join, resolve } from "node:path";
  * itself, so they are always on and are sufficient on their own. Rule 3 needs only
  * the directories that already exist around the checkout, which are always readable.
  * There is deliberately no mode in which the guard has nothing to check — one narrow
- * exception, `EXEMPT_ROOT_DIRS` below (`runs/**`, WP-12d), which stops the guard short of
- * a directory that is not part of the shared corpus in the first place. All three rules
+ * exception, the publication strip set below (`publicationStrip`), which stops the guard
+ * short of control-plane paths that never reach a public clone. All three rules
  * still run on everything else, without exception.
  *
  * The one sanctioned fake vocabulary is `example` — `example/...` as a relative root
@@ -462,52 +462,52 @@ export function buildContext(root: string, listed: Set<string> = new Set()): Con
 }
 
 /**
- * Top-level directories exempted from the containment scan entirely (WP-12d, user
- * decision 2026-07-29). This is not the `SKIP_DIRS` shape — those carry no authored
- * content at all. `runs/` is the opposite: real control-plane material (execution
- * briefs, dispatch notes) that must cite real absolute paths to be self-contained, and
- * is deliberately *not* published-facing.
- *
- * **The guard's boundary is the whole repository minus `SKIP_DIRS` and this exemption,
- * full stop.** It is **not** derived from what the gate corpus samples, and has not been
- * since WP-1 of `plans/gate-corpus-reframe.md` — before that WP, this comment justified
- * the `runs/**` exemption by pointing at `corpus/default-manifest.json`'s glob list, on
- * the premise that the guard's job was to protect *that* corpus specifically. Reasoning
- * from the corpus was true only by coincidence, and the coincidence was the risk: the
- * gate corpus is now a fixed, explicit path list scoped to `tests/fixtures/`, so
- * pointing at it here would no longer even describe a set that overlaps `plans/` or
- * `README.md` at all. **`collectFiles` (below) scans the entire repository minus
- * `SKIP_DIRS` and this exemption — independent of the gate corpus, and unchanged by
- * this rewrite.** `tests/containment.test.ts` pins the one
- * assertion that keeps this exemption and the gate corpus provably disjoint: no gate
- * corpus entry may begin `runs/`, and no corpus root may be or resolve into `runs/`. If
- * that assertion ever fails, this exemption is wrong and must shrink, not the manifest.
- *
- * **`plans/` is deliberately not here.** Every file under `plans/` is fully governed by
- * all three rules regardless of gate-corpus membership; a plan citing a real private
- * path is a real finding, not a control-plane exception.
- *
- * **What this does not solve.** Whether `runs/` (or anything else) should be filtered out
- * of an eventual *public push* of this repo is a separate, live, cross-repo question,
- * explicitly out of scope here — this exemption only concerns what the containment guard
- * checks today, not what a future publication step must additionally strip.
- *
- * Root-relative and top-level only: matches `<root>/runs/**`, not a directory named
- * `runs` appearing anywhere else in the tree (unlike `SKIP_DIRS`, which matches by name
- * at any depth — that asymmetry is intentional, since this is a narrow, named carve-out
- * rather than "never authored content").
+ * The publication strip set: exactly the paths `publish.mjs` removes from every public
+ * projection (control-plane material — plans, reviews, references, dispatch runs, the
+ * user's scratchpad, the initiative file and the manifest itself). The guard exempts
+ * **exactly** this set and nothing else (audit M3, `control-plane-publication-projection`):
+ * stripped paths never reach a public clone, so a real private path cited there is not a
+ * finding; every other path is publication-facing and stays fully governed by all three
+ * rules. `DEFAULT_PUBLICATION_STRIP` mirrors the projection tool's fixed defaults; the
+ * per-repo additions come from the `strip` array of `<root>/.publication.json`, read
+ * live, so the guard and the projection cannot drift. Entries ending `/` are directories
+ * (prefix match); others match the exact path or anything beneath it. Root-relative.
  */
-export const EXEMPT_ROOT_DIRS = new Set(["runs"]);
+export const DEFAULT_PUBLICATION_STRIP: readonly string[] = Object.freeze([
+  "plans/",
+  "reviews/",
+  "references/",
+  "runs/",
+  "INITIATIVE.md",
+  "DEVELOPMENT.md",
+  "FEEDBACK.md",
+  ".publication.json",
+]);
 
-/**
- * Top-level *files* exempted from the scan (user decision 2026-09-12). `FEEDBACK.md` is
- * the user's own scratchpad by fleet contract — agent-read, never agent-written, and
- * never publication-facing — and it records defects by pasting the real command line
- * that produced them — a shell prompt carrying an absolute home path, which is exactly
- * the shape rule 3 flags (`4300d6e` tripped the guard on `FEEDBACK.md:27`). Root-only
- * and by exact name, like `EXEMPT_ROOT_DIRS`: a narrow, named carve-out, not a pattern.
- */
-export const EXEMPT_ROOT_FILES = new Set(["FEEDBACK.md"]);
+/** Defaults plus `<root>/.publication.json`'s `strip`; an absent manifest means defaults only. */
+export function publicationStrip(root: string): string[] {
+  let extra: unknown = [];
+  try {
+    const raw = JSON.parse(readFileSync(join(root, ".publication.json"), "utf8")) as { strip?: unknown };
+    extra = raw.strip ?? [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!Array.isArray(extra) || !extra.every((entry) => typeof entry === "string" && entry.length > 0)) {
+    throw new Error(".publication.json: strip must be an array of non-empty repo-relative paths");
+  }
+  return [...DEFAULT_PUBLICATION_STRIP, ...(extra as string[])];
+}
+
+/** True when the root-relative `path` (forward slashes) falls inside `strip`. */
+export function isStripped(path: string, strip: readonly string[]): boolean {
+  return strip.some((s) => (s.endsWith("/") ? path.startsWith(s) || `${path}/` === s : path === s || path.startsWith(`${s}/`)));
+}
+
+/** Top-level directory names in the default strip set (the gate-corpus disjointness test reads this). */
+export const EXEMPT_ROOT_DIRS = new Set(
+  DEFAULT_PUBLICATION_STRIP.filter((s) => s.endsWith("/")).map((s) => s.slice(0, -1)),
+);
 
 /**
  * Every file under `root`, skipping generated and vendored trees.
@@ -524,20 +524,21 @@ export const EXEMPT_ROOT_FILES = new Set(["FEEDBACK.md"]);
  */
 export function collectFiles(root: string): string[] {
   const files: string[] = [];
-  const recurse = (dir: string, isRoot: boolean): void => {
+  const strip = publicationStrip(root);
+  const recurse = (dir: string, rel: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (SKIP_DIRS.has(entry.name)) continue;
-      if (isRoot && entry.isDirectory() && EXEMPT_ROOT_DIRS.has(entry.name)) continue;
-      if (isRoot && entry.isFile() && EXEMPT_ROOT_FILES.has(entry.name)) continue;
+      const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+      if (isStripped(relPath, strip)) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        recurse(full, false);
+        recurse(full, relPath);
       } else if (entry.isFile()) {
         files.push(full);
       }
     }
   };
-  recurse(root, true);
+  recurse(root, "");
   return files;
 }
 
