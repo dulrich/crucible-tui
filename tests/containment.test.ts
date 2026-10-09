@@ -202,6 +202,23 @@ describe("the runs/ exemption is exactly that narrow (WP-12d)", () => {
     }
   });
 
+  test("the exemption is exactly the publication strip set: defaults plus .publication.json strip", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-strip-collect-"));
+    try {
+      await mkdir(join(dir, "plans"), { recursive: true });
+      await mkdir(join(dir, "docs", "internal"), { recursive: true });
+      await writeFile(join(dir, "plans", "p.md"), "x\n");
+      await writeFile(join(dir, "INITIATIVE.md"), "x\n");
+      await writeFile(join(dir, "docs", "internal", "ops.md"), "x\n");
+      await writeFile(join(dir, "docs", "public.md"), "x\n");
+      await writeFile(join(dir, ".publication.json"), JSON.stringify({ publicRemote: "r", strip: ["docs/internal/"] }));
+      const rel = collectFiles(dir).map((f) => relative(dir, f)).sort();
+      expect(rel).toEqual([join("docs", "public.md")]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("no default-manifest entry can ever match anything under runs/ — the assertion that makes the exemption enforceable", async () => {
     // Since WP-1 of `plans/gate-corpus-reframe.md` the bundled manifest's `globs` are an
     // explicit, wildcard-free path list (the gate corpus, scoped to `tests/fixtures/`),
@@ -232,7 +249,7 @@ describe("the runs/ exemption is exactly that narrow (WP-12d)", () => {
     }
     // And the exemption itself must still be exactly what this test assumes — nothing
     // broader could quietly widen it without this failing too.
-    expect([...EXEMPT_ROOT_DIRS]).toEqual(["runs"]);
+    expect([...EXEMPT_ROOT_DIRS]).toEqual(["plans", "reviews", "references", "runs"]);
   });
 });
 

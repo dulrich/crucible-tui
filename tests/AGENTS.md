@@ -60,7 +60,8 @@ that are `src/render.ts`'s own orchestration rather than any one owned module's)
 `tests/helpers/containment.ts` holds the rules; `tests/containment.test.ts` runs them
 over every file here, **itself included**. They are part of `bun test`, so they are
 covered by `bun run verify` and need no separate command. **The scan's boundary is the
-whole repository minus generated/vendor skips and the top-level `runs/` exemption —
+whole repository minus generated/vendor skips and exactly the publication strip set —
+the fixed defaults (`plans/ reviews/ references/ runs/ INITIATIVE.md DEVELOPMENT.md FEEDBACK.md .publication.json`) plus `.publication.json`'s `strip`, read live by `publicationStrip` so guard and projection cannot drift —
 full stop, independent of any corpus manifest** (WP-1, `plans/gate-corpus-reframe.md`):
 `collectFiles` (`tests/helpers/containment.ts`) never reads `corpus/default-manifest.json`
 at all. The gate corpus and this guard are related only by one narrow, separately-pinned
