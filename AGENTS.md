@@ -256,7 +256,7 @@ binding and must exit 0.
 ### Security gate bootstrap (trivy)
 
 The security step runs `bun run test:security`
-(`trivy fs --scanners vuln --skip-db-update --exit-code 1 --severity CRITICAL,HIGH .`) —
+(`trivy fs --scanners vuln --include-dev-deps --skip-db-update --exit-code 1 --severity CRITICAL,HIGH .`) —
 offline by design, so a normal `bun run verify` never touches the network for it. That
 means it fails on a machine that has never run trivy before: trivy absent from PATH (exit
 127), or a cold/stale vulnerability DB cache (trivy's own "cannot skip downloading DB" /
@@ -270,7 +270,7 @@ goes stale:
 ```bash
 curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
   | sh -s -- -b ~/.local/bin v0.73.0
-trivy fs --scanners vuln --exit-code 0 --severity CRITICAL,HIGH .
+trivy fs --scanners vuln --include-dev-deps --exit-code 0 --severity CRITICAL,HIGH .
 ```
 
 The second command warms the DB cache (network required); after that, `bun run

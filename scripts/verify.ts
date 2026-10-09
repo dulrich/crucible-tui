@@ -33,7 +33,7 @@ function sh(cmd: string[]): StepResult {
 
 // --- Security step: trivy preflight -----------------------------------------
 //
-// `bun run test:security` runs `trivy fs --scanners vuln --skip-db-update
+// `bun run test:security` runs `trivy fs --scanners vuln --include-dev-deps --skip-db-update
 // --exit-code 1 --severity CRITICAL,HIGH .` (package.json — its command
 // string is load-bearing and unchanged by this file). --skip-db-update is
 // deliberately offline, which means it fails on any machine that has never
@@ -66,7 +66,7 @@ One-time bootstrap:
          | sh -s -- -b ~/.local/bin v0.73.0
   2. Warm the vulnerability DB once (this WILL hit the network —
      --skip-db-update requires a DB that already exists):
-       trivy fs --scanners vuln --exit-code 0 --severity CRITICAL,HIGH .
+       trivy fs --scanners vuln --include-dev-deps --exit-code 0 --severity CRITICAL,HIGH .
 
 After that, "bun run test:security" (and therefore "bun run verify") runs
 fully offline via --skip-db-update. See AGENTS.md's Run section.
@@ -80,7 +80,7 @@ cold or stale vulnerability DB cache (no cache yet on a fresh clone, or the
 DB's ~daily expiry). --skip-db-update refuses to fetch one for you.
 
 Bootstrap (also the periodic refresh, if this reappears after being idle):
-  trivy fs --scanners vuln --exit-code 0 --severity CRITICAL,HIGH .
+  trivy fs --scanners vuln --include-dev-deps --exit-code 0 --severity CRITICAL,HIGH .
 
 Then re-run "bun run verify" (or "bun run test:security" directly). See
 AGENTS.md's Run section.

@@ -30,7 +30,7 @@ jobs:
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin v0.73.0
-          trivy fs --scanners vuln --exit-code 0 --severity CRITICAL,HIGH .
+          trivy fs --scanners vuln --include-dev-deps --exit-code 0 --severity CRITICAL,HIGH .
 
       # One canonical gate chain (WP-1 of plans/tn-review-remediation.md):
       # typecheck, lint, tests, the compiled build plus a smoke of the built
