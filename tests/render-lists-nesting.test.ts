@@ -400,7 +400,7 @@ describe("renderDocument — fenced code inside list items (WP-2f)", () => {
         // renumbering would show up as an extra number in this sequence, which is what
         // happens when `numberedLine` claims a line that only *looks* like a marker.
         const numbers = lines
-          .filter((line, index) => !codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end))
+          .filter((_line, index) => !codeRanges.some(([start, end]) => index + 1 >= start && index + 1 <= end))
           .map((line) => /^ {4,}(\d+)\.\s/.exec(line))
           .filter((match): match is RegExpExecArray => match !== null)
           .map((match) => Number(match[1]));
