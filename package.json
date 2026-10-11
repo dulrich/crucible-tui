@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "lint": "oxlint --deny-warnings",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "test": "bun test tests",
     "build": "bun build --compile --outfile dist/mdview src/cli.ts",
     "install:man": "mkdir -p \"$HOME/.local/share/man/man1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/mdview.1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/crucible-tui.1\"",
