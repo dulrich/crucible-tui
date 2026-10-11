@@ -279,7 +279,7 @@ describe("C4 — authored code points 2 and 3 pass through, and 0/1 still do not
   });
 
   test("inside a fence they pass through too — the strip chain no longer reaches them", () => {
-    const source = "```\n" + `code ${STX}x${ETX}\n` + "```\n";
+    const source = `\`\`\`\ncode ${STX}x${ETX}\n\`\`\`\n`;
     expect(preprocessBody(source, UNICODE_GLYPHS)).toBe(source);
   });
 
@@ -291,7 +291,7 @@ describe("C4 — authored code points 2 and 3 pass through, and 0/1 still do not
     const one = String.fromCharCode(1);
     expect(preprocessBody(`a ${zero}b${zero} c\n`, UNICODE_GLYPHS)).toBe("a b c\n");
     expect(preprocessBody(`a ${one}b${one} c\n`, UNICODE_GLYPHS)).toBe("a b c\n");
-    expect(preprocessBody("```\n" + `x${zero}${one}y\n` + "```\n", UNICODE_GLYPHS)).toBe("```\nxy\n```\n");
+    expect(preprocessBody(`\`\`\`\nx${zero}${one}y\n\`\`\`\n`, UNICODE_GLYPHS)).toBe("```\nxy\n```\n");
   });
 });
 

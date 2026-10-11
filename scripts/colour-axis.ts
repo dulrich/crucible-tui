@@ -456,6 +456,7 @@ export async function collectColourDigests(
     throw new Error(
       `colour-axis child (--colour-child ${mode}) produced unparseable output: ` +
         `${error instanceof Error ? error.message : String(error)}\nstderr: ${stderr.trim()}`,
+      { cause: error },
     );
   }
 }

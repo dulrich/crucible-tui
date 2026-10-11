@@ -285,7 +285,7 @@ export function parseManifest(raw: string, manifestPath: string): CorpusManifest
     data = JSON.parse(raw);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`corpus manifest ${manifestPath} is not valid JSON: ${message}`);
+    throw new Error(`corpus manifest ${manifestPath} is not valid JSON: ${message}`, { cause: error });
   }
 
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
@@ -319,7 +319,7 @@ export async function loadManifest(manifestPath: string): Promise<CorpusManifest
     raw = await readFile(manifestPath, "utf8");
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`cannot read corpus manifest at ${manifestPath}: ${reason}`);
+    throw new Error(`cannot read corpus manifest at ${manifestPath}: ${reason}`, { cause: error });
   }
   return parseManifest(raw, manifestPath);
 }
