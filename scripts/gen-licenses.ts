@@ -142,7 +142,7 @@ function visit(name: string, fromDir: string): void {
     dependencies?: Record<string, string>;
     optionalDependencies?: Record<string, string>;
   };
-  const deps = { ...(pkgFull.dependencies ?? {}), ...(pkgFull.optionalDependencies ?? {}) };
+  const deps = { ...pkgFull.dependencies, ...pkgFull.optionalDependencies };
   for (const depName of Object.keys(deps)) {
     visit(depName, real);
   }

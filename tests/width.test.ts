@@ -378,6 +378,7 @@ function scriptedTerminal(options: {
 
   const notify = (): void => {
     queueMicrotask(() => {
+      // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot: a listener may unsubscribe mid-iteration
       for (const listener of [...listeners]) listener();
     });
   };

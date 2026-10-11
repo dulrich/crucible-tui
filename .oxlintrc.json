@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "env": { "node": true, "es2024": true },
+  "globals": { "Bun": "readonly" },
+  "rules": {
+    "no-explicit-any": "error",
+    "no-empty": "error",
+    "no-undef": "error",
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }]
+  },
+  "ignorePatterns": ["node_modules", "dist", "coverage"]
+}

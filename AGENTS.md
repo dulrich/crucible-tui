@@ -361,7 +361,7 @@ library this repo only ever called two functions of. That is the largest single 
 reduction in the repo's history and it was **not** taken for size: it is the
 dependency-ownership rule (below) applied to policy and emission. The rest of
 `node_modules` — **~63 MB installed in total** — is
-devDependency tooling: `eslint`, `typescript`, `typescript-eslint`, `jiti`,
+devDependency tooling: `oxlint`, `typescript`,
 `@types/bun`, and their own transitive closures, which never ship in the binary at
 all. Dependency weight is therefore a **couple of percent of the compiled artifact**.
 "Remove a dependency to shrink the binary" is the wrong frame for this tool; no
