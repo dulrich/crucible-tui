@@ -529,7 +529,7 @@ describe("TokenWalker — the receiver, and what dropping marked.use() moved her
 
   test("the supplied methods object is not mutated with a parser field", () => {
     const methods = probeRenderer();
-    new TokenWalker(methods);
+    expect(new TokenWalker(methods)).toBeInstanceOf(TokenWalker);
     expect("parser" in methods).toBe(false);
   });
 

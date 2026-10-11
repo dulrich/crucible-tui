@@ -158,7 +158,7 @@ describe("the emitter — chalk's applyStyle, and the plain wrap beside it", () 
  * land. Reading `STYLE_CLASSES` into the expectation would make that edit self-approving.
  */
 describe("the style classification — hue, format, control", () => {
-  const RATIFIED: Record<StyleName, StyleClass> = {
+  const RATIFIED_CLASSES: Record<StyleName, StyleClass> = {
     // Decision 1: the seven hues, and only these, are what an explicit `never` drops.
     red: "hue",
     green: "hue",
@@ -181,7 +181,7 @@ describe("the style classification — hue, format, control", () => {
 
   test("every committed style is classified, and classified as ratified", () => {
     expect(Object.keys(STYLE_CLASSES).sort()).toEqual(Object.keys(STYLE_TABLE).sort());
-    for (const [name, expected] of Object.entries(RATIFIED)) {
+    for (const [name, expected] of Object.entries(RATIFIED_CLASSES)) {
       expect(STYLE_CLASSES[name as StyleName]).toBe(expected);
     }
   });
@@ -189,7 +189,7 @@ describe("the style classification — hue, format, control", () => {
   test("the table and the classification cover exactly the same names", () => {
     // The compile-time `satisfies` says this too; asserting it at runtime is what catches a
     // future edit that widens one of the two through a cast.
-    expect(Object.keys(RATIFIED).sort()).toEqual(Object.keys(STYLE_TABLE).sort());
+    expect(Object.keys(RATIFIED_CLASSES).sort()).toEqual(Object.keys(STYLE_TABLE).sort());
   });
 
   test("`none` emits nothing, `full` emits everything, `formats` emits everything but hue", () => {
@@ -444,7 +444,6 @@ describe("the styling inventory — every producer emits, under an injected TTY 
   });
 
   test("and the visible text is identical either way", () => {
-    const strip = stripAnsi;
-    expect(strip(rendered)).toBe(strip(plain));
+    expect(stripAnsi(rendered)).toBe(stripAnsi(plain));
   });
 });

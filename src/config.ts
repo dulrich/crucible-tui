@@ -243,6 +243,7 @@ export async function writeHighlightAlias(
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
         `refusing to update config at ${path}: existing file is not valid JSON (${message}). Fix or remove it, then re-run \`mdview highlight-as\`.`,
+        { cause: error },
       );
     }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {

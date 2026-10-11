@@ -391,7 +391,7 @@ async function runView(args: string[]): Promise<void> {
     source = await readFile(options.file, "utf8");
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`cannot read file: ${options.file} (${reason})`);
+    throw new Error(`cannot read file: ${options.file} (${reason})`, { cause: error });
   }
 
   const config = await loadConfig();

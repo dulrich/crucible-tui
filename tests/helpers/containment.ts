@@ -611,7 +611,7 @@ export async function loadSupplementalNames(
     parsed = JSON.parse(raw);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`containment: ${path} is not valid JSON: ${message}`);
+    throw new Error(`containment: ${path} is not valid JSON: ${message}`, { cause: error });
   }
 
   const names =
