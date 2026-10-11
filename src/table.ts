@@ -253,7 +253,7 @@ function normalizeCell(raw: RawCell): CellContent {
   // `positions[i]` is where raw index `i` lands in the collapsed string. Every index of a
   // whitespace run after its first maps *past* the space the run became, so a span that
   // ends inside a run still contains it.
-  const positions = new Array<number>(source.length + 1);
+  const positions = Array.from<number>({ length: source.length + 1 });
   let collapsed = "";
   let index = 0;
   while (index < source.length) {
