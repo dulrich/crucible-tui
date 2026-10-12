@@ -18,9 +18,19 @@ fn hljs_names_resolve_through_the_table() {
 
 #[test]
 fn rust_extras_are_kept_and_unknowns_stay_unsupported() {
-    for name in ["graphql", "hcl", "vue", "zig", "go", "rust"] {
+    for name in [
+        "graphql",
+        "hcl",
+        "vue",
+        "zig",
+        "go",
+        "rust",
+        "powershell",
+        "ps",
+        "ps1",
+    ] {
         assert!(supports_language(name), "{name}");
     }
-    assert!(!supports_language("powershell"));
+    assert!(!supports_language("vbnet"));
     assert!(!supports_language("no-such-language"));
 }

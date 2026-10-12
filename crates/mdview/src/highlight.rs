@@ -23,7 +23,8 @@
 //! - Newlines are emitted outside any span, so a styled run never straddles a line.
 //!
 //! The syntax set loads lazily, once per process ([`SYNTAXES`]), on the first fence that needs
-//! it; a fence resolved to `plaintext` never loads it.
+//! it; a fence resolved to `plaintext` never loads it. The set is two-face's plus the grammars
+//! vendored under `crates/mdview/syntaxes/` (PowerShell), precompiled by `build.rs`.
 
 use std::sync::LazyLock;
 
@@ -124,8 +125,16 @@ pub const SCOPE_MAP: &[(&str, &str)] = &[
     ("markup.list", "bullet"),
 ];
 
-/// two-face's extended grammar set (newline variant), loaded once per process on first use.
-pub static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+/// two-face's extended grammar set (newline variant) plus the vendored grammars under
+/// `crates/mdview/syntaxes/` (PowerShell), dumped by `build.rs`; loaded once per process on
+/// first use.
+pub static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(|| {
+    syntect::dumps::from_uncompressed_data(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/syntaxes.bin"
+    )))
+    .expect("build.rs wrote a valid syntax dump")
+});
 
 fn theme_chain(key: &str) -> &'static [StyleName] {
     THEME
@@ -354,6 +363,16 @@ mod tests {
         let out = highlight_to_ansi(SgrMode::Full, "let x = 1; // hi", Some("javascript"));
         assert!(out.contains("\u{1b}[34m"), "{out:?}");
         assert!(out.contains("\u{1b}[32m"), "{out:?}");
+    }
+
+    #[test]
+    fn vendored_powershell_grammar_highlights() {
+        let code = "# greet\n$Name = 'World'\nWrite-Host \"Hello, $Name\"";
+        for lang in ["powershell", "ps", "ps1"] {
+            let out = highlight_to_ansi(SgrMode::Full, code, Some(lang));
+            assert!(out.contains('\u{1b}'), "{lang}: {out:?}");
+            assert_eq!(crate::list_lines::strip_ansi(&out), code, "{lang}");
+        }
     }
 
     #[test]

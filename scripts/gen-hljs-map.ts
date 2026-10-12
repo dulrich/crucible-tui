@@ -75,8 +75,10 @@ for (const language of hljs.listLanguages()) {
  * token with the syntect grammar that covers it (e.g. hljs `shell` is "Shell Session"). Each key
  * must be a real highlight.js name and each target a syntax in the dumped set, or the generator
  * fails; a key the rule above already resolves is an error too, so this list cannot shadow it.
- * Deliberately absent, because two-face has no grammar for the language: powershell, vbnet,
- * scheme, handlebars, the `*-repl` sessions, and the rest the WP-6b report lists.
+ * Deliberately absent, because the dumped set has no grammar for the language: vbnet, scheme,
+ * handlebars, the `*-repl` sessions, and the rest the WP-6b report lists. powershell (and its
+ * aliases ps, ps1) left this list at WP-6c: the grammar vendored under crates/mdview/syntaxes/
+ * resolves them through syntect's own token lookup.
  */
 const REVIEWED: Record<string, string> = {
   shell: "Bourne Again Shell (bash)",
