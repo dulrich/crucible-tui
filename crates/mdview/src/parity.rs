@@ -5,8 +5,7 @@
 //! - `serve`: one JSON request per line in, one JSON response per line out.
 //!   Request `{source, path?, width, tier, ambiguous, policy: {sgr, hyperlinks, tmux}, emoji?,
 //!   tokens?}`; response `{text, codeRanges}` or `{error}`.
-//! - `lex`: request `{body, tier}`; response `{tokens}` or `{error}` (the adapter is WP-7's,
-//!   so today every request errors).
+//! - `lex`: request `{body, tier}`; response `{tokens}` (`crate::lex`, the comrak adapter)
 //! - `style-table`: dump the committed SGR table (`style.rs`), one JSON line.
 //!
 //! **A request never yields a response that could read as a match unless `render` returned
@@ -149,13 +148,14 @@ pub fn handle_render(line: &str) -> String {
     result.unwrap_or_else(|message| error_line(&message))
 }
 
-/// One `lex` request line in, one response line out. The adapter is WP-7's.
+/// One `lex` request line in, one response line out (`crate::lex::lex`).
 pub fn handle_lex(line: &str) -> String {
     let result = (|| -> Result<String, String> {
         let request: Value = serde_json::from_str(line).map_err(|e| format!("bad request: {e}"))?;
-        field(&request, "body")?.as_str().ok_or("bad body")?;
-        parse_tier(field(&request, "tier")?)?;
-        Err("unimplemented".into())
+        let body = field(&request, "body")?.as_str().ok_or("bad body")?;
+        let tier = parse_tier(field(&request, "tier")?)?;
+        let tokens = crate::lex::lex(body, tier);
+        Ok(json!({ "tokens": tokens }).to_string())
     })();
     result.unwrap_or_else(|message| error_line(&message))
 }

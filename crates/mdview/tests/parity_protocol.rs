@@ -36,11 +36,16 @@ fn serve_answers_each_line_once_and_skips_blank_lines() {
 }
 
 #[test]
-fn the_stub_lexer_errors() {
+fn the_lexer_answers_with_census_tokens() {
     let response = parse(&mdview::parity::handle_lex(
         "{\"body\":\"x\",\"tier\":\"ascii\"}",
     ));
-    assert_eq!(response["error"], "unimplemented");
+    assert_eq!(response["tokens"][0]["type"], "paragraph");
+    assert_eq!(response["tokens"][0]["tokens"][0]["raw"], "x");
+    let bad = parse(&mdview::parity::handle_lex(
+        "{\"body\":\"x\",\"tier\":\"nope\"}",
+    ));
+    assert!(bad["error"].is_string());
 }
 
 #[test]

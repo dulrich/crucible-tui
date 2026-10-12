@@ -190,11 +190,61 @@ function isTaskRewrite(tsLine: string, rustLine: string): boolean {
  * task line marked treats as verbatim code; comrak's relaxed tasklist has no pre-pass, so the
  * Rust side keeps the source bytes.
  *
- * Scope, stated rather than implied: the plan's other D-B consequence — task items inside
- * blockquotes and ordered lists becoming recognised — has no corpus instance today and is a
- * render-level question; it is not matched here and would surface as `disallowed`.
+ * The plan's other D-B consequence — task items inside blockquotes and ordered lists becoming
+ * recognised — is `taskNowRecognised` below (WP-7); the entry's predicate is the union.
  */
 function taskStatePrepass(site: Site): boolean {
+  return taskFenceRewrite(site) || taskNowRecognised(site);
+}
+
+/** `src/lists.ts`'s `RAW_TASK_STATE`, restated. */
+const RAW_TASK_STATE = /^\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[(.)\]( *)/;
+
+/** Strip a leading `[c] +` from an item's first text token (and its first inline text). */
+function stripCheckbox(tokens: Node[], char: string): Node[] | null {
+  const prefix = new RegExp(`^\\[${char.replace(/[\\^$.*+?()[\]{}|/-]/g, "\\$&")}\\] +`);
+  const [head, ...rest] = tokens;
+  if (head === undefined || (head.type !== "text" && head.type !== "paragraph")) return null;
+  const strip = (n: Node): Node | null => {
+    if (n.type !== "text") return null;
+    const m = prefix.exec(s(n.text));
+    if (!m || !s(n.raw).startsWith(m[0])) return null;
+    return { ...n, raw: s(n.raw).slice(m[0].length), text: s(n.text).slice(m[0].length) };
+  };
+  const inline = Array.isArray(head.tokens) ? (head.tokens as Node[]) : [];
+  const [first, ...more] = inline;
+  const strippedFirst = first === undefined ? null : strip(first);
+  if (strippedFirst === null) return null;
+  const strippedHead = head.type === "text" ? strip(head) : head;
+  if (strippedHead === null) return null;
+  return [{ ...strippedHead, tokens: [strippedFirst, ...more] }, ...rest];
+}
+
+/**
+ * D-B's second consequence (WP-7): a task item the pre-pass's line-anchored regex never
+ * reached — inside a blockquote, or in an ordered list — with an Obsidian custom state that
+ * marked's GFM-only `istask` does not recognise. comrak's relaxed tasklist recognises it, so
+ * the Rust item is `task: true, checked: true` with the checkbox stripped from its first text,
+ * where marked kept `[c] ` as literal text. The site is the list item record; everything but
+ * the checkbox must be equal.
+ */
+function taskNowRecognised(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (site.ts === undefined || site.rust === undefined || Array.isArray(site.ts) || Array.isArray(site.rust)) return false;
+  // A list item record carries no `type` (the census's `items` entries are not nodes).
+  const ts = site.ts as Record<string, unknown>;
+  const rust = site.rust as Record<string, unknown>;
+  if ("type" in ts || "type" in rust || !("task" in ts) || !("task" in rust)) return false;
+  if (ts.task !== false || rust.task !== true || rust.checked !== true || ts.raw !== rust.raw) return false;
+  if (ts.loose !== rust.loose) return false;
+  const match = RAW_TASK_STATE.exec(s(ts.raw));
+  const char = match?.[1];
+  if (char === undefined || char === " " || char === "x" || char === "X") return false;
+  const stripped = stripCheckbox(asArray(ts.tokens as Node[] | undefined), char);
+  return stripped !== null && JSON.stringify(stripped) === JSON.stringify(rust.tokens);
+}
+
+function taskFenceRewrite(site: Site): boolean {
   if (isRender(site)) return false;
   const ts = site.ts;
   const rust = site.rust;
@@ -344,7 +394,9 @@ export const REGISTRY: readonly Divergence[] = [
     spec:
       "plans/mdview-rust-port.md D-B: the task-state pre-pass is retired; its fence toggle " +
       'rewrites task lines marked treats as fenced code (src/AGENTS.md "P1"), CommonMark ' +
-      "0.31 §4.5 says fenced-code content is literal.",
+      "0.31 §4.5 says fenced-code content is literal; and task items the pre-pass's " +
+      "line-anchored regex never reached (blockquote, ordered list) become recognised under " +
+      "comrak's relaxed tasklist, which D-B's text names.",
     ratified: { by: "user (plan approval)", date: "2026-10-11" },
     witness: "tests/fixtures/divergences/task-state-prepass.md",
     status: "live",

@@ -12,7 +12,12 @@
  * - two arrays of **different length** → the arrays themselves are the site (the parent
  *   array, at the path of the array). Positional pairing past a length mismatch would
  *   attribute misaligned nodes, so the walk stops there;
- * - two arrays of equal length → pair positionally and descend into each element;
+ * - two arrays of equal length whose node `type`s differ at some position → the arrays are
+ *   the site too (WP-7): equal length with a type mismatch is a misalignment exactly like a
+ *   length mismatch (e.g. `[text, del, text]` against `[text, codespan, text]`), and pairing
+ *   it positionally would split one difference into sites no entry can judge alone;
+ * - two arrays of equal length and equal types → pair positionally and descend into each
+ *   element;
  * - two records (census nodes, list items, table cells) → the record is the site when the
  *   `type`s differ, when the key sets differ (`text.tokens` presence is load-bearing), when
  *   any scalar field differs, or when an array of scalars (`align`) differs; otherwise
@@ -71,8 +76,9 @@ export function diffTokens(ts: unknown[], rust: unknown[], tier: Tier): TokenSit
   const site = (path: string, a: unknown, b: unknown): void => {
     sites.push({ path, ts: a as Node | Node[] | undefined, rust: b as Node | Node[] | undefined, tier });
   };
+  const typeOf = (v: unknown): unknown => (isRec(v) ? v.type : undefined);
   const walkArray = (path: string, a: unknown[], b: unknown[]): void => {
-    if (a.length !== b.length) {
+    if (a.length !== b.length || a.some((x, i) => typeOf(x) !== typeOf(b[i]))) {
       site(path, a, b);
       return;
     }
