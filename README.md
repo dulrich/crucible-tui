@@ -85,6 +85,7 @@ config file — validated against the highlighter's own supported-language list 
 anything is written, so a typo is rejected with an explanation rather than silently
 producing an unhighlighted fence later. `dataviewjs` → `javascript` and `dataview` →
 `sql` are built in and need no configuration; a user entry for either overrides it.
+Which languages the highlighter covers, and which it does not, is [`docs/highlight-languages.md`](docs/highlight-languages.md).
 
 ### Config
 
