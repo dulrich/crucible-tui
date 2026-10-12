@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-const REQUEST: &str = r##"{"source":"# hi\n","width":80,"tier":"unicode","ambiguous":"narrow","policy":{"sgr":"none","hyperlinks":false,"tmux":false}}"##;
+const REQUEST: &str = r##"{"source":"- a list is WP-4's\n","width":80,"tier":"unicode","ambiguous":"narrow","policy":{"sgr":"none","hyperlinks":false,"tmux":false}}"##;
 
 fn parse(line: &str) -> Value {
     serde_json::from_str(line).expect("response is JSON")
@@ -13,7 +13,7 @@ fn parse(line: &str) -> Value {
 #[test]
 fn a_well_formed_render_request_gets_an_unimplemented_error_never_text() {
     let response = parse(&mdview::parity::handle_render(REQUEST));
-    assert_eq!(response["error"], "unimplemented");
+    assert_eq!(response["error"], "unimplemented: list");
     assert!(response.get("text").is_none());
 }
 
@@ -32,7 +32,11 @@ fn serve_answers_each_line_once_and_skips_blank_lines() {
     let text = String::from_utf8(out).expect("utf8");
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 2);
-    assert!(lines.iter().all(|l| parse(l)["error"] == "unimplemented"));
+    assert!(
+        lines
+            .iter()
+            .all(|l| parse(l)["error"] == "unimplemented: list")
+    );
 }
 
 #[test]
