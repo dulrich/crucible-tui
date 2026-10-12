@@ -14,7 +14,9 @@
  *   must match exactly;
  * - **render-dependent**: must match exactly, except that a Rust run reporting the
  *   renderer's `Unimplemented` (`mdview: render: unimplemented`, exit 2) is counted as
- *   `pending-renderer` and not compared. **`pending-renderer` must reach 0 by WP-9.**
+ *   `pending-renderer` and not compared. **`pending-renderer` must reach 0 by WP-9.** A
+ *   case whose stdout differs only in SGR, line for line, is counted as `dc-relaxed` (D-C:
+ *   the highlighter's colour) and named in the summary; it is never a silent pass.
  *
  * The pty: `script -qec '<cmd>' /dev/null` (util-linux) for the TTY and hyperlink-ceiling
  * cases. The pty merges stderr into stdout and turns `\n` into `\r\n`; the only
@@ -191,6 +193,16 @@ chmodSync(UNREADABLE, 0o000);
 let independent = 0;
 let independentMatched = 0;
 let dependentMatched = 0;
+// D-C (plan Decision D-C, 2026-10-12): a render-dependent case whose stdout differs only in SGR,
+// line for line, is the highlighter's relaxation — counted and named, never silent. This harness
+// has no code ranges; the R-gate (render-diff, P2–P4) is what holds SGR outside fences to bytes.
+const dcRelaxed: string[] = [];
+const SGR_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;:]*m`, "g");
+function sgrOnlyDifference(a: string, b: string): boolean {
+  const x = a.split("\n");
+  const y = b.split("\n");
+  return x.length === y.length && x.every((line, i) => line === y[i] || line.replace(SGR_RE, "") === (y[i] ?? "").replace(SGR_RE, ""));
+}
 let pending = 0;
 const mismatches: string[] = [];
 for (const c of cases) {
@@ -205,11 +217,15 @@ for (const c of cases) {
   }
   const diffs: string[] = [];
   if (ts.code !== rs.code) diffs.push(`exit ts=${ts.code} rust=${rs.code}`);
-  if (ts.stdout !== rs.stdout) diffs.push(`stdout differs\n  ts:   ${JSON.stringify(ts.stdout.slice(0, 300))}\n  rust: ${JSON.stringify(rs.stdout.slice(0, 300))}`);
+  const dc = c.dependent && ts.stdout !== rs.stdout && sgrOnlyDifference(ts.stdout, rs.stdout);
+  if (dc) dcRelaxed.push(c.name);
+  if (ts.stdout !== rs.stdout && !dc) diffs.push(`stdout differs\n  ts:   ${JSON.stringify(ts.stdout.slice(0, 300))}\n  rust: ${JSON.stringify(rs.stdout.slice(0, 300))}`);
   if (ts.stderr !== rs.stderr) diffs.push(`stderr differs\n  ts:   ${JSON.stringify(ts.stderr.slice(0, 300))}\n  rust: ${JSON.stringify(rs.stderr.slice(0, 300))}`);
   if (ts.config !== rs.config) diffs.push(`config differs\n  ts:   ${JSON.stringify(ts.config)}\n  rust: ${JSON.stringify(rs.config)}`);
   if (diffs.length > 0) {
     mismatches.push(`[${c.dependent ? "dependent" : "independent"}] ${c.name}\n  ${diffs.join("\n  ")}`);
+  } else if (dc) {
+    // counted in dcRelaxed above, neither matched nor mismatched
   } else if (c.dependent) {
     dependentMatched += 1;
   } else {
@@ -221,6 +237,6 @@ rmSync(SANDBOX, { recursive: true, force: true });
 
 for (const m of mismatches) process.stdout.write(`${m}\n`);
 process.stdout.write(
-  `cli-diff: rust=${RUST.slice(ROOT.length + 1)} cases=${cases.length} independent=${independentMatched}/${independent} dependent-matched=${dependentMatched} pending-renderer=${pending} mismatches=${mismatches.length}\n`,
+  `cli-diff: rust=${RUST.slice(ROOT.length + 1)} cases=${cases.length} independent=${independentMatched}/${independent} dependent-matched=${dependentMatched} pending-renderer=${pending} dc-relaxed=${dcRelaxed.length}${dcRelaxed.length > 0 ? ` (${dcRelaxed.join(", ")})` : ""} mismatches=${mismatches.length}\n`,
 );
 process.exit(mismatches.length > 0 ? 1 : 0);

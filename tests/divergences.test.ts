@@ -129,6 +129,31 @@ describe("divergence registry — witnesses", () => {
           expect(attribute(site)).toEqual({ id: entry.id });
           continue;
         }
+        if (entry.id === "hljs-prototype-key") {
+          // A render site: the TS side is the real colour-on render, which writes literal
+          // `undefined` around ReasonML's `constructor` span; the Rust side is the same render
+          // without the defect (the port's theme lookup has no prototype).
+          const glyphs = tier === "unicode" ? UNICODE_GLYPHS : ASCII_GLYPHS;
+          const ts = renderDocumentDetailed(source, 80, glyphs, NARROW_MEASURE, undefined, undefined, {
+            sgr: "full",
+            hyperlinks: false,
+            tmux: false,
+          });
+          expect(ts.text).toContain("undefined");
+          const site: Site = {
+            kind: "render",
+            path: entry.witness,
+            tier,
+            policy: "P2",
+            ts: { text: ts.text, codeRanges: ts.codeRanges },
+            rust: { text: ts.text.replaceAll("undefined", ""), codeRanges: ts.codeRanges },
+          };
+          expect(attribute(site)).toEqual({ id: entry.id });
+          // A real code difference beside it is not claimed.
+          const worse: Site = { ...site, rust: { ...site.rust, text: site.rust.text.replace("getByRole", "getByRoles") } };
+          expect(attribute(worse)).not.toEqual({ id: entry.id });
+          continue;
+        }
         const ts = tsTokens(source, tier) as Node[];
         const sites = diffTokens(ts, spec(entry, ts, source), tier);
         const own = sites.filter((site) => REGISTRY.filter((e) => e.predicate(site)).map((e) => e.id).join() === entry.id);
@@ -218,5 +243,47 @@ describe("lexer-diff against the comrak adapter (WP-7)", () => {
     const t = (raw: string): Node => ({ type: "text", raw, text: raw });
     const sites = diffTokens([t("a"), { type: "codespan", text: "b" }], [t("a"), t("b")], "unicode");
     expect(sites.map((x) => x.path)).toEqual(["$"]);
+  });
+});
+
+describe("render-site composition (2026-10-12)", () => {
+  const E = String.fromCharCode(27);
+  // A failed-frontmatter render: line 1 is the diagnostic, then a fenced block at lines 3-4.
+  const site = (policy: string, rustFence: string, rustDiag = "! rust says no"): Site => ({
+    kind: "render",
+    path: "synthetic",
+    tier: "unicode",
+    policy,
+    ts: {
+      text: ["! ts says no", "", `${E}[33mecho${E}[39m hi`, "done"].join("\n"),
+      codeRanges: [[3, 3]],
+      frontmatter: { parsed: false, diagnostic: [0, 1] },
+    },
+    rust: {
+      text: [rustDiag, "", rustFence, "done"].join("\n"),
+      codeRanges: [[3, 3]],
+      frontmatter: { parsed: false, diagnostic: [0, 1] },
+    },
+  });
+
+  test("D-A composes with D-C: a colour-on fence after the diagnostic may differ in SGR only", () => {
+    expect(attribute(site("P2", "echo hi"))).toEqual({ id: "yaml-diagnostic" });
+  });
+
+  test("…but not with colour off, and not when the fence's visible text differs", () => {
+    expect(attribute(site("P0", "echo hi"))).not.toEqual({ id: "yaml-diagnostic" });
+    expect(attribute(site("P2", "echo HI"))).not.toEqual({ id: "yaml-diagnostic" });
+  });
+
+  test("hljs-prototype-key never claims an `undefined` outside a code range", () => {
+    const outside: Site = {
+      kind: "render",
+      path: "synthetic",
+      tier: "unicode",
+      policy: "P2",
+      ts: { text: "a undefined b\ncode", codeRanges: [[2, 2]] },
+      rust: { text: "a  b\ncode", codeRanges: [[2, 2]] },
+    };
+    expect(attribute(outside)).not.toEqual({ id: "hljs-prototype-key" });
   });
 });

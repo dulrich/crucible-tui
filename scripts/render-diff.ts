@@ -91,6 +91,7 @@
  * neutral leaves (`./hash`, `./sweep-options`) hold those two symbols now.
  * `tests/scripts-acyclic.test.ts` is the gate that keeps the graph a DAG.
  */
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -417,7 +418,38 @@ export async function selectCorpora(options: CliOptions): Promise<{ manifestPath
     );
   }
 
-  return { manifestPath, corpora };
+  const deduped = dedupeCorpora(corpora);
+  if (deduped.dropped > 0) {
+    console.log(`render-diff: ${deduped.dropped} file(s) listed by more than one corpus — compared once, under the first`);
+  }
+  return { manifestPath, corpora: deduped.corpora };
+}
+
+/**
+ * Drop a file a later corpus lists again (by real path), keeping its first appearance. A manifest
+ * that names one file under two corpora would otherwise render it twice under one key, and
+ * `pairRecords`' map would report the duplicates as unpaired (2026-10-12: 8 T1 files sit in both
+ * `durable` and `spike-sample`).
+ */
+export function dedupeCorpora(
+  corpora: SelectedCorpus[],
+  real: (path: string) => string = (path) => realpathSync(path),
+): { corpora: SelectedCorpus[]; dropped: number } {
+  const seen = new Set<string>();
+  let dropped = 0;
+  const out = corpora.map(({ spec, files }) => ({
+    spec,
+    files: files.filter((file) => {
+      const key = real(file);
+      if (seen.has(key)) {
+        dropped += 1;
+        return false;
+      }
+      seen.add(key);
+      return true;
+    }),
+  }));
+  return { corpora: out, dropped };
 }
 
 /** Keep the selected files whose global index `k` (across corpora, in order) has `k % n === i - 1`. */
