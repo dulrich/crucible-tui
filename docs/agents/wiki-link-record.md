@@ -1,7 +1,9 @@
 # The wiki-link carrier defect — the full record
 
-*Reference record for `src/`, moved out of `src/AGENTS.md` at WP-4 of
-`plans/docs-and-memory-curation.md`. **`src/AGENTS.md` is the parent contract — read it
+> **Historical as of `TS_BASELINE` (`c097c66`).** The TypeScript renderer this record cites as live code was deleted at WP-9 of `plans/mdview-rust-port.md`; its `src/*.ts` paths name that sha's tree, and the Rust port of each module is `crates/mdview/src/<name>.rs`. The measurements stand as recorded.
+
+*Reference record for `src/`, moved out of `crates/mdview/AGENTS.md` at WP-4 of
+`plans/docs-and-memory-curation.md`. **`crates/mdview/AGENTS.md` is the parent contract — read it
 first**, and read its "How to read this file" for the two conventions everything below is
 written under: every requirement is stated with the measurement that established it, and a
 citation like `index.js:NNN` is historical evidence from `marked-terminal@7.3.0` rather
@@ -14,7 +16,7 @@ fix designs, the C4 pass-through and the D4 GFM pipe rule, and witness ownership
 `AGENTS.md`'s Dependencies paragraph told the retirement half of this story a second time;
 it is merged in at the end of this file, so this is the one owning home.
 
-**The live carrier census — three carriers, not five — stays in `src/AGENTS.md`**, "The
+**The live carrier census — three carriers, not five — stays in `crates/mdview/AGENTS.md`**, "The
 sentinels": code points 2 and 3 mean nothing to this renderer now and pass through as
 content, while 0 and 1 keep their strips.
 
@@ -94,7 +96,7 @@ reason the matrix does not name shows up there rather than nowhere.
 #### Three further defects the same mechanism caused — all three repaired, WP-2
 
 Each was invisible to every gate `bun run verify` runs, for the reason "Colourless gates cannot
-see colour-only defects" (`src/AGENTS.md`) gives: they were colour-only, or inside a
+see colour-only defects" (`crates/mdview/AGENTS.md`) gives: they were colour-only, or inside a
 `codeRange`, or both — which is why none of
 the three ever showed up in a green run before this plan.
 
@@ -181,9 +183,9 @@ work this repo has already deferred once). That is a successor plan's job — pl
 owning the lexer — and the three failures above, together with the context table and the
 witnesses it cites, are its starting record rather than a foundation to build on: a future
 fix that changes any pinned byte will trip a named witness, which is the point. This
-record sits beside, and does not amend, "The task-state pre-pass" (`src/AGENTS.md`): that pass's own
+record sits beside, and does not amend, "The task-state pre-pass" (`crates/mdview/AGENTS.md`): that pass's own
 class-C exception was requested and **the user withheld it** (`src/render.ts:193-213`,
-`rewriteTaskState` — `src/AGENTS.md`'s task-state section). The two defects share a
+`rewriteTaskState` — `crates/mdview/AGENTS.md`'s task-state section). The two defects share a
 mechanism — an unguarded
 pre-lexer substitution reaching fenced or indented code — but they are independently
 dispositioned, and repairing one does not authorize repairing the other.
@@ -292,4 +294,4 @@ three env-pinned render-diff runs against the pre-cutover commit (`9c19997`):
 table above are the full record this sentence used to point at.
 
 
-**And the successor this record kept naming has arrived for the viewer.** `WikiLinkToken` kept `slug` and `alias` "because a successor that navigates a wiki-link needs the *target*, not the label"; WP-2 of `plans/follow-wiki-links.md` is that successor, and it added `fragment` beside them for the same reason. A label whose slug names a file under the note's vault root is now wrapped in an OSC-8 `file://` link, on the existing `--hyperlinks` axis, with the resolution itself owned by `src/wikiresolve.ts` and reached through one optional `LayoutContext` field. **The live record of that seam is `src/AGENTS.md`, "Following wiki-links"** — D1–D7, the measured vault, the cells deferral and the byte-stability argument. What stays here is what this file has always been: why the *carrier* mechanism existed and how it was retired, which is the history the new behaviour is built on top of rather than part of.
+**And the successor this record kept naming has arrived for the viewer.** `WikiLinkToken` kept `slug` and `alias` "because a successor that navigates a wiki-link needs the *target*, not the label"; WP-2 of `plans/follow-wiki-links.md` is that successor, and it added `fragment` beside them for the same reason. A label whose slug names a file under the note's vault root is now wrapped in an OSC-8 `file://` link, on the existing `--hyperlinks` axis, with the resolution itself owned by `src/wikiresolve.ts` and reached through one optional `LayoutContext` field. **The live record of that seam is `crates/mdview/AGENTS.md`, "Following wiki-links"** — D1–D7, the measured vault, the cells deferral and the byte-stability argument. What stays here is what this file has always been: why the *carrier* mechanism existed and how it was retired, which is the history the new behaviour is built on top of rather than part of.

@@ -1,7 +1,9 @@
 # Ambiguous width, the probe, and the table emitter
 
-*Reference record for `src/`, moved out of `src/AGENTS.md` at WP-4 of
-`plans/docs-and-memory-curation.md`. **`src/AGENTS.md` is the parent contract — read it
+> **Historical as of `TS_BASELINE` (`c097c66`).** The TypeScript renderer this record cites as live code was deleted at WP-9 of `plans/mdview-rust-port.md`; its `src/*.ts` paths name that sha's tree, and the Rust port of each module is `crates/mdview/src/<name>.rs`. The measurements stand as recorded.
+
+*Reference record for `src/`, moved out of `crates/mdview/AGENTS.md` at WP-4 of
+`plans/docs-and-memory-curation.md`. **`crates/mdview/AGENTS.md` is the parent contract — read it
 first**, and read its "How to read this file" for the two conventions everything below is
 written under: every requirement is stated with the measurement that established it, and a
 citation like `index.js:NNN` is historical evidence from `marked-terminal@7.3.0` rather
@@ -14,7 +16,7 @@ validation table the man page cites), why `wide` forces the ASCII glyph tier, th
 `cli-table3` padding residual and the owned emitter that closed it, and the sweep's
 independent axes.
 
-**The glyph tier itself stays in `src/AGENTS.md`** — this file's "`wide` forces the ASCII
+**The glyph tier itself stays in `crates/mdview/AGENTS.md`** — this file's "`wide` forces the ASCII
 glyph tier" is the arithmetic behind that section's precedence rule. The *dependency*
 half of the `cli-table3` story — when it left `dependencies`, when it left the tree, and
 what took its declaration slot — is `docs/agents/dependency-history.md`; the *measurement*
@@ -187,7 +189,7 @@ handled as a **byte** (`\x03`), not a signal, because raw mode is exactly what t
 
 ### `wide` forces the ASCII glyph tier — arithmetic, not taste
 
-The glyph-tier section (`src/AGENTS.md`) says *"every Unicode substitute is exactly 1 column, so
+The glyph-tier section (`crates/mdview/AGENTS.md`) says *"every Unicode substitute is exactly 1 column, so
 the tier has no
 width impact and `chromeWidth` stays `3N+1`"*. **That is a narrow-measurement statement, and
 under `wide` it is false for most of the set**: `•` (U+2022), `─` (U+2500) and the entire

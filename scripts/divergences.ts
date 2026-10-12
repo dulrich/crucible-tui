@@ -1,6 +1,14 @@
 /**
  * The divergence registry — WP-1 of `plans/mdview-rust-port.md` (Decisions locked 3, D-A..D-D).
  *
+ * **Frozen at `TS_BASELINE` (`c097c66`), the last commit with the TypeScript renderer.** WP-9
+ * deleted that renderer, so no gate compares against TS any more and nothing new is added here:
+ * this is the ratified record of every way the Rust port knowingly differs from it, kept for
+ * history and still read by `scripts/render-diff.ts`'s attribution (a Rust-vs-Rust run is
+ * class-A or it fails). Its witness fixtures stay in `tests/fixtures/divergences/`; its test,
+ * which needed the TS lexer, is at `TS_BASELINE` `tests/divergences.test.ts`. The `src/*.ts`
+ * citations below name `TS_BASELINE`'s tree.
+ *
  * The port's parity rule is byte-identical to the TS output, with exactly one kind of allowed
  * exception: a **registered** divergence, each with a spec citation, a ratification and a
  * witness fixture. Every differing site any gate finds is attributed here, mechanically:

@@ -1,11 +1,11 @@
 //! Argument parsing, width resolution and the view path, ported behaviourally from
-//! `src/cli.ts` (WP-8 of `plans/mdview-rust-port.md`). The TS file is the spec; every message,
+//! `TS_BASELINE` `src/cli.ts` (WP-8 of `plans/mdview-rust-port.md`). The TS file is the spec; every message,
 //! usage text and exit path is byte-identical unless this header names the departure.
 //!
 //! Process state is read here (env, TTY-ness, terminal columns, cwd) and handed to
 //! `colour.rs`/`glyphs.rs`/`probe.rs` as values, the way `cli.ts` hands them `process.env`.
 //!
-//! Deliberate TS quirks reproduced (each cites `src/cli.ts`):
+//! Deliberate TS quirks reproduced (each cites `TS_BASELINE` `src/cli.ts`):
 //! - a bare `<file.md>` with no subcommand is the view path; `view`/`help`/`highlight-as`/
 //!   `probe` dispatch only when they are exactly `args[0]` (`main`);
 //! - `--width`'s value goes through JS `Number()` — `0x50`, `1e2`, ` 80 ` are all valid, an

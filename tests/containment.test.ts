@@ -12,7 +12,7 @@ import {
   scanTree,
   type ContainmentContext,
 } from "./helpers/containment";
-import { BUNDLED_DEFAULT_MANIFEST } from "../src/config";
+import { BUNDLED_DEFAULT_MANIFEST } from "../scripts/measure/config";
 
 const MDVIEW_ROOT = join(import.meta.dir, "..");
 

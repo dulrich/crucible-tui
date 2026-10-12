@@ -1,5 +1,5 @@
 //! The owned block leaves — code, hr, html, paragraph, heading, blockquote — and the shared
-//! `transform`, ported from `src/blocks.ts` (WP-3 of `plans/mdview-rust-port.md`).
+//! `transform`, ported from `TS_BASELINE` `src/blocks.ts` (WP-3 of `plans/mdview-rust-port.md`).
 //!
 //! Each function takes already-walked inline text where the TS original took a `parseInline`
 //! callback: the walk (`walk.rs`) owns recursion, so these stay leaves. The syntax highlighter

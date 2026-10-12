@@ -1,7 +1,7 @@
 //! The XDG config load, the `color`/`hyperlinks` directives and the `highlight-as` write
-//! path, ported behaviourally from `src/config.ts` (WP-8 of `plans/mdview-rust-port.md`).
+//! path, ported behaviourally from `TS_BASELINE` `src/config.ts` (WP-8 of `plans/mdview-rust-port.md`).
 //!
-//! Reading is lenient, writing refuses (`src/AGENTS.md`, "Command-line surface"): a malformed
+//! Reading is lenient, writing refuses (`crates/mdview/AGENTS.md`, "Command-line surface"): a malformed
 //! file degrades to defaults with one stderr notice, a bad entry is dropped individually, but
 //! `highlight-as` refuses to write into a file it cannot parse.
 //!

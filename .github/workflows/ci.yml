@@ -45,10 +45,10 @@ jobs:
           cargo install cargo-auditable --locked --version 0.7.7
 
       # One canonical gate chain (WP-1 of plans/tn-review-remediation.md):
-      # typecheck, lint, tests, the compiled build plus a smoke of the built
-      # artifact, license freshness, the --check self-smoke, the Rust
-      # fmt/clippy/test/build/smoke steps, the three
-      # bundled sweeps (unicode, ascii, colour axis), and the security scan
+      # typecheck, lint, the Rust fmt/clippy/test/build steps and a smoke of
+      # both built binaries, the instruments' tests, license and generated-table
+      # freshness, the Rust-vs-Rust render differential, the three bundled
+      # sweeps (unicode, ascii, colour axis), and the security scan
       # above — see AGENTS.md's Run section for the full step list `bun run
       # verify` (scripts/verify.ts) runs, in order. Installation stays
       # outside verify and split by environment: this job freezes

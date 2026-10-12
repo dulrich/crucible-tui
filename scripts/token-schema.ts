@@ -1,7 +1,11 @@
 /**
  * The census schema — WP-1 of `plans/mdview-rust-port.md`, step 0(a).
  *
- * For each of the 19 token types `src/walk.ts` dispatches (marked's 18 plus `wikilink`), the
+ * Historical as of `TS_BASELINE` (`c097c66`): the TS lexer this projected is deleted, and the
+ * module stays only because `scripts/divergences.ts`' frozen predicates read its types. The
+ * `src/*.ts` citations below name that sha's tree.
+ *
+ * For each of the 19 token types `TS_BASELINE` `src/walk.ts` dispatches (marked's 18 plus `wikilink`), the
  * fields some renderer module reads, and nothing else. `crates/mdview/src/token.rs` is the same
  * schema as a Rust enum; this module projects a marked token list onto it, so a dump is stable
  * (no `raw` noise the renderer never reads, no marked-internal fields) and the L-gate compares
@@ -10,7 +14,7 @@
  * `del` (the `single-tilde-del` divergence predicate reads it).
  *
  * `tokens` on a `text` token is emitted **only when present**: its presence is load-bearing
- * (`src/list-layout.ts`'s tight-item test tells a block text token from an inline one by it).
+ * (`TS_BASELINE` `src/list-layout.ts`'s tight-item test tells a block text token from an inline one by it).
  *
  * **This module imports nothing**, within `scripts/` or `src/` — a leaf of the scripts DAG.
  */

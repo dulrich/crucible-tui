@@ -1,4 +1,4 @@
-//! The East Asian Ambiguous width probe and its cache, ported from `src/width.ts`
+//! The East Asian Ambiguous width probe and its cache, ported from `TS_BASELINE` `src/width.ts`
 //! (the measurement half is `width.rs`).
 //!
 //! - the DSR request `ESC [ 6 n` (`width.ts:494`), the reply grammar and its printable echo;

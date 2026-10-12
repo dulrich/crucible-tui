@@ -1,5 +1,7 @@
 # mdview — `scripts/`
 
+**Since WP-9 of `plans/mdview-rust-port.md` these instruments drive the Rust binary.** The sweep, the colour axis, the emoji audit and the render differential talk to the built `mdview` through its hidden `__parity` subcommand (`serve`, `lex`, `style-table`); the measurement-only modules moved from `src/` to `scripts/measure/`; and the TS-vs-Rust differentials (`lexer-diff`, `table-alloc-diff`, `frontmatter-census`, `cli-diff`, `parity-ts-server`, `width-census`, `risk-sample`, `golden-capture`) were deleted with the TypeScript renderer. **`TS_BASELINE` = `c097c66`** is the last commit with that renderer; a `src/*.ts` citation below names its tree, and the measured history stays as written.
+
 The corpus sweep (`scripts/sweep.ts` and its library half `scripts/corpus.ts`), the
 manifests it resolves, what the corpus has actually measured, and the defect detectors
 that see *under* the width gate. **The root `AGENTS.md` is the parent document — read it
@@ -57,14 +59,15 @@ Who imports whom now, top to bottom — every edge points down this list, and no
 |---|---|---|
 | `scripts/hash.ts` | `sha256Hex`, the one digest both instruments compare against archived runs | *nothing* |
 | `scripts/sweep-options.ts` | `DEFAULT_WIDTHS` and `parseWidths` — the width grammar both CLIs parse | *nothing* |
-| `scripts/revision.ts` | `materializeRevisionRoot`, `loadRevision`, and the comparison tuple's vocabulary (`GlyphTierName`, `AmbiguousModeName`, `ComboKey`, `DetectorCounts`, `ComboRecord`, `ComboErrorEntry`) | *nothing* — it reaches a revision's `src/` only through a dynamic absolute-path `import()`, deliberately |
-| `scripts/corpus.ts` | manifest parsing/resolution, the walk, `selectCorpusFiles`, `sweepCorpus`, and the two flag domains `SweepOptions` declares | *nothing* |
+| `scripts/measure/*.ts` | the measurement-only modules moved out of `src/` at WP-9: `detectors`, `list-lines`, `overflow`, the `ansi` scanner, the width `Measure`, the frontmatter split, manifest resolution (`config`) | each other only |
+| `scripts/revision.ts` | `buildRustRevision`, `loadRevision` (`rust:<dir\|ref>` only), the JSONL client, the measurer, `mdviewBinary`/`readStyleTable`, and the comparison tuple's vocabulary (`GlyphTierName`, `AmbiguousModeName`, `ComboKey`, `DetectorCounts`, `ComboRecord`, `ComboErrorEntry`) | `measure` |
+| `scripts/corpus.ts` | manifest parsing/resolution, the walk, `selectCorpusFiles`, `sweepCorpus`, `startSweepRenderer` (one `mdview __parity serve` per sweep, `policy: "env"`), and the two flag domains `SweepOptions` declares | `measure`, `revision` |
 | `scripts/diff-classify.ts` | `computeComboRecord`, `diffCombo`, `classifyDiffs` and the summary shapes — pure, reads no process, file, argument or clock | `hash`, `revision` |
-| `scripts/colour-axis.ts` | the four children, the v2 wire record, G1/G2/G3 and the join | `hash`, `corpus` |
+| `scripts/colour-axis.ts` | the four children, the v2 wire record, G1/G2/G3 (its vocabulary from `mdview __parity style-table`) and the join | `hash`, `corpus`, `measure`, `revision` |
 | `scripts/sweep.ts` | sweep CLI: flags, `printResult`, `printColourAxis`, the re-exec, the exit code | `corpus`, `colour-axis`, `sweep-options` |
 | `scripts/render-diff.ts` | differential CLI: flags, corpus selection, baseline I/O, `pairRecords`, printing, exit code | `corpus`, `revision`, `diff-classify`, `sweep-options` |
-| `scripts/emoji-audit.ts` | the emoji census | `corpus`, `sweep` |
-| `scripts/gen-licenses.ts` | generates `THIRD-PARTY-LICENSES.txt` from the actual installed runtime dependency closure (`dependencies` + `optionalDependencies`, transitively) | *nothing* |
+| `scripts/emoji-audit.ts` | the emoji census | `corpus`, `sweep`, `revision` |
+| `scripts/gen-licenses.ts` | generates `THIRD-PARTY-LICENSES.txt`: the npm runtime closure (empty since WP-9), the Cargo musl normal graph, the vendored grammars and the vendored notices (`crates/mdview/notices/`) | *nothing* |
 | `scripts/verify.ts` | the canonical `bun run verify` entrypoint — every gate in fail-fast order; runs `package.json` scripts as subprocesses | *nothing* |
 
 **`DEFAULT_WIDTHS` was declared twice, verbatim**, in `scripts/sweep.ts` and
@@ -74,7 +77,7 @@ widths are one constant in `scripts/sweep-options.ts` and the "grows, never swap
 above is stated once.
 
 **`tests/scripts-acyclic.test.ts` is the gate.** It seeds a graph with every `.ts` file
-under `scripts/`, follows every relative import transitively (which reaches `src/` too),
+under `scripts/`, follows every relative import transitively (into `scripts/measure/` too),
 and asserts Tarjan finds no strongly connected component larger than one node, no
 self-import, and no relative specifier that resolves to nothing. Specifiers are read with
 Bun's own transpiler rather than a regex, because the header comments in this directory
@@ -104,7 +107,7 @@ Manifest resolution, highest precedence first:
 
 1. `--manifest <path>` (a sweep-only CLI flag)
 2. `MDVIEW_CORPUS_MANIFEST` environment variable
-3. config key `corpusManifest` (`src/config.ts`, XDG config path)
+3. config key `corpusManifest` (`TS_BASELINE` `src/config.ts`, XDG config path)
 4. the bundled default at `corpus/default-manifest.json` — **public-safe, relative
    root, an explicit wildcard-free path list (WP-1, `plans/gate-corpus-reframe.md`):
    the 10 `tests/fixtures/*.md` fixtures plus 4 clean `tests/fixtures/witnesses/`
@@ -162,16 +165,9 @@ bullets, so it stayed green while 250 of 256 real files overflowed.
 
 **The corpora are the user's real data. Open them read-only; never write to them.**
 
-#### The rust-port binding instruments (rev 5 of `plans/mdview-rust-port.md`)
+#### The rust-port binding instruments (rev 5 of `plans/mdview-rust-port.md`) — history
 
-WP-9's binding run is the **T2 lexer-diff plus a risk-targeted render sample**, not the all-combo T2 E2E, by user ruling of 2026-10-12: on T1 every render-level diff traced back to a lexer site, and `render-diff --input tokens` feeds both renderers the same tokens, so lexer and render are verified separately.
-
-- `scripts/lexer-diff.ts --sites-out <file>` writes every site, attributed or not, as JSONL `{file, tier, path, id | disallowed | error}`. A predicate collision is a per-file **error** naming the site, and the run continues; it used to abort with no file named. The full T2 corpus (~40k files, both tiers) takes about 70 s.
-- `scripts/risk-sample.ts --manifest <T2> --sites <jsonl> --out <sample.json>` writes an explicit-path manifest.
-  - **Take-all signals:** every file with a lexer site, degraded frontmatter, a control byte, CRLF/BOM, or a table of 9+ columns.
-  - **Capped signals** (`--per-signal`, default 60, ordered by sha256 of the path): common risky constructs.
-  - It hard-codes no location: the output root is the deepest directory common to the chosen files.
-- The sample's all-combo `render-diff --input tokens` run (P0–P4) takes about 95 min for ~1.3k files.
+WP-9's binding run was the **T2 lexer-diff plus a risk-targeted render sample**, by user ruling of 2026-10-12, and it passed (`disallowed=0 errors=0` over 39,730 files; 0 disallowed in the sample under every policy) before the deletion. Both instruments, `scripts/lexer-diff.ts` and `scripts/risk-sample.ts`, compared against the TypeScript renderer and were deleted with it; they are at `TS_BASELINE`. **After the cutover the differential is Rust-vs-Rust**: `bun run scripts/render-diff.ts --rev-a rust:<ref> --rev-b rust:.` builds both sides with `--features parity-tokens` into the parity cache and must come out class-A. Measured at WP-9, `--rev-a rust:c097c66 --rev-b rust:.` over T0 at P0–P4: 1,400 combos, `diffed=0`, every non-vacuity counter non-zero.
 
 #### The real validation corpus is private, and this repo does not know where it is
 
@@ -185,7 +181,7 @@ reproduce those runs; every measured file count, date and commit lives in the ar
 because none of it belongs in a repo that ships publicly.
 
 **Describing the archive by role rather than by path is the rule, not an accident here.**
-The root `AGENTS.md`, `src/render.ts` and `scripts/sweep.ts` all previously cited
+The root `AGENTS.md`, `TS_BASELINE` `src/render.ts` and `scripts/sweep.ts` all previously cited
 private repos by name — one of them by file *and line number* — and the containment
 guard (`tests/AGENTS.md`) is what now holds the line. Keep the reasoning; drop the
 coordinates.
@@ -201,7 +197,7 @@ one is classified. They are not 79 problems:
 | Renderer defect | 77 | the frontmatter meta block's **degraded** paths, which never consult `targetWidth` |
 | Source pathology | 0 | none, despite appearances — see below |
 
-The 77 split three ways, all of them in `src/frontmatter.ts`:
+The 77 split three ways, all of them in `TS_BASELINE` `src/frontmatter.ts`:
 
 - **46** (23 files) — the parse-failure diagnostic that `formatMetaBlock`'s `catch`
   emits. It is `dim()`ed and passed through verbatim; the parser's message text runs a
@@ -244,12 +240,12 @@ again.
 it was measuring SGR codes as printable columns. A census of **4,963 tables over 29,778
 renders** found **26 overflowing renders**, and every single one has `allocFits === false`,
 `rendered === minFeasible`, and **at least 9 columns** — the precedent already accepted in
-`plans/mdview.md`. There is no second table defect. `src/table.ts` allocates correctly.
+`plans/mdview.md`. There is no second table defect. `TS_BASELINE` `src/table.ts` allocates correctly.
 
 **Width overflow barely fires on realistic documents: 1 in 575 README combos, and 0 in
 1,000 prose combos.** This is the repo's headline gate, the thing `--check` and both sweeps
 exist to measure, and on the material users actually open it is almost never the signal.
-That is *why* `src/detectors.ts` exists and why a green sweep is such weak evidence — see
+That is *why* `scripts/measure/detectors.ts` exists and why a green sweep is such weak evidence — see
 the two sections below. Do not rank a corpus on overflow; a sprint tried and had to throw
 the metric out.
 
@@ -274,7 +270,7 @@ code-range dump is the real bar.
 
 This is the fourth time a gate here passed for a narrower reason than it appeared (the
 fixture had no long bullets; the highlight path is dead under tests because the renderer
-skips highlighting unless the resolved mode is `full` — `src/blocks.ts`'s `highlightCode`
+skips highlighting unless the resolved mode is `full` — `TS_BASELINE` `src/blocks.ts`'s `highlightCode`
 returns raw code whenever `LayoutContext.sgr !== "full"`, which is every non-TTY run; tier
 purity was unmeasured; code ranges are exempt). **When a gate passes, check that it passes
 for the right reason.**
@@ -283,16 +279,16 @@ That third one is worth naming precisely, because the mechanism outlived every d
 that carried it: the rule was `marked-terminal`'s `highlight()` short-circuiting at
 `chalk.level === 0`, WP-3 of `plans/marked-terminal-replacement.md` transcribed it into this
 repo's own renderer, where the decision was `supports-color`'s answer, and WP-1 of
-`plans/colour-policy.md` made it `resolveColourPolicy`'s (`src/colour.ts`) — threaded in as a
+`plans/colour-policy.md` made it `resolveColourPolicy`'s (`TS_BASELINE` `src/colour.ts`) — threaded in as a
 value, with no library asked. Same gate, same blindness, owned twice over. Since WP-2 of that
 plan the *whole* highlighting path obeys it, `cli-highlight`'s own `chalk` having been the
-last thing that did not — see `docs/agents/colour.md` and `src/AGENTS.md`'s rendering
+last thing that did not — see `docs/agents/colour.md` and `crates/mdview/AGENTS.md`'s rendering
 policy.
 
 **And since WP-2 of `plans/colour-modes.md` the gate is narrower than "is colour on":
 `sgr !== "full"` returns raw code, so the format-preserving `formats` mode takes the same
 dark branch `none` does** (Decision 3 — an explicit, ratified *producer* exception, argued
-in `src/blocks.ts`'s `highlightCode` and enumerated in `docs/agents/colour.md`'s reader
+in `TS_BASELINE` `src/blocks.ts`'s `highlightCode` and enumerated in `docs/agents/colour.md`'s reader
 inventory). Two consequences
 for this file's instruments. The blindness above is **unchanged in extent** — every gate
 `verify` runs is still colourless and still cannot see this path. But the *coverage claim*
@@ -317,7 +313,7 @@ renders a
 per combo — `textSha`, `codeContentSha`, `codeRanges`, `detectors` — never bodies, so a
 baseline over the private corpus stays a reviewable artifact. **`codeContentSha` is the
 channel this section exists to demand**; the parity classes it feeds are documented once,
-in `src/AGENTS.md`'s "Parity: four classes".
+in `crates/mdview/AGENTS.md`'s "Parity: four classes".
 
 Two traps, each recorded because it already cost a package real time:
 
@@ -329,7 +325,7 @@ Two traps, each recorded because it already cost a package real time:
   both tools skip it silently without `-a`/`--text` — a search for a symbol that is right
   there returns nothing and reads exactly like "that channel does not exist". Recorded
   rather than fixed: the key works, and changing it is a source edit no measurement has
-  asked for. Note that `src/render.ts` deliberately avoids the same hazard, spelling its
+  asked for. Note that `TS_BASELINE` `src/render.ts` deliberately avoids the same hazard, spelling its
   own sentinel `String.fromCharCode(0)` because a raw NUL twice landed in that file during
   editing; this script did not get the same treatment.
 
@@ -357,7 +353,7 @@ the runtime closure — scans the whole of `process.argv`, so a harness flag
 by either of those names was sniffed by the very packages whose decision was under
 measurement, and the instrument silently changed what it was reading. **Neither package is
 installed now and the spelling still stands**: `mdview`'s own `--color` flag is a real
-directive (`src/cli.ts`, the top slot of the ratified precedence matrix), so a harness flag
+directive (`TS_BASELINE` `src/cli.ts`, the top slot of the ratified precedence matrix), so a harness flag
 by that name would now be read by the *renderer* rather than by a library — the same failure
 with a different owner. The spelling is a contract, pinned in `tests/sweep-colour-axis.test.ts`; do not
 "correct" it to the American spelling or to the conventional flag name.
@@ -378,7 +374,7 @@ gate change with its own evidence to bring, not a side effect of the packages le
 
 **WP-5 added a third child, `default`, and it is what G1 reads.** `on` and `off` each
 *decide* something (`FORCE_COLOR=3`/`FORCE_COLOR=0`); `default` decides nothing at all — no
-colour variable is set, so `src/colour.ts`'s resolver falls to its `isTTY` floor, which is
+colour variable is set, so `TS_BASELINE` `src/colour.ts`'s resolver falls to its `isTTY` floor, which is
 `false` on the child's piped stdout. That is the colour decision an ordinary
 `mdview file.md | somewhere` actually gets, and it is the one G1 holds to "zero sequences,
 full stop".
@@ -389,9 +385,9 @@ that plan moved off the `none` output onto the format-preserving `SgrMode`, the 
 directive a user reaches with `--color=never` or config `color: never`. G2 and G3 both
 read it: G2 gains the `visible(formats) === visible(off)` claim, which holds by
 construction for fenced code (Decision 3 keeps the syntax highlighter `full`-only) and by
-every other producer's own hue/format filter (`src/style.ts`) everywhere else; G3 gains a
+every other producer's own hue/format filter (`TS_BASELINE` `src/style.ts`) everywhere else; G3 gains a
 second, narrower vocabulary arm — a `formats`-child sequence must be a committed
-**format-class or control** pair (`src/style.ts`'s own `emitsUnder(name, "formats")` rule,
+**format-class or control** pair (`TS_BASELINE` `src/style.ts`'s own `emitsUnder(name, "formats")` rule,
 asked as a membership test) or a well-formed OSC-8/tmux-DCS, exactly as the `on`-child arm
 already allows for those two kinds. Scoped exactly as the landed G1/G3 already are
 (cycle-3 f3): a vocabulary check over the fixed, ESC-free gate corpus, never a provenance
@@ -409,7 +405,7 @@ inherited, because a developer or runner with any of these exported would otherw
 every child in the same mode (or leak a real tmux session into what G1/G3 measure) and
 produce a gate that cannot fail. Each child emits one **v2 wire record** —
 `{corpus, file, width, visibleSha, sequences, malformed}`, where `sequences` is every
-`sgr`/`osc8`/`dcs` span `src/ansi.ts`'s `scan()` found, each with its raw bytes — per
+`sgr`/`osc8`/`dcs` span `TS_BASELINE` `src/ansi.ts`'s `scan()` found, each with its raw bytes — per
 `(file, width)` as JSONL, never body text, so the axis stays affordable over the private
 corpus; the parent joins the four streams by key.
 
@@ -432,10 +428,10 @@ line is `[<corpus>] colour-axis combos=N g1=N g2=N g3=N errors=N elapsed=X.Xs`, 
   `formats` and `off` children's do (WP-4). The character channel: colour may change
   bytes, never characters, whichever explicit directive produced the render.
 - **G3** — a sequence in the `on` child's record does not parse as membership in
-  `src/style.ts`'s committed SGR table, a well-formed OSC-8 hyperlink (`scan`'s own `osc8`
+  `TS_BASELINE` `src/style.ts`'s committed SGR table, a well-formed OSC-8 hyperlink (`scan`'s own `osc8`
   classification, which is only ever assigned to a well-formed one), or a strictly-parsed
   tmux DCS wrapper whose payload, undoubled, is exactly one such OSC-8 sequence and nothing
-  else (cycle-3 f7 — `src/ansi.ts`'s `link()` emits exactly that wrapper under tmux, so a
+  else (cycle-3 f7 — `TS_BASELINE` `src/ansi.ts`'s `link()` emits exactly that wrapper under tmux, so a
   gate language without a DCS arm would reject a sequence the plan itself introduces); **or**
   a sequence in the `formats` child's record does not parse as membership in the narrower
   format/control subset of that same table, the same OSC-8 grammar, or the same DCS wrapper
@@ -484,11 +480,11 @@ corpus, in `tests/colour-axis.test.ts`'s own synthetic manifest.
 closed.** `charDiff=31` was `blockquote-list.md` (5) + `coalesced-colon-guard-continuation.md`
 (1) + `fenced-list.md` (5) + `loose-list.md` (5) + `nested-list.md` (5) + `tight-list.md`
 (5) + `defect-wp14-list-item-inline-markup.md` (5) — the layout-reasons-about-bytes class
-WP-3 of `plans/colour-policy.md` closed (see "The closure" in `src/AGENTS.md`). `sgrAny=20`
+WP-3 of `plans/colour-policy.md` closed (see "The closure" in `crates/mdview/AGENTS.md`). `sgrAny=20`
 was `simple.md`'s one wiki-link (`styleWikiLink`, 5 combos, closed at WP-4) plus the three
 frontmatter-bearing witnesses — `defect-0-crlf-frontmatter.md`,
 `defect-1-2-unparseable-frontmatter.md`, `defect-3-nested-mapping.md` — each contributing 5
-via `src/frontmatter.ts`'s `DIM_START`/`DIM_END`, closed at WP-1 when the dim went behind
+via `TS_BASELINE` `src/frontmatter.ts`'s `DIM_START`/`DIM_END`, closed at WP-1 when the dim went behind
 the resolved policy. The other 7 of 14 files were `identical` at every width and every combo
 throughout. **Both measured numbers reached zero before WP-5 ran** — WP-5 changed the
 instrument, not the renderer, and re-verified zero repairs were needed to pass the new exact
@@ -500,7 +496,7 @@ than by the gate corpus's own zero.** `tests/colour-axis.test.ts` exercises: G1 
 `authored.md` fixture (a real sequence that must be reported); G2 against a synthetic
 divergent pair on the `on`/`off` arm; G3's SGR arm against both a committed and an
 uncommitted byte pair, its OSC-8 arm against a real (non-tmux) hyperlink from
-`src/ansi.ts`'s own `link()`, and its DCS arm against both a real **tmux-wrapped**
+`TS_BASELINE` `src/ansi.ts`'s own `link()`, and its DCS arm against both a real **tmux-wrapped**
 hyperlink from the same function (the injected-tmux non-vacuity case cycle-3 f7 asks for)
 and a hostile DCS frame whose payload is not a valid OSC-8 sequence. The gate corpus
 deliberately contains no authored-escape file, which is asserted directly in
@@ -545,20 +541,20 @@ can change, and only when the manifest's own membership changes.
 **What this axis structurally could not see, and what closed it.** The colourless child sets
 `FORCE_COLOR=0` (`colourChildEnv`), which `supports-color` *and* `@colors/colors` both
 honoured — so a producer gated on either never leaked into this measurement, whatever its
-rule was in the real world. `src/table.ts`'s border and head styling was exactly that case:
+rule was in the real world. `TS_BASELINE` `src/table.ts`'s border and head styling was exactly that case:
 it read `@colors/colors`' answer, which does **not** consult `isTTY`, so piping `mdview` into
 a file with no `FORCE_COLOR` set emitted `\x1b[90m` around every border and `\x1b[1m` around
 every head cell — **205 grey pairs and 12 bold pairs on `wide-table.md` alone, measured** —
 while this axis reported the same combo as `identical` (the old classifier's clean bucket),
 because the leak was gated on a decision that itself honours `FORCE_COLOR=0`. WP-2 of
 `plans/colour-policy.md` removed that gate with the package: the table styles through
-`src/style.ts` under the resolved policy, so the piped default emits nothing and there is no
+`TS_BASELINE` `src/style.ts` under the resolved policy, so the piped default emits nothing and there is no
 longer a producer this instrument is blind to *by construction*. **G1 since WP-5 is exactly
 the check that would have caught this class directly** — a `default`-child render styled by
 an environment-only decision, with no `FORCE_COLOR` set at all, would have shown up as a G1
 failure rather than as an `identical` bucket entry that never asked the right question.
 
-`src/frontmatter.ts`'s dim was **never** gated on either package; it is what made three
+`TS_BASELINE` `src/frontmatter.ts`'s dim was **never** gated on either package; it is what made three
 frontmatter witnesses land in the old `sgrOnly` bucket rather than `identical` until WP-1 put
 it behind the policy. The old `sgrAny` counted escapes that survived `FORCE_COLOR=0`; it was
 still not a complete leak audit — a producer that consulted something other than
@@ -582,9 +578,9 @@ directly — the same file must digest differently at 40 and at 100 — independ
 population the manifest names.
 
 **What `charDiff=31` was made of, and what closed it — WP-3 of `plans/colour-policy.md`.**
-`src/lists.ts`' `fixNestedLists` regex whose `\S` matches an SGR reset's `m`;
-`src/lists.ts`' raw-byte empty-line filter; `src/wrap.ts`' escape-only run becoming a
-zero-width word — plus two more the first repair exposed, `src/render.ts`'s hard-break
+`TS_BASELINE` `src/lists.ts`' `fixNestedLists` regex whose `\S` matches an SGR reset's `m`;
+`TS_BASELINE` `src/lists.ts`' raw-byte empty-line filter; `TS_BASELINE` `src/wrap.ts`' escape-only run becoming a
+zero-width word — plus two more the first repair exposed, `TS_BASELINE` `src/render.ts`'s hard-break
 seam and its three marker-shape guards (with `substituteBullets`), all of them the same
 defect: a layout decision made on bytes rather than on columns. A worked witness:
 `tests/fixtures/tight-list.md` at 80 columns wrapped a `<br />` hard return one
@@ -596,13 +592,13 @@ the coloured side moves). **G2 since WP-5 is the same check, restated exactly**:
 `visible(on) === visible(off)` per combo, with no threshold to leave at a stale seed.
 
 **What `sgrAny=20` was made of, and what closed it — WP-1 and WP-4 of
-`plans/colour-policy.md`.** Its two mechanisms were `src/render.ts`'s old `styleWikiLink`
-(hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `src/frontmatter.ts`'s
+`plans/colour-policy.md`.** Its two mechanisms were `TS_BASELINE` `src/render.ts`'s old `styleWikiLink`
+(hardcoded `\x1b[36m\x1b[4m`, no colour decision at all) and `TS_BASELINE` `src/frontmatter.ts`'s
 `DIM_START`/`DIM_END`, both unconditional. The second went behind the policy at WP-1,
 taking the measured number to **5** — `simple.md`'s wiki-link alone — and WP-4 took the
 first, closing the mechanism entirely. At that point the wiki-link's label was marked
-through the lexer by carrier control characters (`src/wikilink.ts`) and styled after the
-walk through `src/style.ts` under the resolved policy; the colourless render of
+through the lexer by carrier control characters (`TS_BASELINE` `src/wikilink.ts`) and styled after the
+walk through `TS_BASELINE` `src/style.ts` under the resolved policy; the colourless render of
 `simple.md` lost exactly those four escape codes and not one visible character, at every
 width and both tiers. **The carrier pair itself is gone now too** — WP-2 of
 `plans/wiki-link-tokenizer.md` (`ab3518e`) retired it, moving recognition into the lexer as
@@ -613,17 +609,17 @@ either of the two retired mechanisms directly**, on the `default` child, without
 colourless-render side-channel to notice.
 
 **OSC-8 used to be outside what this can see, and WP-3 brought it inside; WP-5's wire
-record is what makes it a first-class gate input.** `stripAnsi` (`src/list-lines.ts`)
+record is what makes it a first-class gate input.** `stripAnsi` (`scripts/measure/list-lines.ts`)
 removed SGR only before WP-3, so a hyperlink — and the tmux DCS envelope around it — passed
 through the strip intact: counted as visible text by the character channel, invisible to
-the old `hasSgr` flag. It is a derivation of `src/ansi.ts`'s scanner now, and the v2 wire
+the old `hasSgr` flag. It is a derivation of `TS_BASELINE` `src/ansi.ts`'s scanner now, and the v2 wire
 record enumerates every `osc8`/`dcs` span by kind and raw bytes rather than folding them
 into one boolean — which is what lets G3 hold each kind to its own grammar instead of
 treating "any sequence" as one undifferentiated fact. **Neither the old seed nor today's
 gate is exercised by the gate corpus for this class**, and the reason is structural rather
 than lucky: hyperlinks are off on every non-TTY destination, so no child of this axis ever
 emits one over real corpus content. `tests/colour-axis.test.ts` covers the OSC-8/DCS arms
-directly instead, against sequences `src/ansi.ts`'s own `link()` produced (see above).
+directly instead, against sequences `TS_BASELINE` `src/ansi.ts`'s own `link()` produced (see above).
 
 **The axis flag is on the sweep and deliberately not on `scripts/render-diff.ts`.** That
 harness imports **both revisions into one process** (`loadRevision`; when this was written the
@@ -652,20 +648,20 @@ absent. Every row below was found with `-a`.)
 is a three-level `ctx.sgr` now — `full`/`formats`/`none` — so the question is which
 *threshold* a site uses. Every row below is `sgr !== "none"` except the highlighter, which
 is keyed to `full`; the hue/format split itself is applied once, by style name, inside
-`src/style.ts`, so no producer implements a filter of its own.)
+`TS_BASELINE` `src/style.ts`, so no producer implements a filter of its own.)
 
 | Site | What it emits | Obeys `ctx.sgr`? |
 |---|---|---|
-| `src/style.ts` (`applyStyle`) | the one styling primitive; every SGR pair in prose comes through here. Was `src/inline.ts:205-226` until WP-2 of `plans/colour-policy.md` moved it, with the byte table, into the module that owns styling. **Since WP-2 of `plans/colour-modes.md` it is also where the hue/format filter lives** — `STYLE_CLASSES` classifies each committed name, and both emitters run their existing bodies over the *filtered* chain | **yes** — returns the input untouched at `none`, and drops hue-class links at `formats` |
-| `src/inline.ts` — `grep -n "applyStyle(" src/inline.ts` | its inline call sites — strong, em, codespan, del, link (7 sites) | via `applyStyle` |
-| `src/blocks.ts` — `grep -n "applyStyle(" src/blocks.ts` | its block call sites — code, hr, html, heading, paragraph, blockquote (6 sites) | via `applyStyle` |
-| `src/lists.ts` — `grep -n "applyStyle(" src/lists.ts` | its list-item call site (1 site) | via `applyStyle` |
-| `src/inline.ts`'s `renderLink`, through `src/ansi.ts`'s `link` | **OSC-8**, not SGR, plus the tmux DCS envelope | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken. The *emitter* was `ansiEscapes.link` until WP-3 of the same plan; it is this repo's transcription now, and the href is sanitized at emission |
-| `src/wikilink.ts` (`styleWikiLabel`) | the wiki-link label's cyan+underline, applied **at emission** — the tokenizer extension lexes the label into child tokens and the prose visitor styles the rendered result through `src/style.ts`'s shared `applyStyleChain`; under `formats` the cyan drops and the underline stays — the only two-link chain here with one link of each class | **yes** — via `applyStyleChain` → `applyStyle` under the resolved policy. Two mechanisms preceded this one, both retired, both left the same trail: it was `src/render.ts:62-65`'s `styleWikiLink` (hardcoded `[36m[4m…` injected **before the lexer**, at every colour level, obeying nothing — the last row in this table that ever answered **no**) until WP-4 of `plans/colour-policy.md` replaced it with a carrier pair styled **after the walk**; WP-2 of `plans/wiki-link-tokenizer.md` (`ab3518e`) then retired the carrier pair too, moving recognition into the lexer itself, so there is no longer a post-walk pass or a carrier to account for |
-| `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit argument since WP-1 (`color`, widened to `sgr` at WP-2 of `plans/colour-modes.md`), through `src/style.ts`'s plain wrap since WP-2 of `plans/colour-policy.md`; it was two hardcoded constants and no decision at all. `dim` is **format**-class, so a metadata block renders identically under `full` and `formats` |
-| `src/table.ts` (`styleBorder`/`styleHead`) | `grey`/`bold` for borders and headers | **yes** — `renderTable`'s `sgr` argument (`color` until WP-2 of `plans/colour-modes.md`); it was `@colors/colors`' own module-load answer, which did not consult `isTTY`. It is the producer the mode split divides: **bold heads survive `formats`, grey borders do not** |
-| `src/blocks.ts`'s `highlightCode` | the syntax theme inside fences | **yes, and at a narrower threshold than every other row** — `ctx.sgr !== "full"` returns raw code (WP-2 of `plans/colour-modes.md`, Decision 3's named producer exception), where it was `ctx.color` from WP-2 of `plans/colour-policy.md` and `cli-highlight`'s bundled `chalk` level, decided at module load, before that. **This is the one site in the renderer where provenance rather than style class decides**, and it is why a `formats` render's fences are byte-identical to a `none` render's |
-| ~~`src/inline.ts:283` (`detectInlineColor`)~~ | **deleted** at WP-1 of `plans/colour-policy.md` with every consumer — the authority the first row obeys is `resolveColourPolicy` (`src/colour.ts`), threaded through `LayoutContext.sgr` | n/a |
+| `TS_BASELINE` `src/style.ts` (`applyStyle`) | the one styling primitive; every SGR pair in prose comes through here. Was `TS_BASELINE` `src/inline.ts:205-226` until WP-2 of `plans/colour-policy.md` moved it, with the byte table, into the module that owns styling. **Since WP-2 of `plans/colour-modes.md` it is also where the hue/format filter lives** — `STYLE_CLASSES` classifies each committed name, and both emitters run their existing bodies over the *filtered* chain | **yes** — returns the input untouched at `none`, and drops hue-class links at `formats` |
+| `TS_BASELINE` `src/inline.ts` — `grep -n "applyStyle(" src/inline.ts` | its inline call sites — strong, em, codespan, del, link (7 sites) | via `applyStyle` |
+| `TS_BASELINE` `src/blocks.ts` — `grep -n "applyStyle(" src/blocks.ts` | its block call sites — code, hr, html, heading, paragraph, blockquote (6 sites) | via `applyStyle` |
+| `TS_BASELINE` `src/lists.ts` — `grep -n "applyStyle(" src/lists.ts` | its list-item call site (1 site) | via `applyStyle` |
+| `TS_BASELINE` `src/inline.ts`'s `renderLink`, through `TS_BASELINE` `src/ansi.ts`'s `link` | **OSC-8**, not SGR, plus the tmux DCS envelope | **yes, on the other axis** — `ctx.hyperlinks`, since WP-1 of `plans/colour-policy.md`; it was `supportsHyperlinks.stdout`, a load-time global, when this census was taken. The *emitter* was `ansiEscapes.link` until WP-3 of the same plan; it is this repo's transcription now, and the href is sanitized at emission |
+| `TS_BASELINE` `src/wikilink.ts` (`styleWikiLabel`) | the wiki-link label's cyan+underline, applied **at emission** — the tokenizer extension lexes the label into child tokens and the prose visitor styles the rendered result through `TS_BASELINE` `src/style.ts`'s shared `applyStyleChain`; under `formats` the cyan drops and the underline stays — the only two-link chain here with one link of each class | **yes** — via `applyStyleChain` → `applyStyle` under the resolved policy. Two mechanisms preceded this one, both retired, both left the same trail: it was `TS_BASELINE` `src/render.ts:62-65`'s `styleWikiLink` (hardcoded `[36m[4m…` injected **before the lexer**, at every colour level, obeying nothing — the last row in this table that ever answered **no**) until WP-4 of `plans/colour-policy.md` replaced it with a carrier pair styled **after the walk**; WP-2 of `plans/wiki-link-tokenizer.md` (`ab3518e`) then retired the carrier pair too, moving recognition into the lexer itself, so there is no longer a post-walk pass or a carrier to account for |
+| `TS_BASELINE` `src/frontmatter.ts`'s `dim` | the `2m`/`22m` pair around metadata — outside the token stream entirely | **yes** — an explicit argument since WP-1 (`color`, widened to `sgr` at WP-2 of `plans/colour-modes.md`), through `TS_BASELINE` `src/style.ts`'s plain wrap since WP-2 of `plans/colour-policy.md`; it was two hardcoded constants and no decision at all. `dim` is **format**-class, so a metadata block renders identically under `full` and `formats` |
+| `TS_BASELINE` `src/table.ts` (`styleBorder`/`styleHead`) | `grey`/`bold` for borders and headers | **yes** — `renderTable`'s `sgr` argument (`color` until WP-2 of `plans/colour-modes.md`); it was `@colors/colors`' own module-load answer, which did not consult `isTTY`. It is the producer the mode split divides: **bold heads survive `formats`, grey borders do not** |
+| `TS_BASELINE` `src/blocks.ts`'s `highlightCode` | the syntax theme inside fences | **yes, and at a narrower threshold than every other row** — `ctx.sgr !== "full"` returns raw code (WP-2 of `plans/colour-modes.md`, Decision 3's named producer exception), where it was `ctx.color` from WP-2 of `plans/colour-policy.md` and `cli-highlight`'s bundled `chalk` level, decided at module load, before that. **This is the one site in the renderer where provenance rather than style class decides**, and it is why a `formats` render's fences are byte-identical to a `none` render's |
+| ~~`TS_BASELINE` `src/inline.ts:283` (`detectInlineColor`)~~ | **deleted** at WP-1 of `plans/colour-policy.md` with every consumer — the authority the first row obeys is `resolveColourPolicy` (`TS_BASELINE` `src/colour.ts`), threaded through `LayoutContext.sgr` | n/a |
 
 **Layout-consumers — they read or strip escapes to decide where characters go.** These are
 the sites a style-last restructure has to satisfy, and the colour-only defects all lived
@@ -676,26 +672,26 @@ part, and each is the same mistake.
 
 | Site | Why it looks at escapes |
 |---|---|
-| `src/list-lines.ts`'s `stripAnsi` | the one strip implementation in the repo; everything below calls it. A derivation of `src/ansi.ts`'s scanner since WP-3 — it removed SGR only before that, so OSC-8 and DCS were invisible to every consumer here |
-| `src/wrap.ts` | splits a styled token so wrapping measures display width, not bytes — **an escape-only run became a zero-width word here**, and the private SGR-only tokenizer that did the splitting cut OSC-8 sequences in half. Both split paths consume `src/ansi.ts`'s spans since WP-3 |
-| `src/lists.ts`'s `fixNestedLists` | its `\S` matched an SGR reset's `m`; the decision is made on visible text and applied at the mapped byte offset since WP-3 |
-| `src/lists.ts`'s empty-line filter | filtered empty lines by raw bytes, so a line of escapes alone survived; `stripAnsi(line) !== ""` since WP-3 |
-| `src/lists.ts`' `substituteBullets` and `realignEmbeddedContinuations` | bullet substitution and the de-drift claim on stripped text — the de-drift since WP-5 of `plans/tn-review-remediation.md`, the substitution since WP-3 of this plan (its anchored regex could not match an encased marker line) |
-| `src/render.ts`'s `isHardBoundary` and its three marker-shape guards | a hard-break tail and a marker shape, both anchored on raw lines; asked of `stripAnsi(line)` since WP-3, which is what made the guards fire under colour at all |
-| `src/blocks.ts`'s `reflowSection` | drops a trailing line that is blank once stripped |
-| `src/render.ts`'s `stripEmojiTrailingSpace` | the emoji trailing-space strip has to match *across* the SGR that closes the segment |
-| `src/detectors.ts:120,315,327,396,516,603,641` | measurement, not rendering — no rendered byte depends on these, but they read the same escapes |
+| `scripts/measure/list-lines.ts`'s `stripAnsi` | the one strip implementation in the repo; everything below calls it. A derivation of `TS_BASELINE` `src/ansi.ts`'s scanner since WP-3 — it removed SGR only before that, so OSC-8 and DCS were invisible to every consumer here |
+| `TS_BASELINE` `src/wrap.ts` | splits a styled token so wrapping measures display width, not bytes — **an escape-only run became a zero-width word here**, and the private SGR-only tokenizer that did the splitting cut OSC-8 sequences in half. Both split paths consume `TS_BASELINE` `src/ansi.ts`'s spans since WP-3 |
+| `TS_BASELINE` `src/lists.ts`'s `fixNestedLists` | its `\S` matched an SGR reset's `m`; the decision is made on visible text and applied at the mapped byte offset since WP-3 |
+| `TS_BASELINE` `src/lists.ts`'s empty-line filter | filtered empty lines by raw bytes, so a line of escapes alone survived; `stripAnsi(line) !== ""` since WP-3 |
+| `TS_BASELINE` `src/lists.ts`' `substituteBullets` and `realignEmbeddedContinuations` | bullet substitution and the de-drift claim on stripped text — the de-drift since WP-5 of `plans/tn-review-remediation.md`, the substitution since WP-3 of this plan (its anchored regex could not match an encased marker line) |
+| `TS_BASELINE` `src/render.ts`'s `isHardBoundary` and its three marker-shape guards | a hard-break tail and a marker shape, both anchored on raw lines; asked of `stripAnsi(line)` since WP-3, which is what made the guards fire under colour at all |
+| `TS_BASELINE` `src/blocks.ts`'s `reflowSection` | drops a trailing line that is blank once stripped |
+| `TS_BASELINE` `src/render.ts`'s `stripEmojiTrailingSpace` | the emoji trailing-space strip has to match *across* the SGR that closes the segment |
+| `scripts/measure/detectors.ts:120,315,327,396,516,603,641` | measurement, not rendering — no rendered byte depends on these, but they read the same escapes |
 | `scripts/corpus.ts`'s orphan line lookup (was `:693`), and `scripts/colour-axis.ts`'s own digest (was `scripts/corpus.ts:859`) | measurement, not rendering; the two moved apart at WP-R1 and the line numbers are dropped rather than re-pinned |
 
 **Final-output-consumers — a strip on the way out to a terminal or a file: there are
-none.** `src/cli.ts` writes the renderer's string through unchanged, and the width gate
-(`src/overflow.ts` via `src/width.ts`) measures with `string-width`, which strips SGR
+none.** `TS_BASELINE` `src/cli.ts` writes the renderer's string through unchanged, and the width gate
+(`scripts/measure/overflow.ts` via `TS_BASELINE` `src/width.ts`) measures with `string-width`, which strips SGR
 *inside the dependency* rather than at a site in this repo. This is the row that matters
 for the successor: `--plain` has no existing seam to hook, so it is new construction, not a
 move. **The second half of that sentence used to read "and `stripAnsi` cannot serve as that
 seam while it removes SGR only" — that blocker is gone.** Since WP-3 of
 `plans/colour-policy.md` it removes every sequence kind the renderer can emit
-(`src/ansi.ts`'s `scan`/`stripSequences`), so a future `--plain` has a correct seam
+(`TS_BASELINE` `src/ansi.ts`'s `scan`/`stripSequences`), so a future `--plain` has a correct seam
 available; it still has to decide *where* to apply it, which is the part that was never
 about the strip.
 
@@ -703,19 +699,19 @@ about the strip.
 
 | Site | What it is |
 |---|---|
-| `src/width.ts:410` | `\x1b[6n` — the DSR cursor-position request the ambiguous-width probe sends |
-| `src/width.ts:363` | the regex that reads the terminal's DSR reply |
-| `src/width.ts:366` | escapes that reply for a diagnostic line, so it can be printed safely |
-| `src/width.ts:526` | `\x1b[<n>G\x1b[K` — moving to a column and erasing the line, cleaning up after the probe |
-| `src/cli.ts:102` | the `--help` text describing the probe; prose, not an escape |
+| `TS_BASELINE` `src/width.ts:410` | `\x1b[6n` — the DSR cursor-position request the ambiguous-width probe sends |
+| `TS_BASELINE` `src/width.ts:363` | the regex that reads the terminal's DSR reply |
+| `TS_BASELINE` `src/width.ts:366` | escapes that reply for a diagnostic line, so it can be printed safely |
+| `TS_BASELINE` `src/width.ts:526` | `\x1b[<n>G\x1b[K` — moving to a column and erasing the line, cleaning up after the probe |
+| `TS_BASELINE` `src/cli.ts:102` | the `--help` text describing the probe; prose, not an escape |
 
-**Six of these were miscategorised by the count this replaces**: the four `src/width.ts`
-rows are DSR terminal protocol with nothing to do with colour, and `src/frontmatter.ts`'s
+**Six of these were miscategorised by the count this replaces**: the four `TS_BASELINE` `src/width.ts`
+rows are DSR terminal protocol with nothing to do with colour, and `TS_BASELINE` `src/frontmatter.ts`'s
 two are producers rather than coping code.
 
 #### Defect detectors — the gates that can see *under* the width
 
-`src/detectors.ts` (WP-2d) is the answer to the section above. Every list-wrap defect this
+`scripts/measure/detectors.ts` (WP-2d) is the answer to the section above. Every list-wrap defect this
 tool has shipped was **under** the target width, and `--check` and both sweeps only test
 for *exceeding* it, so no green sweep in this repo's history has ever been evidence about
 that class. Three detectors, all width-blind by design where the width is not the point,
@@ -752,7 +748,7 @@ Seven things about this module are load-bearing:
 - **`findContinuationOverIndent` is structurally blind to guard-shaped corruption, and no
   other gate in this repo covers it.** This is a durable trap, not a note about one bug.
   The detector forgives a drift of exactly one column on a line the shared
-  `isGuardShapedLine` predicate claims (`src/detectors.ts`, `src/list-lines.ts`), because
+  `isGuardShapedLine` predicate claims (`scripts/measure/detectors.ts`, `scripts/measure/list-lines.ts`), because
   that column *is* the wrapping seams' deliberate guard space and grading it as a defect
   was grading the fix as the bug. The exemption is correct and must stay. What it costs is
   this: **the artifact a mis-landed guard produces is itself guard-shaped**, so the detector
@@ -789,7 +785,7 @@ Seven things about this module are load-bearing:
   often.** This is the correction that matters most in this section, because the opposite
   belief drove a whole sprint. `findListOrphans`' docblock documents that the list composer
   drops the blank line between two paragraphs of a loose item — `bulletPointLines`'
-  `.filter(identity)` in the renderer this repo replaced, transcribed into `src/lists.ts`'s
+  `.filter(identity)` in the renderer this repo replaced, transcribed into `TS_BASELINE` `src/lists.ts`'s
   `renderList` in WP-4 and kept deliberately, because not dropping it would move bytes —
   making a paragraph boundary and a genuine shear the same shape in rendered text — and
   the reasonable inference was that a detector firing on ~39–51% of real files was

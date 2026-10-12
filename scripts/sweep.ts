@@ -15,7 +15,7 @@
  * manifest, resolved with this precedence, highest first:
  *   1. `--manifest <path>` (this CLI flag)
  *   2. `MDVIEW_CORPUS_MANIFEST` environment variable
- *   3. config key `corpusManifest` (see `src/config.ts`)
+ *   3. config key `corpusManifest` (see `TS_BASELINE` `src/config.ts`)
  *   4. the bundled public-safe default (`corpus/default-manifest.json`)
  *
  * The private validation manifest (covering the full ~45k-file corpus) lives in a
@@ -51,8 +51,8 @@
  * `plans/post-refactor-code-quality-remediation.md` gave it its own module. Either way this
  * file owns its flags, its printed line and its exit code.
  */
-import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "../src/glyphs";
-import { NARROW_MEASURE, measureFor, type Measure } from "../src/width";
+import { NARROW_MEASURE, measureFor, type Measure } from "./measure/width";
+import { type GlyphTierName } from "./revision";
 import {
   colourChildEnv,
   emitColourDigests,
@@ -81,7 +81,7 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
   let widths = DEFAULT_WIDTHS;
   let limit: number | undefined;
   let all = false;
-  let glyphs: GlyphSet = UNICODE_GLYPHS;
+  let glyphs: GlyphTierName = "unicode";
   let measure: Measure = NARROW_MEASURE;
   let manifestFlag: string | undefined;
   let detect = false;
@@ -177,7 +177,7 @@ export function parseArgs(argv: string[]): { corpus: string; options: SweepOptio
       if (value !== "unicode" && value !== "ascii") {
         throw new Error(`--glyphs must be "unicode" or "ascii", got: ${value}`);
       }
-      glyphs = value === "ascii" ? ASCII_GLYPHS : UNICODE_GLYPHS;
+      glyphs = value === "ascii" ? "ascii" : "unicode";
       index += 1;
       continue;
     }
@@ -410,14 +410,14 @@ async function runCli(): Promise<void> {
   }
 
   const ambiguous = (options.measure ?? NARROW_MEASURE).ambiguous;
-  console.log(`glyphs=${options.glyphs.tier} ambiguous=${ambiguous}`);
-  // The sweep keeps these two axes independent *on purpose*, while `src/cli.ts` does
+  console.log(`glyphs=${options.glyphs} ambiguous=${ambiguous}`);
+  // The sweep keeps these two axes independent *on purpose*, while `TS_BASELINE` `src/cli.ts` does
   // not: `resolveGlyphs` refuses to hand out the Unicode tier in wide mode, because
   // that tier's own glyphs are ambiguous and its tables cannot be laid out (see
   // `wideForcesAscii`). Forcing the same rule here would make the residual it was
   // discovered by unmeasurable, and an instrument that cannot reproduce the finding is
   // not an instrument. So the combination stays reachable and is labelled instead.
-  if (ambiguous === "wide" && options.glyphs.tier === "unicode") {
+  if (ambiguous === "wide" && options.glyphs === "unicode") {
     console.log(
       "NOTE: --ambiguous wide with the unicode tier is a diagnostic combination the CLI never " +
         "produces (wide forces the ascii tier); expect overflow from ambiguous box-drawing glyphs",

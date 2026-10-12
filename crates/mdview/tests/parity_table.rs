@@ -1,5 +1,5 @@
 //! The `__parity table-alloc` protocol (WP-5a of `plans/mdview-rust-port.md`): the Rust side
-//! of `scripts/table-alloc-diff.ts`. Token input needs the `parity-tokens` feature; without it
+//! of `scripts/table-alloc-diff.ts` (deleted at WP-9; `TS_BASELINE` = `c097c66`). Token input needs the `parity-tokens` feature; without it
 //! the mode must answer `{error}`, never a response that could read as a match.
 
 use serde_json::{Value, json};

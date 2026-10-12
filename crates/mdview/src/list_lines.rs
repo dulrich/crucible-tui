@@ -1,5 +1,5 @@
 //! Rendered-line primitives shared by render and the detectors, ported from
-//! `src/list-lines.ts`: `strip_ansi` (a derivation of `ansi.rs`'s scanner), the marker
+//! `TS_BASELINE` `src/list-lines.ts`: `strip_ansi` (a derivation of `ansi.rs`'s scanner), the marker
 //! regexes, and `track_list_line`.
 //!
 //! Every TS `\s`/`\S` here is ECMAScript whitespace (`text::JS_WS_CLASS`), and `\d` is ASCII.

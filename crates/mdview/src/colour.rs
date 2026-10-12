@@ -1,4 +1,4 @@
-//! The one colour/hyperlink policy decision, ported from `src/colour.ts`.
+//! The one colour/hyperlink policy decision, ported from `TS_BASELINE` `src/colour.ts`.
 //!
 //! Pure over its inputs: the environment arrives as an [`Env`] value and the TTY answer as a
 //! bool, so nothing here reads process state. Precedence and every upstream quirk are

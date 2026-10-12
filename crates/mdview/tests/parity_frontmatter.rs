@@ -26,7 +26,10 @@ fn no_frontmatter_means_no_facts() {
 #[test]
 fn a_parsed_block_reports_parsed_and_no_diagnostic() {
     let response = render("---\na: 1\n---\n\nbody\n");
-    assert_eq!(response["frontmatter"], serde_json::json!({"parsed": true}));
+    assert_eq!(
+        response["frontmatter"],
+        serde_json::json!({"parsed": true, "echoRanges": 0})
+    );
 }
 
 #[test]

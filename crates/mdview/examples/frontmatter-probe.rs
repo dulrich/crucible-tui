@@ -1,4 +1,4 @@
-//! Census helper for WP-3's frontmatter acceptance census (`scripts/frontmatter-census.ts`):
+//! Census helper for WP-3's frontmatter acceptance census (`scripts/frontmatter-census.ts`, deleted at WP-9; `TS_BASELINE` = `c097c66`):
 //! reads one JSON `[meta, width, sgr, ambiguous]` per stdin line, with `sgr` one of
 //! `"none"`/`"formats"`/`"full"` and `ambiguous` `"narrow"`/`"wide"`, and answers one JSON
 //! line each: `{parsed, text, ranges}` from `frontmatter.rs`.

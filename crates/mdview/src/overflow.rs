@@ -1,4 +1,4 @@
-//! The width gate and the code-range exemption predicate, ported from `src/overflow.ts`.
+//! The width gate and the code-range exemption predicate, ported from `TS_BASELINE` `src/overflow.ts`.
 //!
 //! Code ranges are 1-based inclusive *line* numbers, as `render` returns them.
 

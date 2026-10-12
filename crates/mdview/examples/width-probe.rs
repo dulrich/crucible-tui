@@ -1,4 +1,4 @@
-//! Census helper for WP-2's gates (`scripts/width-census.ts`): reads one JSON string per
+//! Census helper for WP-2's gates (`scripts/width-census.ts`, deleted at WP-9; `TS_BASELINE` = `c097c66`): reads one JSON string per
 //! stdin line and answers one line each.
 //!
 //! - `width-probe width`: `[narrow, wide]` — `Measure::width` under both modes.

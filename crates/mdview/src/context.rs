@@ -1,4 +1,4 @@
-//! The immutable per-render layout context, ported from `src/layout-context.ts`.
+//! The immutable per-render layout context, ported from `TS_BASELINE` `src/layout-context.ts`.
 //!
 //! Every field is fixed at construction except `prefix`, which (as in TS, where the frozen
 //! object holds a mutable stack) is interior-mutable: visitors push and pop the columns

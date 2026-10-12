@@ -10,10 +10,13 @@ import {
   isTableLine,
   type BlockEnds,
   type ClassifiedOrphan,
-} from "../src/detectors";
-import { link as osc8Link } from "../src/ansi";
-import { stripAnsi } from "../src/list-lines";
-import { renderDocumentDetailed } from "../src/render";
+} from "../scripts/measure/detectors";
+import { stripAnsi } from "../scripts/measure/list-lines";
+import { osc8Link } from "./helpers/osc8";
+import { renderSync } from "./helpers/render";
+
+/** The built Rust renderer, in place of the TS `renderDocumentDetailed` (WP-9, `TS_BASELINE` = `c097c66`). */
+const renderDocumentDetailed = (source: string, width: number) => renderSync(source, width, { policy: "env" });
 import { parseWidths } from "../scripts/sweep-options";
 
 // ---------------------------------------------------------------------------
@@ -25,14 +28,14 @@ import { parseWidths } from "../scripts/sweep-options";
 //
 // `findListOrphans` additionally carries history: it is the metric every number
 // WP-2, WP-2b and WP-2c recorded was measured with. WP-2d moved it out of
-// `tests/render.test.ts` (since split) into `src/detectors.ts` unchanged, and verified
+// `tests/render.test.ts` (since split) into `TS_BASELINE` `src/detectors.ts` unchanged, and verified
 // the move changed no count. The cases below are the *unit* half of that guarantee — the
 // corpus half is the differential recorded in the WP-2d report.
 // ---------------------------------------------------------------------------
 
 // The canonical contract test for the repo's one strip. It lives here because this file
 // is where the detectors' own guarantees are pinned and because `stripAnsi` moved out of
-// `src/detectors.ts` with them; the three test files that used to keep private SGR-only
+// `TS_BASELINE` `src/detectors.ts` with them; the three test files that used to keep private SGR-only
 // copies import the production function now (WP-3 of `plans/colour-policy.md`).
 describe("stripAnsi", () => {
   const esc = String.fromCharCode(27);
@@ -441,7 +444,7 @@ describe("parseWidths", () => {
 // ---------------------------------------------------------------------------
 // WP-4 of `plans/marked-terminal-replacement.md` — the guard space is not a defect.
 //
-// Both wrapping seams in `src/render.ts` deliberately give a continuation line one
+// Both wrapping seams in `TS_BASELINE` `src/render.ts` deliberately give a continuation line one
 // leading space when it would otherwise begin `*` or `12.`: a line on the
 // exact-multiple-of-four grid that starts like a marker is claimed by list composition's
 // `isPointedLine`, handed the item's number, and has the first `"* "` anywhere in it
@@ -449,7 +452,7 @@ describe("parseWidths", () => {
 //
 // Until WP-4 this detector scored that space as a one-column over-indent — i.e. it graded
 // the fix as the bug, and WP-3 landed with an accepted ratchet exception (a 0.02-0.54%
-// rise) for exactly this. The predicate is `src/list-lines.ts`' `isGuardShapedLine`, the
+// rise) for exactly this. The predicate is `TS_BASELINE` `src/list-lines.ts`' `isGuardShapedLine`, the
 // same one the seams guard with, so the detector and the fix it grades cannot disagree
 // about what a marker shape is.
 // ---------------------------------------------------------------------------

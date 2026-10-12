@@ -38,12 +38,11 @@
  * with this precedence, highest first:
  *   1. `--manifest <path>` (the sweep CLI's flag)
  *   2. `MDVIEW_CORPUS_MANIFEST` environment variable
- *   3. config key `corpusManifest` (see `src/config.ts`)
+ *   3. config key `corpusManifest` (see `scripts/measure/config.ts`)
  *   4. the bundled public-safe default (`corpus/default-manifest.json`)
  */
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { renderDocumentDetailed } from "../src/render";
 import {
   findContinuationOverIndent,
   findListOrphans,
@@ -51,14 +50,38 @@ import {
   isTableLine,
   probeBlockEnds,
   readBlockEnds,
-} from "../src/detectors";
-import { stripAnsi } from "../src/list-lines";
-import { type GlyphSet } from "../src/glyphs";
-import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "../src/config";
-import { NARROW_MEASURE, type Measure } from "../src/width";
+} from "./measure/detectors";
+import { stripAnsi } from "./measure/list-lines";
+import { loadConfig, resolveCorpusManifestPath, type ManifestSource } from "./measure/config";
+import { NARROW_MEASURE, type Measure } from "./measure/width";
+import { mdviewBinary, spawnJsonlServer, type GlyphTierName, type RenderOutput } from "./revision";
 // The width gate, imported rather than re-implemented (WP-2): the sweep used to carry
-// a second copy of `src/cli.ts`'s `checkOverflow`, identical argument for argument.
-import { findFirstOverflow } from "../src/overflow";
+// a second copy of the CLI's `checkOverflow`, identical argument for argument.
+import { findFirstOverflow } from "./measure/overflow";
+
+/** The repository root — where `mdviewBinary` looks for the built renderer. */
+const REPO_ROOT = resolve(import.meta.dir, "..");
+
+/**
+ * One long-lived `mdview __parity serve` for a sweep (WP-9 of `plans/mdview-rust-port.md`: the
+ * renderer is the Rust binary now, never `src/`). Every request asks for `policy: "env"`, so
+ * the server resolves colour from its own environment exactly as `renderDocumentDetailed`'s
+ * default policy did at `TS_BASELINE` (`c097c66`) — which is what the colour axis's children
+ * vary. The server's stdout is a pipe, so `isTTY` is always false.
+ */
+export interface SweepRenderer {
+  render(source: string, width: number, tier: GlyphTierName, measure: Measure): Promise<RenderOutput>;
+  close(): Promise<void>;
+}
+
+export function startSweepRenderer(binary = mdviewBinary(REPO_ROOT)): SweepRenderer {
+  const server = spawnJsonlServer([binary, "__parity", "serve"], { label: "mdview __parity serve" });
+  return {
+    render: (source, width, tier, measure) =>
+      server.request({ source, width, tier, ambiguous: measure.ambiguous, policy: "env", emoji: null }),
+    close: server.close,
+  };
+}
 
 export interface CorpusSpec {
   name: string;
@@ -102,11 +125,12 @@ export interface SweepOptions {
   widths: number[];
   limit?: number;
   all: boolean;
-  glyphs: GlyphSet;
+  /** The glyph tier every render asks the binary for. */
+  glyphs: GlyphTierName;
   /** `--manifest <path>` — outranks the env var, config key, and bundled default. */
   manifestFlag?: string;
   /**
-   * `--detect` — also run `src/detectors.ts` over every render.
+   * `--detect` — also run `TS_BASELINE` `src/detectors.ts` over every render.
    *
    * **Off by default, and that is not timidity.** The width sweep's contract is
    * `overflow=0 errors=0` on a corpus of ~44.5k real notes; the detectors measure a
@@ -116,7 +140,7 @@ export interface SweepOptions {
    */
   detect: boolean;
   /**
-   * `--ambiguous narrow|wide` — the East Asian Ambiguous ruler (WP-3, `src/width.ts`).
+   * `--ambiguous narrow|wide` — the East Asian Ambiguous ruler (WP-3, `TS_BASELINE` `src/width.ts`).
    *
    * **The sweep never probes and never reads `MDVIEW_AMBIGUOUS`**, unlike the CLI. It
    * is a corpus *measurement* instrument, not a renderer aimed at a terminal: its
@@ -143,7 +167,7 @@ export interface SweepOptions {
    * `process.argv`, so a harness flag by that name silently flipped the colour decision of
    * the very thing being measured. Neither package is installed now and the rule is
    * unchanged: `--color` is `mdview`'s own flag and the top slot of the ratified
-   * precedence matrix (`src/cli.ts`), so a harness flag spelled that way would be read by
+   * precedence matrix (`TS_BASELINE` `src/cli.ts`), so a harness flag spelled that way would be read by
    * the renderer itself instead — the same failure with a different owner.
    */
   colourMode?: ColourMode;
@@ -675,6 +699,8 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
   let tableOverflow = 0;
   let combos = 0;
 
+  const renderer = startSweepRenderer();
+  try {
   for (const path of selected) {
     let source: string;
     try {
@@ -685,13 +711,24 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
       errors.push({ path, message: error instanceof Error ? error.message : String(error) });
       continue;
     }
-    for (const width of options.widths) {
+    // One ruler for the render and the check, always: a sweep that allocated one
+    // way and measured another would report an overflow count about nothing.
+    const measure = options.measure ?? NARROW_MEASURE;
+    // Every width's render is requested at once (the server pipelines), and the results are
+    // consumed in the order given, so `overflow[0]` and every accumulator see the same order.
+    const rendered = options.widths.map((width) =>
+      renderer.render(source, width, options.glyphs, measure).then(
+        (output) => ({ output }),
+        (error: unknown) => ({ error }),
+      ),
+    );
+    for (const [index, width] of options.widths.entries()) {
       combos += 1;
       try {
-        // One ruler for the render and the check, always: a sweep that allocated one
-        // way and measured another would report an overflow count about nothing.
-        const measure = options.measure ?? NARROW_MEASURE;
-        const { text, codeRanges } = renderDocumentDetailed(source, width, options.glyphs, measure);
+        const settled = await rendered[index];
+        if (settled === undefined) throw new Error("no render");
+        if ("error" in settled) throw settled.error;
+        const { text, codeRanges } = settled.output;
         const found = findFirstOverflow(text, width, codeRanges, measure);
         if (found) {
           overflow.push({ path, width: found.width, targetWidth: width, line: found.line });
@@ -708,7 +745,7 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
             // WP-8's second reading of exactly those hits. Only worth the second render
             // when there is something to classify, so it is nested inside the guard
             // above rather than run over every combo.
-            const probed = renderDocumentDetailed(probeBlockEnds(source), width, options.glyphs, measure);
+            const probed = await renderer.render(probeBlockEnds(source), width, options.glyphs, measure);
             const blockEnds = readBlockEnds(text, probed.text);
             const foundShears = findShearOrphans(text, width, blockEnds, { codeRanges, measure });
             // Adds the **orphan** count, not a shear count. It reads like a bug and is the
@@ -738,6 +775,9 @@ export async function sweepCorpus(spec: CorpusSpec, options: SweepOptions): Prom
         });
       }
     }
+  }
+  } finally {
+    await renderer.close();
   }
 
   return corpusResult({

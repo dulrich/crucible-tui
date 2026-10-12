@@ -2,8 +2,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { link as osc8Link, scan } from "../src/ansi";
-import { STYLE_TABLE } from "../src/style";
+import { resolve } from "node:path";
+import { scan } from "../scripts/measure/ansi";
+import { mdviewBinary, readStyleTable } from "../scripts/revision";
+import { osc8Link } from "./helpers/osc8";
 import {
   classifyColourAxis,
   collectColourDigests,
@@ -16,6 +18,16 @@ import {
   type ColourDigestStream,
   type WireSequence,
 } from "../scripts/colour-axis";
+
+// The committed table, read from the built renderer (WP-9 of `plans/mdview-rust-port.md`).
+const COMMITTED = readStyleTable(mdviewBinary(resolve(import.meta.dir, "..")));
+const STYLE_TABLE = Object.fromEntries(
+  ["reset", "bold", "underline", "red", "yellow", "cyan", "gray"].map((name) => {
+    const code = COMMITTED[name];
+    if (code === undefined) throw new Error(`style table has no ${name}`);
+    return [name, code];
+  }),
+) as unknown as Record<"reset" | "bold" | "underline" | "red" | "yellow" | "cyan" | "gray", { open: string; close: string }>;
 
 /**
  * The colour axis (WP-1, `plans/own-the-token-walk.md`; three exact gates since WP-5,
@@ -43,7 +55,7 @@ let manifest: string;
 
 /** Written out rather than typed literally, per this repo's own sentinel convention. */
 const ESC = String.fromCharCode(27);
-/** BEL, the xterm-compatible OSC terminator — same convention as `src/ansi.ts`'s. */
+/** BEL, the xterm-compatible OSC terminator — same convention as `TS_BASELINE` `src/ansi.ts`'s. */
 const BEL = String.fromCharCode(7);
 
 /** A paragraph whose only styling is emphasis: coloured or not, the characters match. */
@@ -53,10 +65,10 @@ const PLAIN =
 /**
  * A wiki link — the producer this axis was seeded with, and the one it retired.
  *
- * `styleWikiLink` (`src/render.ts`, deleted at WP-4 of `plans/colour-policy.md`) hardcoded
+ * `styleWikiLink` (`TS_BASELINE` `src/render.ts`, deleted at WP-4 of `plans/colour-policy.md`) hardcoded
  * `\x1b[36m\x1b[4m` into the *source* before the lexer and consulted no colour decision at
  * all, so this file used to carry SGR **even in a colourless render**. The label is styled
- * through `src/style.ts` under the resolved policy now, so both the `off` and `default`
+ * through `TS_BASELINE` `src/style.ts` under the resolved policy now, so both the `off` and `default`
  * children emit no escape for it and every gate passes on this file.
  */
 const WIKI = "A paragraph with a [[wiki-link]] in it.\n";
@@ -94,9 +106,9 @@ const AUTHORED = `A paragraph with an authored ${ESC}[31mescape${ESC}[39m in it.
  */
 const TABLE = "| Head |\n| --- |\n| Cell |\n";
 /**
- * The negative seed: a **hue-only** codespan. `src/inline.ts`'s `CODESPAN` styler is
+ * The negative seed: a **hue-only** codespan. `TS_BASELINE` `src/inline.ts`'s `CODESPAN` styler is
  * `createStyler("yellow")` alone, with no format-class link in its chain, so the whole
- * chain filters to nothing under `formats` and — per `src/style.ts`'s `filterChain`
+ * chain filters to nothing under `formats` and — per `TS_BASELINE` `src/style.ts`'s `filterChain`
  * contract — emits **nothing at all**, not an empty open/close pair.
  */
 const CODESPAN = "A paragraph with a hue-only `code span` inside it.\n";
@@ -411,7 +423,7 @@ describe("non-vacuity seeds for the formats child (WP-4, cycle-1 f13 / cycle-3 f
     expect(onRecord.sequences.some((s) => s.raw === STYLE_TABLE.yellow.open)).toBe(true);
 
     // The claim: a hue-only chain filters to nothing under `formats` — not an empty
-    // open/close pair, no sequence at all from this producer (`src/style.ts`'s
+    // open/close pair, no sequence at all from this producer (`TS_BASELINE` `src/style.ts`'s
     // `filterChain` contract). The paragraph's own `reset` framing (Decision 8, control
     // class, emitted whenever `sgr !== "none"`) still wraps the line — a *different*
     // producer's contribution, asserted separately so it cannot be mistaken for codespan
@@ -613,7 +625,7 @@ describe("classifyColourAxis: the four-way join and the three exact gates (WP-5/
   });
 
   test("G3 accepts a tmux-wrapped OSC-8 hyperlink on either arm — the DCS arm, injected tmux, non-vacuous", () => {
-    // `link(..., tmux=true)` is `src/ansi.ts`'s own construction of exactly what a tmux
+    // `link(..., tmux=true)` is `TS_BASELINE` `src/ansi.ts`'s own construction of exactly what a tmux
     // session sees (cycle-3 f7): the wrapper this WP's G3 must have a DCS arm for, or a
     // gate over the plan's own emitted output would reject something the plan introduces.
     const rendered = osc8Link("label", "https://example.invalid", true);

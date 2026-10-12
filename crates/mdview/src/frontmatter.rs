@@ -1,11 +1,11 @@
-//! YAML frontmatter split and metadata block, ported from `src/frontmatter.ts`.
+//! YAML frontmatter split and metadata block, ported from `TS_BASELINE` `src/frontmatter.ts`.
 //!
 //! WP-3 of `plans/mdview-rust-port.md`. The YAML is read with yaml-rust2's **event-level**
-//! `Parser`, and the value `yaml@2.9.0`'s `parse` would hand `src/frontmatter.ts` is rebuilt here
+//! `Parser`, and the value `yaml@2.9.0`'s `parse` would hand `TS_BASELINE` `src/frontmatter.ts` is rebuilt here
 //! as a [`JsValue`]: the core-schema plain-scalar resolution (`node_modules/yaml/dist/schema/core/`,
 //! `node_modules/yaml/dist/schema/common/null.js`), `uniqueKeys`' duplicate test (`node_modules/yaml/dist/compose/util-map-includes.js`), the JS
 //! object key (`node_modules/yaml/dist/nodes/addPairToJSMap.js`'s `stringifyKey`) and `Object.keys` order (integer-like
-//! keys ascending first). Formatting then follows `src/frontmatter.ts` line by line, with
+//! keys ascending first). Formatting then follows `TS_BASELINE` `src/frontmatter.ts` line by line, with
 //! ECMAScript `String(number)` and `JSON.stringify` transcribed below.
 //!
 //! The one allowed difference is D-A: a failed parse's diagnostic text is yaml-rust2's message,
@@ -558,7 +558,7 @@ pub fn parse_frontmatter(meta: &str) -> Result<JsValue, String> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The formatter: `src/frontmatter.ts`, transcribed.
+// The formatter: `TS_BASELINE` `src/frontmatter.ts`, transcribed.
 // ---------------------------------------------------------------------------------------------
 
 fn dim(text: &str, sgr: SgrMode) -> String {

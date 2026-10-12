@@ -1,97 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { parseArgs, printColourAxis, stripColourModeArgs } from "../scripts/sweep";
-import { forcedColorChildEnv, renderWithForcedColor } from "./helpers/color";
-import { renderDocumentDetailed } from "../src/render";
 
-describe("renderWithForcedColor", () => {
-  const unsupportedLangFence = "```dataviewjs\nconsole.log(1)\n```\n";
-
-  // DEVIATION, WP-3: this assertion is flipped from WP-1's original. `dataviewjs` used
-  // to leak a highlight.js "language not found" diagnostic even under forced color —
-  // that was the very bug this harness was built to make visible (see the module doc
-  // comment in `tests/helpers/color.ts`). WP-3 fixes it: every fence language is now
-  // normalized to one highlight.js supports before it reaches the gated `highlight()`
-  // path (`src/lang.ts`), so no fence language reaches stderr any more, not even this
-  // one, not even under forced color. Leaving the old assertion in place would mean
-  // this test only passes when the bug it exists to catch is still present — i.e. it
-  // would now fail forever by design, not by defect. A positive control proving the
-  // console.error capture mechanism itself still works when a message *is* genuinely
-  // emitted (calling the owned colorizer directly, bypassing the now-total normalization)
-  // lives in `tests/render-core.test.ts`, so this flip cannot pass vacuously.
-  test("a fence language that used to leak a highlight.js diagnostic under forced color now captures nothing (WP-3)", async () => {
-    const { messages } = await renderWithForcedColor(unsupportedLangFence, 80);
-    expect(messages).toEqual([]);
-  });
-
-  test("the normal (non-forced) render path captures nothing for the same input", () => {
-    const originalError = console.error;
-    const originalWarn = console.warn;
-    const captured: string[] = [];
-    console.error = (...args: unknown[]) => captured.push(args.map(String).join(" "));
-    console.warn = (...args: unknown[]) => captured.push(args.map(String).join(" "));
-    try {
-      renderDocumentDetailed(unsupportedLangFence, 80);
-    } finally {
-      console.error = originalError;
-      console.warn = originalWarn;
-    }
-    expect(captured).toHaveLength(0);
-  });
-
-  /**
-   * The helper's own non-vacuity, asserted on **observed output** rather than on the
-   * environment it meant to set (WP-1 of `plans/colour-policy.md`).
-   *
-   * Every assertion built on `renderWithForcedColor` — the two above, and three in
-   * `tests/lists.test.ts` — is about what a *coloured* render does. If the child ever came
-   * back colourless the whole set would keep passing, silently, because a colourless render
-   * simply never reaches the branches those tests are about. That is now a live risk in a
-   * way it was not before: `MDVIEW_COLOR` and `NO_COLOR` both outrank the `FORCE_COLOR` the
-   * helper sets, so an ambient one on a developer's machine or a CI runner would flip the
-   * child. `forcedColorChildEnv` deletes both; this is the pin that the deletion works and
-   * that the two modes really are opposite.
-   */
-  test("the forced-colour child and the in-process render resolve opposite modes", async () => {
-    const saved = { mdview: process.env.MDVIEW_COLOR, no: process.env.NO_COLOR };
-    try {
-      // Both set *against* the mode the helper wants, so an inherited value would be
-      // visible as a failure rather than as a quietly weaker test.
-      process.env.MDVIEW_COLOR = "never";
-      process.env.NO_COLOR = "1";
-      // **The source carries a hue as well as a format, and that is required rather than
-      // incidental since WP-2 of `plans/colour-modes.md`.** `MDVIEW_COLOR=never` is one of
-      // the three explicit `never`-directive routes whose output that plan deliberately
-      // moves (Decision 5): it resolves to `formats`, not to `none`, so the in-process
-      // render is no longer colourless and the old `not.toContain("\u001b")` assertion
-      // asserted the pre-WP-2 semantics. Bold alone would have made this case *vacuous* —
-      // `bold` is format-class and `reset` is control-class, so `**loud** words` renders
-      // byte-identically under `full` and `formats`. The codespan's yellow is hue-class, so
-      // it is present on the forced side and absent on the ambient side, and the claim this
-      // test is about — the two sides resolve **opposite** modes — is sharper than it was:
-      // the boundary it now witnesses is the mode boundary itself.
-      const source = "**loud** `words`\n";
-      const { text: forced } = await renderWithForcedColor(source, 60);
-      expect(forced).toContain("\u001b[1m");
-      expect(forced).toContain("\u001b[33m");
-      const ambient = renderDocumentDetailed(source, 60).text;
-      expect(ambient).toContain("\u001b[1m");
-      expect(ambient).not.toContain("\u001b[33m");
-      expect(ambient).not.toBe(forced);
-      // And the sanitizer is what makes it so, checked directly rather than only through
-      // the child's behaviour.
-      const env = forcedColorChildEnv({ MDVIEW_COLOR: "never", NO_COLOR: "1", FORCE_COLOR: "0" });
-      expect("MDVIEW_COLOR" in env).toBe(false);
-      expect("NO_COLOR" in env).toBe(false);
-      expect(env.FORCE_COLOR).toBe("3");
-    } finally {
-      if (saved.mdview === undefined) delete process.env.MDVIEW_COLOR;
-      else process.env.MDVIEW_COLOR = saved.mdview;
-      if (saved.no === undefined) delete process.env.NO_COLOR;
-      else process.env.NO_COLOR = saved.no;
-    }
-  });
-});
-
+// The forced-colour subprocess fixture (`tests/helpers/color.ts`) and its `renderWithForcedColor`
+// block were deleted with the TypeScript renderer at WP-9 of `plans/mdview-rust-port.md`
+// (`TS_BASELINE` = `c097c66`): the policy-from-environment claim they pinned is now
+// `tests/colour-axis.test.ts`'s, against the built binary.
 // The colour axis's CLI half (WP-1, `plans/own-the-token-walk.md`; three exact gates
 // since WP-5, `plans/colour-policy.md`; the fourth `formats` child since WP-4,
 // `plans/colour-modes.md`). The axis itself — the four children, the digests and the

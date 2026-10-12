@@ -1,11 +1,11 @@
 //! marked-shaped tokens — the walk's input, and the schema the L-gate normalizes both sides to.
 //!
 //! **Exactly the census fields** (WP-1 of `plans/mdview-rust-port.md`, step 0): for each of the
-//! 19 token types `src/walk.ts` dispatches, the fields some renderer module reads, plus `raw`
+//! 19 token types `TS_BASELINE` `src/walk.ts` dispatches, the fields some renderer module reads, plus `raw`
 //! on `del` (the `single-tilde-del` divergence predicate reads it). Nothing else is carried, so
 //! the adapter (`lex.rs`, WP-7) produces nothing the renderer cannot see and the TS dumper
-//! (`scripts/lexer-diff.ts`) serializes the same shape. `tokens` on a `text` token is an
-//! `Option` because its *presence* is load-bearing: `src/list-layout.ts`'s tight-item test
+//! (`scripts/lexer-diff.ts`, deleted at WP-9; `TS_BASELINE` = `c097c66`) serialized the same shape. `tokens` on a `text` token is an
+//! `Option` because its *presence* is load-bearing: `TS_BASELINE` `src/list-layout.ts`'s tight-item test
 //! reads whether the key exists to tell a block text token from an inline one.
 //!
 //! `Serialize` is always derived (`mdview __parity lex` dumps adapter tokens); `Deserialize`
@@ -94,7 +94,7 @@ pub enum Token {
     },
 }
 
-/// A table header or body cell (`src/table.ts` reads `text` and flattens `tokens`).
+/// A table header or body cell (`TS_BASELINE` `src/table.ts` reads `text` and flattens `tokens`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "parity-tokens", derive(serde::Deserialize))]
 pub struct TableCell {
@@ -102,7 +102,7 @@ pub struct TableCell {
     pub tokens: Vec<Token>,
 }
 
-/// A list item (`src/lists.ts`): `raw` feeds `RAW_TASK_STATE`, and only `loose` is read for
+/// A list item (`TS_BASELINE` `src/lists.ts`): `raw` feeds `RAW_TASK_STATE`, and only `loose` is read for
 /// spacing — never comrak's `tight`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "parity-tokens", derive(serde::Deserialize))]

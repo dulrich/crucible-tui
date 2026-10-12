@@ -1,4 +1,4 @@
-//! The wide-table allocator and emitter, ported from `src/table.ts`.
+//! The wide-table allocator and emitter, ported from `TS_BASELINE` `src/table.ts`.
 //!
 //! WP-5a of `plans/mdview-rust-port.md` ports the first half: cell normalization (the
 //! span-cell contract), `tableGrid`, `naturalWidths`, the allocator and the two wraps. The

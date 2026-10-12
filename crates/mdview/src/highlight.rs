@@ -1,4 +1,4 @@
-//! The syntax colorizer, ported from `src/highlight.ts` (WP-6a of `plans/mdview-rust-port.md`)
+//! The syntax colorizer, ported from `TS_BASELINE` `src/highlight.ts` (WP-6a of `plans/mdview-rust-port.md`)
 //! over syntect + two-face in place of highlight.js 10.7.3.
 //!
 //! **D-C governs this module.** The two engines tokenize differently, so colour-on fence output

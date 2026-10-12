@@ -5,7 +5,11 @@ The publication containment guard — `tests/helpers/containment.ts` holds its r
 five largest test files' `describe` groups now live after their WP-R3 split. **The root
 `AGENTS.md` is the parent document — read it first.**
 
-### The five-file split (WP-R3) — where a `describe` block landed, and why
+**Since WP-9 of `plans/mdview-rust-port.md` this directory tests the instruments, not the renderer.** The renderer's TypeScript tests were deleted with it (`TS_BASELINE` = `c097c66`); the renderer's tests are Rust now (`cargo test`, `crates/mdview/`), including the frontmatter and WP-14 witnesses (`crates/mdview/tests/witnesses.rs`, which `tests/fixtures/witnesses/witness-index.json` names). What stays here exercises `scripts/`: the sweep, the colour axis, the render differential, the detectors and overflow gate, the import-graph DAG and the containment guard. Tests that need a render send one request to the built binary (`tests/helpers/render.ts`), which is why `verify` runs `bun test` after `build:rust`.
+
+### The five-file split (WP-R3) — history
+
+Most of the files below were deleted at WP-9; the record of where each `describe` block landed is kept as of `TS_BASELINE`.
 
 `plans/post-refactor-code-quality-remediation.md`'s WP-R3 split every test file at or
 above 1,000 lines along its own existing `describe` groups, mechanically — no assertion
@@ -43,17 +47,17 @@ independently asserts against it.
 `tests/render.test.ts` split by production owner rather than by a fixed three-way
 template, since the plan's contract for that file was to group by which production
 module each block actually exercises: `tests/render-wikilinks.test.ts` (wiki-links,
-verbatim contexts, embeds — all `src/wikilink.ts`'s), `tests/render-list-layout.test.ts`
+verbatim contexts, embeds — all `TS_BASELINE` `src/wikilink.ts`'s), `tests/render-list-layout.test.ts`
 (list reflow and the WP-14 inline-markup-inside-a-list-item witness — both exercise
-`src/list-layout.ts`'s wrap paths, which is where WP-R2 moved `wrappedText` and the
+`TS_BASELINE` `src/list-layout.ts`'s wrap paths, which is where WP-R2 moved `wrappedText` and the
 tight-item coalesce), `tests/render-frontmatter.test.ts` (frontmatter integration, the
 divider, and the codeRanges regression the divider's line offset causes — all
-`src/frontmatter.ts`'s), `tests/render-emoji.test.ts` (the emoji shortcode substitution
-witness — `src/inline.ts`'s emoji pass) and `tests/render-core.test.ts` (the
+`TS_BASELINE` `src/frontmatter.ts`'s), `tests/render-emoji.test.ts` (the emoji shortcode substitution
+witness — `TS_BASELINE` `src/inline.ts`'s emoji pass) and `tests/render-core.test.ts` (the
 `formats`-mode reset framing, width/prose coverage, the fenced-code exemption and
 sentinel walk, fence-language normalization, and the task-state pre-pass and its
 adjacency-to-wiki-links boundary — the parts of `renderDocument`/`renderDocumentDetailed`
-that are `src/render.ts`'s own orchestration rather than any one owned module's).
+that are `TS_BASELINE` `src/render.ts`'s own orchestration rather than any one owned module's).
 
 ### Containment — this repo is published, and it grew up next to private ones
 
@@ -140,11 +144,11 @@ pin it.
 The neighbour rule drops a name that collides with an installed package *only* when the
 directory proves it is that package: a `package.json` naming itself. Otherwise reading a
 dependency's source next door — as this repo's own history needed for `marked-terminal`,
-back when it was still installed and `src/AGENTS.md` pointed readers at its file:line
+back when it was still installed and `crates/mdview/AGENTS.md` pointed readers at its file:line
 citations directly — would turn every mention of it into a finding, and a guard that fails
 for reasons unrelated to your change is a guard that gets switched off.
 `marked-terminal` itself is no longer that live case: WP-6 of
-`plans/marked-terminal-replacement.md` removed the package, and `src/AGENTS.md`'s "How to
+`plans/marked-terminal-replacement.md` removed the package, and `crates/mdview/AGENTS.md`'s "How to
 read this file" withdrew the instruction — its `index.js:NNN` citations are historical
 evidence now, not a pointer at an installed neighbour, and the case they were the example
 of is `DOCUMENTED_FORMER_PACKAGES` below, not this rule.
@@ -158,7 +162,7 @@ own citation of the file it replaced was flagged. `DOCUMENTED_FORMER_PACKAGES` i
 `tests/helpers/containment.ts` names each such package with the reason it is there: the two
 that removal took out (`marked-terminal`, `cli-table3`), and `cli-highlight`, removed by WP-2
 of `plans/colour-policy.md` — whose `dist/theme.js` and `dist/index.js` are the transcription
-source for `src/highlight.ts`'s theme vocabulary and span grammar and are cited in that
+source for `TS_BASELINE` `src/highlight.ts`'s theme vocabulary and span grammar and are cited in that
 module and in two plans. **The list grows exactly this way, one entry per recorded removal,
 and it is the sanctioned response to that guard going red for this reason** — the alternative
 is deleting the citation that is the evidence for the decision. **It is not a general escape
@@ -224,6 +228,6 @@ while every test stays green.
 To render a file interactively:
 
 ```bash
-bun run src/cli.ts example/plan.md
+./target/x86_64-unknown-linux-musl/release/mdview example/plan.md
 ```
 

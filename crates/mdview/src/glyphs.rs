@@ -1,4 +1,4 @@
-//! The Unicode/ASCII capability tier, ported from `src/glyphs.ts`.
+//! The Unicode/ASCII capability tier, ported from `TS_BASELINE` `src/glyphs.ts`.
 //!
 //! Handed an environment value, never reading one. Precedence, highest first: resolved
 //! ambiguous width `wide` (forces ASCII, `glyphs.ts:113`) → the `--ascii`/`--unicode`
@@ -19,7 +19,7 @@ pub struct GlyphSet {
     pub tier: GlyphTier,
     pub bullets: &'static [&'static str],
     pub rule: &'static str,
-    /// `cli-table3`-named border characters, in `src/glyphs.ts`'s order; `None` = box drawing.
+    /// `cli-table3`-named border characters, in `TS_BASELINE` `src/glyphs.ts`'s order; `None` = box drawing.
     pub table_chars: Option<&'static [(&'static str, &'static str)]>,
     pub rewrite_task_states: bool,
 }

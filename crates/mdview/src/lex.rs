@@ -1,7 +1,7 @@
 //! The comrak tree to marked-shaped token adapter (WP-7 of `plans/mdview-rust-port.md`).
 //!
 //! `lex(body, tier)` is a pure function producing exactly the census tokens
-//! (`crate::token::Token`) that `src/render.ts`'s `lexBody` produces, modulo the registered
+//! (`crate::token::Token`) that `TS_BASELINE` `src/render.ts`'s `lexBody` produces, modulo the registered
 //! divergences (`scripts/divergences.ts`). comrak decides **structure** — which blocks exist,
 //! where they start and end, and which inline nodes exist — and every string field is rebuilt
 //! from the **source**, through comrak's sourcepos, the way marked would have sliced it:
@@ -31,7 +31,7 @@ use comrak::{Arena, Options, ResolvedReference, parse_document};
 use crate::render::Tier;
 use crate::token::{ListItem, TableCell, Token};
 
-/// `src/lists.ts`'s `TASK_GLYPHS`, the Unicode tier's task-state table.
+/// `TS_BASELINE` `src/lists.ts`'s `TASK_GLYPHS`, the Unicode tier's task-state table.
 const TASK_GLYPHS: &[(char, &str)] = &[
     (' ', "○"),
     ('x', "✓"),
@@ -1964,7 +1964,7 @@ enum Inline {
 }
 
 /// The first wiki-link match starting in `v[from..limit)` (it may run on to `end`), by
-/// `src/wikilink.ts`'s `WIKI_LINK_TOKENIZER`.
+/// `TS_BASELINE` `src/wikilink.ts`'s `WIKI_LINK_TOKENIZER`.
 fn find_wiki(s: &str, from: usize, limit: usize, end: usize) -> Option<(usize, usize)> {
     let b = s.as_bytes();
     let mut p = from;
@@ -2055,7 +2055,7 @@ struct Wiki {
     embed: bool,
 }
 
-/// `src/wikilink.ts`'s `WIKI_LINK_TOKENIZER` over a whole raw match.
+/// `TS_BASELINE` `src/wikilink.ts`'s `WIKI_LINK_TOKENIZER` over a whole raw match.
 fn parse_wikilink(raw: &str) -> Option<Wiki> {
     let (embed, rest) = match raw.strip_prefix('!') {
         Some(r) => (true, r),

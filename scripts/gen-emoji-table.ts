@@ -5,7 +5,7 @@
  *
  * Input: `node-emoji@2.2.0` (`node_modules/node-emoji/lib/index.js`), whose name map is
  * `emojilib@2.4.0`'s `emojis.json` — enumerated through node-emoji's public `search("")` and
- * confirmed entry by entry through `get(":name:")`, the exact call `src/inline.ts` makes. Only
+ * confirmed entry by entry through `get(":name:")`, the exact call `TS_BASELINE` `src/inline.ts` makes. Only
  * names the inline pass can ever ask for are kept: `insertEmojis`'s capture class is
  * `[A-Za-z0-9_\-+]+`, so any other name is unreachable.
  *
@@ -40,7 +40,7 @@ const body = [
   "//!",
   `//! Input: node-emoji@${version} (\`node_modules/node-emoji/lib/index.js\`, name map from`,
   "//! emojilib@2.4.0 `emojis.json`), every name matching `[A-Za-z0-9_\\-+]+` (the only names",
-  "//! `src/inline.ts`'s `insertEmojis` can capture), resolved through `nodeEmoji.get`.",
+  "//! `TS_BASELINE` `src/inline.ts`'s `insertEmojis` can capture), resolved through `nodeEmoji.get`.",
   "//! Generator: `bun run scripts/gen-emoji-table.ts` (`--check` verifies it is current).",
   "",
   "/// `(name, glyph)`, sorted by name bytes for binary search.",

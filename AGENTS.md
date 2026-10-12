@@ -28,178 +28,67 @@ A second command, `jsonedit`, now ships from this repo (`crates/jsonedit/`, `pla
 
 ## Stack
 
-- Bun + TypeScript, single flat package (no workspaces).
-- A Rust Cargo workspace beside it (`Cargo.toml`, `members = ["crates/*"]`, toolchain pinned by `rust-toolchain.toml` to 1.98.1); `crates/jsonedit/` is its first crate, shipped as a static musl binary built with `cargo auditable`.
-- `marked` (**lexer only — and since 2026-08-17 that is finally true**) + **this repo's own
-  renderer method bodies and its own tree walk** — every renderer method lives in
-  `src/inline.ts`, `src/blocks.ts`, `src/lists.ts`, `src/table.ts` and `src/render.ts`, and
-  the walk that calls them is `src/walk.ts`.
-
-  **This line said "lexer only" before 2026-08-17 and it was false then**; it was corrected to
-  "lexer and parser", and WP-2 of `plans/own-the-token-walk.md` made the original claim true
-  instead of merely accurate — the walk is `src/walk.ts`'s `TokenWalker` now, and it landed
-  byte-identically. **What `Parser` was actually doing, and the `=> string` renderer interface
-  that made owning the walk the only way past it, is `src/walk.ts`'s own header table and
-  `src/AGENTS.md`'s "The walk is this repo's, and the renderer object is no longer an
-  extension"**, which is where that narrative now lives, whole. Read it as history, in the
-  same register as the `marked-terminal` and `cli-table3` entries below.
-
-  `marked-terminal` did prose/list/code rendering until
-  `plans/marked-terminal-replacement.md` replaced it method by method (WP-2 to WP-5)
-  and removed it (WP-6, landing byte-identical); `src/AGENTS.md` carries the measured
-  reasons each behaviour is required, and reads its `index.js:NNN` citations as
-  historical evidence rather than live code.
-- `yaml` for frontmatter parsing, `string-width` for CJK/emoji-correct column
-  measurement. **Table borders, padding and alignment are emitted by `src/table.ts`
-  itself** — `cli-table3` assembled the finished string until WP-3 of
-  `plans/tn-review-remediation.md`; see `docs/agents/ambiguous-width.md`'s "The residual,
-  named rather than papered over" for why that had to stop being true. The replaced library's own
-  table renderer never received the terminal width and dropped `token.align`
-  entirely, which is why the allocator was the first thing this repo owned.
-- **Bun/TypeScript over the Rust default the in-house scaffolding skill prescribes
-  (its Gate 2)** — recorded per that gate's "record every choice" rule. Justification:
-  `marked@^14` was already pinned across the sibling tools this tool was written beside;
-  the wiki-link and task-state markdown logic it needs already existed in TypeScript in
-  an in-house web renderer working over the same corpus; the only other CLI-only tool in
-  that family is TypeScript; and a working prototype in this stack was measured against
-  the corpus before the plan was written.
-  **Under review: a Rust port of mdview is anticipated (see `plans/jsonedit.md` Decisions locked 2).**
+- **The renderer is Rust** — `crates/mdview/`, a static musl binary built with `cargo auditable` beside `crates/jsonedit/` in one Cargo workspace (`Cargo.toml`, `members = ["crates/*"]`, toolchain pinned by `rust-toolchain.toml` to 1.98.1). `comrak` lexes, and `crates/mdview/src/lex.rs` adapts its tree into the marked-shaped tokens this repo's own walk and visitors read; `syntect` + `two-face` highlight.
+- **Bun + TypeScript remain, for the scripts and instruments only** (`scripts/`, `tests/`): the corpus sweep, the colour axis, the render differential, the generators and `verify`. They drive the built binary through its hidden `mdview __parity` subcommand and never render in-process.
+- **The Bun/TypeScript-over-Rust override is closed.** The scaffolding skill's Gate 2 default is Rust, and this repo recorded a justified exception for the original build (`marked@^14` pinned across the sibling tools, the wiki-link logic already in TypeScript, a prototype measured first). `plans/mdview-rust-port.md` ported the renderer behaviour for behaviour under byte-parity gates, and WP-9 deleted the TypeScript renderer. **`TS_BASELINE` = `c097c66`** is the last commit carrying it; every fact below that needs the TypeScript renderer cites that sha.
+- What the TypeScript renderer had to own, and why — `marked-terminal` replaced method by method, `cli-table3`'s emitter, the walk taken from marked's `Parser` — is history now, carried in `crates/mdview/AGENTS.md` (the port's behavioural spec, moved from `src/AGENTS.md`) and `docs/agents/dependency-history.md`. Its `src/*.ts` citations name `TS_BASELINE`'s tree.
 
 ## Layout
 
-One line per module — the *why* behind each is `src/AGENTS.md` and the reference files it
-indexes, and the module's own header comment is longer than either.
+One line per module — the *why* is `crates/mdview/AGENTS.md` and the module's own header.
 
 ```text
-src/cli.ts          arg parsing, width resolution, pager, --check, glyph flags
-src/render.ts       marked lexer wiring, the owned renderer object, the two sentinels and
-                    the code-range walk, the post-compose wrap; the list/text layout seam
-                    is src/list-layout.ts's
-src/list-layout.ts  the list/text layout state machine — five visitors that share one
-                    render's state (list, text, paragraph, heading, blockquote), the
-                    inlineDepth/quoteColumns counters, the tight-item coalesce, the
-                    per-level budget and the marker-collision guards
-src/walk.ts         the owned token walk — TokenWalker, which replaced marked's Parser as
-                    the tree walker; the whole Parser contract, cited site by site, in its
-                    header; dispatches one repo-local token type (wikilink) Parser lacked
-src/layout-context.ts  the one immutable per-render value the visitors read — width, glyph
-                    tier, Measure, prefix stack, fence-language resolver, emoji, colour
-src/inline.ts       the owned inline visitors, the emoji pass and the colon sentinel
-src/wikilink.ts     wiki-link recognition — the inline tokenizer extension marked's lexer
-                    dispatches inside its own lexing pass, the WikiLinkToken it produces,
-                    and styleWikiLabel, which styles a label at emission through
-                    src/style.ts's applyStyleChain and, when the context carries a
-                    resolver, wraps it in an OSC-8 link
-src/wikiresolve.ts  where a [[slug]] points — vault-root discovery, the lazy file index,
-                    D2's resolution order and the file:// URI; pure over an injected
-                    filesystem, built only by src/cli.ts, never by a visitor
-src/colour.ts       the one colour/hyperlink decision — resolveColourPolicy over the
-                    ratified precedence matrix, and owned OSC-8 terminal detection; reads
-                    no process state at all
-src/ansi.ts         the one terminal-sequence grammar, both directions — scan() into an
-                    ordered span sequence (SGR, OSC-8, DCS, malformed; non-text spans are
-                    width 0 by construction) and the owned OSC-8 link() with tmux DCS
-                    wrapping
-src/style.ts        the one styling authority — the narrow committed style table and the
-                    policy-driven emitter (chalk's applyStyle, plus the plain wrap
-                    frontmatter needs)
-src/highlight.ts    the owned syntax colorizer over highlight.js direct — the theme, the
-                    span grammar and both call branches cli-highlight had, plus
-                    supportsLanguage
-src/blocks.ts       the owned block leaves — code, hr, html, paragraph, heading,
-                    blockquote — and the shared transform
-src/lists.ts        owned list composition: list, listitem, checkbox, ordered numbering,
-                    task states, the per-item budget, the per-level de-drift and bullet
-                    substitution
-src/frontmatter.ts  YAML split and metadata block formatting
-src/table.ts        the wide-table allocator — the reason the tool exists — and the
-                    border/cell emitter that used to be cli-table3; its head/border
-                    styling goes through src/style.ts under the resolved policy
-src/text.ts         grapheme splitting + display-width padding, shared by table.ts
-                    and wrap.ts (which used to reach into table.ts for them)
-src/wrap.ts         ANSI-safe prose wrapping — the renderer's reflow engine; span-native
-                    at both split paths, so no sequence is ever cut
-src/glyphs.ts       Unicode/ASCII capability tier — handed an env object by cli.ts, like
-                    colour.ts; process.env itself is read only in cli.ts, config.ts,
-                    width.ts and render.ts
-src/width.ts        display-width measurement + the East Asian Ambiguous probe; the only
-                    module that imports string-width
-src/lang.ts         fence-language alias map + the supportsLanguage() fallback,
-                    reached through src/highlight.ts
-src/config.ts       XDG config load + corpus-manifest path resolution, and the
-                    color/hyperlinks directives
-src/detectors.ts    orphan / continuation-over-indent detectors (see scripts/AGENTS.md)
-src/list-lines.ts   the rendered-line primitives both render.ts and detectors.ts share —
-                    stripAnsi (a derivation of src/ansi.ts's scanner, so it removes OSC-8
-                    and DCS as well as SGR), the marker regexes, trackListLine; imports
-                    only width.ts and ansi.ts, so render.ts reaches them without pulling
-                    in the detectors
-src/overflow.ts     the width gate and the code-range exemption predicate — one
-                    implementation, imported by --check, the sweep and the detectors
-corpus/             the bundled public-safe default manifest
-scripts/corpus.ts   corpus discovery + evaluation — the sweep's library half
-scripts/sweep.ts    the sweep CLI: flags, summary, exit code (see scripts/AGENTS.md)
-scripts/emoji-audit.ts  the emoji shortcode behavioural audit — renders every :shortcode:
-                    in the corpus twice, substitution forced on then off, and keeps only
-                    tokens whose bytes differ; a second consumer of corpus.ts and sweep.ts
-scripts/colour-axis.ts  the colour axis — the four children, the v2 wire record, G1/G2/G3
-                    and the join; a consumer of corpus.ts, never the reverse
-scripts/render-diff.ts  the differential CLI: flags, corpus selection, baseline I/O,
-                    pairing, printing, exit codes
-scripts/revision.ts one revision's renderer, materialized and loaded, plus the comparison
-                    tuple's vocabulary; reaches src/ only by dynamic absolute-path import
-scripts/diff-classify.ts  the differential's pure half — combo records, the four-channel
-                    diff, the class-A/B/C classification; no process, file, argv or clock
-scripts/hash.ts     sha256Hex — the one digest both instruments compare against archived
-                    runs; a leaf, imports nothing
-scripts/sweep-options.ts  DEFAULT_WIDTHS + parseWidths — the width grammar both CLIs
-                    parse; a leaf, imports nothing
-scripts/gen-licenses.ts  generates THIRD-PARTY-LICENSES.txt from the actual installed
-                    runtime dependency closure (dependencies + optionalDependencies,
-                    transitively) — never devDependencies or all of node_modules
-scripts/verify.ts   the canonical bun run verify entrypoint — every gate in fail-fast
-                    order plus the build/smoke/license-freshness gates; a leaf, imports
-                    nothing from scripts/
-tests/              unit tests + markdown fixtures
-tests/scripts-acyclic.test.ts  the gate that keeps scripts/ a DAG (see scripts/AGENTS.md)
-tests/helpers/containment.ts  the publication guard's rules (see tests/AGENTS.md)
-tests/helpers/block-parity.ts  the block-leaf parity table — code/hr/html against
-                    marked-terminal, byte for byte
-tests/helpers/block-parity-golden.ts  the frozen marked-terminal block-leaf byte
-                    table, captured before removal
-tests/helpers/color.ts  the forced-colour subprocess fixture — runs a table under
-                    FORCE_COLOR=3 for the colour-on half of a parity test
-tests/helpers/inline-parity.ts  the inline parity table — every owned inline visitor
-                    against the marked-terminal method it replaced, byte for byte
-tests/helpers/inline-parity-golden.ts  the frozen marked-terminal inline byte table,
-                    captured before removal
-dist/mdview         compiled binary (gitignored; see PATH install below)
-Cargo.toml          the Rust workspace root (members crates/*, shared lints, release profile)
-Cargo.lock          committed; every graph-consuming cargo call runs --locked
-rust-toolchain.toml the pinned Rust toolchain (1.98.1, clippy, rustfmt, musl target)
-crates/jsonedit/    the jsonedit bin crate — logic in src/lib.rs, thin src/main.rs; its
-                    invariants are crates/jsonedit/AGENTS.md
+crates/mdview/src/  the renderer (each module's header names the TS_BASELINE src/*.ts it ports)
+  main.rs           thin entrypoint; lib.rs dispatches `__parity` or the CLI
+  cli.rs            arg parsing, width resolution, the view path, --check, --licenses
+  pager.rs          less -R, stdout fallback, BrokenPipe as quiet success
+  config.rs         XDG config load, color/hyperlinks directives, highlight-as write
+  probe.rs          the East Asian Ambiguous probe and its cache
+  render.rs         render entry: frontmatter, lex, context, visitors, walk, post-pass
+  lex.rs            comrak tree -> marked-shaped tokens (token.rs is the schema)
+  walk.rs           the owned token walk
+  context.rs        the immutable per-render layout context
+  list_layout.rs    the list/text layout state machine
+  lists.rs          list composition, numbering, task states, de-drift, bullets
+  blocks.rs         code, hr, html, paragraph, heading, blockquote
+  inline.rs         inline visitors, the emoji pass, the colon sentinel
+  table.rs          the wide-table allocator and emitter (table/tests.rs)
+  wikilink.rs       wiki-link styling and OSC-8 following; wikiresolve.rs resolves slugs
+  frontmatter.rs    YAML split and metadata block
+  style.rs          the committed SGR table and emitter; colour.rs the one policy decision
+  ansi.rs           the sequence grammar and the OSC-8 emitter
+  highlight.rs      syntect colorizer; lang.rs fence aliases; hljs_map.rs (generated)
+  width.rs          the string-width port (width/tables.rs generated); text.rs, wrap.rs
+  glyphs.rs         the Unicode/ASCII tier
+  list_lines.rs     rendered-line primitives; overflow.rs the width gate
+  emoji_data.rs     generated shortcode map
+  parity.rs         the hidden `mdview __parity` JSONL servers the instruments drive
+crates/mdview/tests/  integration tests: witnesses, golden replay (golden/), protocol
+crates/mdview/notices/  vendored licence notices gen-licenses copies (see its README.md)
+crates/mdview/syntaxes/ vendored grammars compiled in by build.rs
+crates/jsonedit/    the jsonedit bin crate; its invariants are crates/jsonedit/AGENTS.md
+scripts/            the Bun instruments (module map and DAG: scripts/AGENTS.md)
+scripts/measure/    measurement-only modules moved out of src/ at WP-9: detectors,
+                    list-lines, overflow, the ansi scanner, the width Measure, the
+                    frontmatter split, manifest resolution
+scripts/verify.ts   the canonical `bun run verify`
+corpus/             the bundled public-safe gate manifest
+tests/              the instruments' bun tests + markdown fixtures (tests/AGENTS.md)
 target/             Cargo build output (gitignored)
 ```
 
 ## Child docs and reference files — the index
 
-This root file carries what a session needs whatever it touches: identity, the two-names
-decision, the Stack, the Layout tree, the Run/verify contract, Conventions and the live
-dependency rules. Everything subtree-specific lives in a child `AGENTS.md` beside the code
-it describes, each with its own `CLAUDE.md` symlink. Read the root, then the nearest child.
+This root file carries what a session needs whatever it touches: identity, the two-names decision, the Stack, the Layout tree, the Run/verify contract, Conventions and the live dependency rules. Everything subtree-specific lives in a child `AGENTS.md` beside the code it describes, each with its own `CLAUDE.md` symlink. Read the root, then the nearest child.
 
 | File | Carries |
 |---|---|
-| `src/AGENTS.md` | what the owned renderer must do and the measured defect behind each requirement, what owning the walk moved off `marked.use()`, the parity classes, the sentinels, the task-state pre-pass, the colour-only-defect class, the glyph tier, the command-line surface, the rendering policy, the `emoji` re-decision — and the index to the reference files below |
-| `scripts/AGENTS.md` | the corpus sweep and its manifests, the corpus growth findings, the defect detectors, the fast and durable measurement tiers |
+| `crates/mdview/AGENTS.md` | the renderer's behavioural spec: what each visitor must do and the measured defect behind it, the parity classes, the sentinels, the task-state pre-pass, the colour-only-defect class, the glyph tier, the command-line surface, the rendering policy, the `emoji` re-decision — and the index to the reference files below |
+| `scripts/AGENTS.md` | the corpus sweep and its manifests, the corpus growth findings, the defect detectors, the colour axis, the render differential |
 | `tests/AGENTS.md` | the publication containment guard's rules and internals, and the width-sensitive fixture trap |
 | `crates/jsonedit/AGENTS.md` | jsonedit's ten safe-edit invariants, the dialect and structural-check rules, the indent-dominance threshold, and the test approach |
 
-**The deep records live under `docs/agents/`, and are read on demand rather than loaded on
-every turn** — they deliberately have **no `CLAUDE.md` symlink**, which is the whole point
-of the split (WP-4 of `plans/docs-and-memory-curation.md`). Nothing was rewritten to move
-them there; every section title is unchanged and every old home carries a pointer.
+**The deep records live under `docs/agents/`, and are read on demand rather than loaded on every turn** — they deliberately have **no `CLAUDE.md` symlink** (WP-4 of `plans/docs-and-memory-curation.md`). Their `src/*.ts` citations are historical as of `TS_BASELINE`.
 
 | File | Carries |
 |---|---|
@@ -211,74 +100,45 @@ them there; every section title is unchanged and every old home carries a pointe
 
 ## Run
 
-From the repository root, the verification contract is two commands (WP-1 of
-`plans/tn-review-remediation.md` — one canonical entrypoint, called identically here and
-from CI):
+From the repository root, the verification contract is two commands (WP-1 of `plans/tn-review-remediation.md` — one canonical entrypoint, called identically here and from CI):
 
 ```bash
 bun install
 bun run verify
 ```
 
-`bun run verify` (`scripts/verify.ts`) runs every gate in fail-fast order, printing which
-step failed and exiting non-zero at the first one that does. In order, it runs:
+`bun run verify` (`scripts/verify.ts`) runs every gate in fail-fast order, printing which step failed and exiting non-zero at the first one that does. In order, it runs:
 
 ```bash
 bun run typecheck
 bun run lint
-bun test tests
-bun run build
-./dist/mdview --check --width 80 tests/fixtures/wide-table.md
-bun run scripts/gen-licenses.ts --check
-bun run src/cli.ts --check --width 80 tests/fixtures/wide-table.md
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 bun run build:rust
+./target/x86_64-unknown-linux-musl/release/mdview --check --width 80 tests/fixtures/wide-table.md
 ./target/x86_64-unknown-linux-musl/release/jsonedit --check crates/jsonedit/tests/fixtures/valid.json
+bun test tests
+bun run scripts/gen-licenses.ts --check
 bun run scripts/gen-emoji-table.ts --check
 bun run scripts/gen-width-tables.ts --check
 bun run scripts/gen-hljs-map.ts --check
-bun run scripts/frontmatter-census.ts --no-t1
-bun run scripts/table-alloc-diff.ts
-bun run scripts/lexer-diff.ts
-bun run scripts/render-diff.ts --rev-a . --rev-b rust:. --input tokens --policy P0,P1
-bun run scripts/render-diff.ts --rev-a . --rev-b rust:. --input tokens --policy P2 --require-nonzero sgr,fences
-bun run scripts/cli-diff.ts
+bun run scripts/render-diff.ts --rev-a rust:HEAD --rev-b rust:. --policy P0,P1,P2,P3,P4 --require-nonzero sgr,fences
 bun run sweep
 bun run sweep -- --glyphs ascii
 bun run sweep -- --colour-mode both
 bun run test:security
 ```
 
-That list is the explanation of what `verify` does, not a second thing to run by hand —
-every command in it is byte-identical to the gate that already existed for it, plus three
-that existed but were not wired into any single chain before WP-1 of
-`plans/tn-review-remediation.md`: the compiled build, a smoke of the built artifact (a
-build step alone cannot see a broken binary), and license freshness in `--check` mode
-(renders to memory and compares against `THIRD-PARTY-LICENSES.txt`, so a failing local
-run never leaves the tree dirty — the default `bun run gen-licenses`, with no flag, still
-writes). The colour-axis sweep joined the chain afterward, for a different reason: three
-exact gates, no thresholds, over the fixed gate corpus — a colour decision may change
-which bytes a render emits, never which characters, and an undirected, piped render must
-emit no terminal sequence at all (`scripts/AGENTS.md`, "The colour axis — three exact
-gates over four children", carries the gate definitions and history).
+That list is the explanation of what `verify` does, not a second thing to run by hand. Since WP-9 of `plans/mdview-rust-port.md`: the Bun build, its artifact smoke and the `TS_BASELINE` `src/cli.ts --check` self-smoke are gone with the TypeScript renderer, and so are the four TS-vs-Rust differentials (frontmatter census, table-allocator diff, lexer diff, CLI diff); `bun test` runs **after** `build:rust`, because the instruments' tests drive the built binary; and the render differential is Rust-vs-Rust, the working tree against `HEAD` over the T0 gate corpus, class-A or registry-attributed. License freshness runs in `--check` mode (renders to memory, never leaves the tree dirty — the default `bun run gen-licenses` still writes). The colour axis is three exact gates, no thresholds, over the fixed gate corpus — a colour decision may change which bytes a render emits, never which characters, and an undirected, piped render must emit no terminal sequence at all (`scripts/AGENTS.md`).
 
-**`verify` never runs `bun install`.** Local floats (`bun install`), CI freezes (`bun
-install --frozen-lockfile`), and that asymmetry is deliberate — installation stays a
-separate step, run once before `verify`, in both places.
+**`verify` never runs `bun install`.** Local floats (`bun install`), CI freezes (`bun install --frozen-lockfile`), and that asymmetry is deliberate — installation stays a separate step, run once before `verify`, in both places.
 
-**Flag order matters.** `bun run --cwd <dir> <script>` works; `bun --cwd <dir> run
-<script>` does **not** — on Bun 1.3.11 it prints `bun run`'s help text and **exits 0**,
-i.e. it silently passes without executing the script. Verified reproducible in a second,
-unrelated package, so it is a Bun CLI behavior, not a quirk of this one. Never write the
-second form into a gate: it is a gate that can never fail.
+**Flag order matters.** `bun run --cwd <dir> <script>` works; `bun --cwd <dir> run <script>` does **not** — on Bun 1.3.11 it prints `bun run`'s help text and **exits 0**, i.e. it silently passes without executing the script. Verified reproducible in a second, unrelated package, so it is a Bun CLI behavior, not a quirk of this one. Never write the second form into a gate: it is a gate that can never fail.
 
-The `--check` step is the CLI's own self-smoke: it renders with no pager and exits
-non-zero if any output line exceeds the target width. Every step `bun run verify` runs is
-binding and must exit 0.
+The `--check` step is the CLI's own self-smoke: it renders with no pager and exits non-zero if any output line exceeds the target width. Every step `bun run verify` runs is binding and must exit 0.
 
-### Rust host prerequisites and jsonedit install
+### Rust host prerequisites and install
 
 One-time, on a fresh host (`verify` never runs `rustup` or `cargo install`):
 
@@ -287,9 +147,10 @@ rustup toolchain install 1.98.1 --profile minimal -c clippy,rustfmt -t x86_64-un
 cargo install cargo-auditable --locked
 ```
 
-Use the explicit install: rustup's auto-install from `rust-toolchain.toml` (default profile) failed on this host. Build with `bun run build:rust`; install is a symlink, and like mdview's it does not track source — rebuild after any edit:
+Use the explicit install: rustup's auto-install from `rust-toolchain.toml` (default profile) failed on this host. Build with `bun run build:rust`; install is a symlink per binary, and it does not track source — **rebuild after any edit**, or the command silently runs the old code:
 
 ```bash
+ln -sfn "$PWD/target/x86_64-unknown-linux-musl/release/mdview" ~/.local/bin/mdview       # from the repo root
 ln -sfn "$PWD/target/x86_64-unknown-linux-musl/release/jsonedit" ~/.local/bin/jsonedit   # from the repo root
 ```
 
@@ -319,37 +180,18 @@ until the cache goes stale again.
 
 ## Conventions
 
-- `src/cli.ts` exports `main(args = Bun.argv.slice(2))` so tests call it directly
-  without a subprocess, matching the in-house convention for CLI-only tools.
-- No shebang on `src/cli.ts`; it is invoked as `bun run src/cli.ts`, matching
-  every other standalone `.ts` entry point in the family this tool came from.
 - `INITIATIVE.md` exists here but did not while this was a subfolder — a tool folder in
   that family carried none, and the standalone repo is its own initiative. Its YAML
   frontmatter is agent-maintained; **the body is the user's**, and `# Blocked on User` is
   append-only.
 - **No `FEEDBACK.md`, ever agent-created.** It is the user's scratchpad: read it if it
   exists, never write it, never scaffold it.
-- `bun build --compile` (the `build` script) produces a **standalone compiled
-  binary** — a new pattern for this repo, where every other `bun build` produces a
-  bundle. It is ~102 MB decimal / 97 MiB (the Bun runtime is embedded) and
-  gitignored via `dist/`.
-
-  **The binary does not track source. It must be rebuilt after any source edit:**
-
-  ```bash
-  bun run build
-  ```
-
-  PATH install (already in place; `~/.local/bin` precedes `/usr/local/bin` on PATH):
-
-  ```bash
-  ln -sfn "$PWD/dist/mdview" ~/.local/bin/mdview         # from the repo root
-  ```
-
-  The symlink points at the build output, so a rebuild takes effect immediately — but
-  editing source without rebuilding leaves `mdview` silently running the old code.
+- **The binary does not track source.** `~/.local/bin/mdview` is a symlink to `target/x86_64-unknown-linux-musl/release/mdview` (see "Rust host prerequisites and install" above); rebuild with `bun run build:rust` after any edit. The ~102 MB `bun build --compile` binary at `dist/mdview` is gone with the TypeScript renderer (`TS_BASELINE` = `c097c66`).
+- `crates/mdview/src/main.rs` is a thin entrypoint over `mdview::run`; tests call the library directly, and the instruments call the binary's `__parity` servers.
 
 ### Dependencies (WP-5, re-measured at WP-6/WP-7)
+
+**Runtime npm dependencies are zero since WP-9 of `plans/mdview-rust-port.md`.** `package.json` has no `dependencies` at all; every npm package left is a **devDependency** of the scripts and instruments — `marked` and `string-width` for the detectors and the width `Measure` (`scripts/measure/`), and `node-emoji`, `highlight.js` and `get-east-asian-width` as the pinned inputs of the three generators (`gen-emoji-table`, `gen-hljs-map`, `gen-width-tables`), so each generated Rust table keeps a durable, versioned source. What ships is the Cargo closure plus the vendored notices in `crates/mdview/notices/`, and `THIRD-PARTY-LICENSES.txt` carries exactly that. **Everything below is the record as of `TS_BASELINE` (`c097c66`)**: the npm counts, pins and caveats describe the TypeScript renderer's runtime closure, and the classification and declaration rules still apply to Cargo.
 
 The premise this WP started from — "trim dependency fat to shrink the binary" —
 inverted once it was measured. Record that inversion here so nobody re-derives it and
@@ -369,12 +211,12 @@ falls into exactly one of three classes, and only one of them is allowed to stay
   owned here, not imported.** `supports-color` and `supports-hyperlinks` (removed WP-1 of
   `plans/colour-policy.md`), `@colors/colors` and `cli-highlight`'s bundled `chalk` theme
   (removed WP-2) were each exactly this: a decision this renderer needs, made by a
-  package reading the process rather than by a value handed in. `src/colour.ts` is what
+  package reading the process rather than by a value handed in. `TS_BASELINE` `src/colour.ts` is what
   replaced all of them — the one place that decision is made, from inputs threaded in
   explicitly.
 - **Emission dependencies — anything writing terminal escape bytes — are owned here,
   not imported.** `ansi-escapes` (removed WP-3) was the last one: this repo's own
-  `src/style.ts` (SGR) and `src/ansi.ts` (OSC-8, DCS) are the only places an escape byte
+  `TS_BASELINE` `src/style.ts` (SGR) and `src/ansi.ts` (OSC-8, DCS) are the only places an escape byte
   is spelled now.
 
 Applying that rule to this plan's own closure took runtime dependencies to **five, all
@@ -383,7 +225,7 @@ domain-data, zero load-time globals, zero third-party escape emission** — `mar
 caveat, recorded rather than resolved:** `marked`'s lexer is the one keeper whose
 interface is a real constraint rather than a preference — it has no source-offset API,
 which is the interface gap `docs/adr/0001-editor-path.md`'s `{text, style, sourceStart,
-sourceEnd}` return type is blocked behind, exactly as `src/walk.ts`'s header records for
+sourceEnd}` return type is blocked behind, exactly as `TS_BASELINE` `src/walk.ts`'s header records for
 the walk it replaced. Owning the lexer is not this plan's scope; the classification rule
 above is what a future plan that does own it will still have to satisfy.
 
@@ -413,7 +255,7 @@ count is a measurement, not a target, and it is re-measured rather than adjusted
 
 **The declaration rule, and it runs in both directions.** A package this repo's source
 imports is declared here, whatever a reachability tool says — `node-emoji` is declared
-because `src/inline.ts` imports it by name, `highlight.js` because `src/highlight.ts` does.
+because `TS_BASELINE` `src/inline.ts` imports it by name, `highlight.js` because `src/highlight.ts` does.
 And: **a package this repo's source stopped importing is undeclared here, even if it is
 still installed** — `supports-color` is still in `bun.lock` as a devDependency's transitive,
 and is undeclared, correctly. Undeclaring a package and removing it from the closure are two
@@ -429,7 +271,7 @@ caused; `supports-color`/`supports-hyperlinks` (WP-1) and the both-directions st
 the `chalk@4.1.2` residue and what it stopped deciding; `ansi-escapes` (WP-3), the last
 third-party escape *emitter*, and the OSC-8/tmux transcription that replaced it; the
 third question that WP-3 added — what layout can *see*, and why `stripAnsi` and
-`src/wrap.ts` are derivations of `src/ansi.ts`'s scanner now; and the `highlight.js` pin
+`TS_BASELINE` `src/wrap.ts` are derivations of `src/ansi.ts`'s scanner now; and the `highlight.js` pin
 history. The wiki-link carrier's own retirement paragraph is
 `docs/agents/wiki-link-record.md`, the one owning home for that story.
 
@@ -454,7 +296,7 @@ and it is not a version a session bumps unilaterally.** Major versions change *w
 it emits*, so every fenced block in the corpus can change its forced-colour bytes — parity
 class C. What a bump owes before it lands, and why the pin was transitive until WP-2 of
 `plans/colour-policy.md` made it this repo's own, is `docs/agents/dependency-history.md`,
-"`highlight.js` — the one keeper with a pin history". **`string-width` has had one deliberate bump, 7.2.0 → 8.2.2 (`plans/pictograph-width.md`)**, and it is the worked example of what a pin bump owes: a measured render-time budget in both colour modes, a per-cluster cache in `src/width.ts` to meet it, and a cross-bump corpus pass with every class-B diff attributed — `docs/agents/dependency-history.md`, "`string-width` — the one bump, and what it cost".
+"`highlight.js` — the one keeper with a pin history". **`string-width` has had one deliberate bump, 7.2.0 → 8.2.2 (`plans/pictograph-width.md`)**, and it is the worked example of what a pin bump owes: a measured render-time budget in both colour modes, a per-cluster cache in `TS_BASELINE` `src/width.ts` to meet it, and a cross-bump corpus pass with every class-B diff attributed — `docs/agents/dependency-history.md`, "`string-width` — the one bump, and what it cost".
 
 Plans: the founding pair is `plans/mdview.md` (the original build) and
 `plans/vault-readiness.md` (glyph tier, fence languages, divider, embeds, and the

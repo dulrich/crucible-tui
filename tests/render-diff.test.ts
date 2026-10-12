@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -28,21 +28,17 @@ import {
   type PairedCombo,
 } from "../scripts/diff-classify";
 import {
-  assertNodeModules,
-  frontmatterFactsFrom,
   loadRevision,
-  materializeRevisionRoot,
   type ComboRecord,
   type Measurer,
   type RenderOutput,
   type RevisionHandle,
 } from "../scripts/revision";
 import { sha256Hex } from "../scripts/hash";
-import { findContinuationOverIndent, findListOrphans } from "../src/detectors";
-import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
-import { findFirstOverflow } from "../src/overflow";
-import { renderDocumentDetailed } from "../src/render";
-import { NARROW_MEASURE, WIDE_MEASURE } from "../src/width";
+import { findContinuationOverIndent, findListOrphans } from "../scripts/measure/detectors";
+import { findFirstOverflow } from "../scripts/measure/overflow";
+import { NARROW_MEASURE, WIDE_MEASURE } from "../scripts/measure/width";
+import { renderSync } from "./helpers/render";
 
 const REPO_ROOT = process.cwd();
 
@@ -507,69 +503,14 @@ describe("parseArgs", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadRevision", () => {
-  test("an existing directory is used directly, with no copy", async () => {
-    const handle = await loadRevision(REPO_ROOT, REPO_ROOT);
-    try {
-      expect(handle.label).toBe(`dir:${REPO_ROOT}`);
-      expect(handle.kind).toBe("ts");
-      const { text, codeRanges } = await handle.render({
-        source: "# Hi\n\nSome text.\n",
-        width: 80,
-        tier: "unicode",
-        ambiguous: "narrow",
-        policy: "P0",
-        emoji: "default",
-      });
-      expect(text).toContain("Hi");
-      expect(codeRanges).toEqual([]);
-    } finally {
-      await handle.close();
-    }
+  // Since WP-9 of `plans/mdview-rust-port.md` the only kind is `rust:<dir|ref>`; the TypeScript
+  // `<dir|ref>`/`ts-server:` kinds and their materialization tests are at `TS_BASELINE` (`c097c66`).
+  test("a spec without the rust: prefix is refused, naming the removal", async () => {
+    await expect(loadRevision(REPO_ROOT, REPO_ROOT)).rejects.toThrow(/not a rust:<dir\|ref> revision/);
   });
 
-  /**
-   * **This asserted the wrong thing until WP-6, and the reason is worth keeping.**
-   *
-   * It used to call `loadRevision("HEAD")` and require the ref's render to be
-   * byte-identical to the working tree's, on the stated assumption that "HEAD and the
-   * working tree carry the same `src/` for this WP (no `src/` edits)". That assumption
-   * holds for exactly one work package — the one that wrote this file. Every package
-   * after it edits `src/`, so from the moment the first edit lands until the commit does,
-   * the test asserts that a deliberate change did not happen. WP-6 made the failure
-   * unmissable rather than merely wrong: it removes a dependency, so HEAD's `src/render.ts`
-   * cannot even be imported from a tree where that package is no longer installed, and the
-   * test died on module resolution instead of on the comparison.
-   *
-   * What the mechanism actually promises is what is checked here — the tree is exported
-   * outside the checkout, `src/` arrives, `node_modules` is symlinked to the invoking
-   * checkout's, the label carries the resolved sha, and `cleanup` really removes it. None
-   * of that depends on what any revision's source happens to contain, so it cannot rot
-   * against the next package's edits. The render-through-a-revision half is covered by the
-   * `dir:` case above, which uses the working tree and is therefore always current.
-   */
-  test("a git ref is materialized by exporting its src/ tree, with node_modules symlinked in", async () => {
-    const materialized = await materializeRevisionRoot("HEAD", REPO_ROOT);
-    try {
-      expect(materialized.label).toMatch(/^git:HEAD@[0-9a-f]{12}$/);
-      // Outside the checkout: a materialized revision must never land inside the repo.
-      expect(materialized.root.startsWith(REPO_ROOT)).toBe(false);
-      expect((await stat(join(materialized.root, "src", "render.ts"))).isFile()).toBe(true);
-      const link = await readlink(join(materialized.root, "node_modules"));
-      expect(await realpath(link)).toBe(await realpath(join(REPO_ROOT, "node_modules")));
-    } finally {
-      await materialized.cleanup();
-    }
-  });
-
-  test("cleanup removes the materialized tree rather than leaving it in the temp directory", async () => {
-    const materialized = await materializeRevisionRoot("HEAD", REPO_ROOT);
-    expect((await stat(materialized.root)).isDirectory()).toBe(true);
-    await materialized.cleanup();
-    await expect(stat(materialized.root)).rejects.toThrow();
-  });
-
-  test("rejects a spec that is neither an existing directory nor a resolvable git ref", async () => {
-    await expect(loadRevision("definitely-not-a-ref-or-directory", REPO_ROOT)).rejects.toThrow(
+  test("rejects a rust: spec that is neither an existing directory nor a resolvable git ref", async () => {
+    await expect(loadRevision("rust:definitely-not-a-ref-or-directory", REPO_ROOT)).rejects.toThrow(
       /neither an existing directory nor a resolvable git ref/,
     );
   });
@@ -585,17 +526,10 @@ describe("loadRevision", () => {
 // Since WP-1 of `plans/mdview-rust-port.md` rendering (the handle, async) and measurement
 // (the measurer) are separate seams; this pair keeps the original direct wiring of both.
 function directHandle(): RevisionHandle {
-  const glyphs = { unicode: UNICODE_GLYPHS, ascii: ASCII_GLYPHS };
-  const measure = { narrow: NARROW_MEASURE, wide: WIDE_MEASURE };
   return {
     label: "direct",
-    kind: "ts",
-    render: async (req) =>
-      renderDocumentDetailed(req.source, req.width, glyphs[req.tier], measure[req.ambiguous], undefined, undefined, {
-        sgr: "none",
-        hyperlinks: false,
-        tmux: false,
-      }),
+    kind: "rust",
+    render: async (req) => renderSync(req.source, req.width, { tier: req.tier, ambiguous: req.ambiguous, policy: "P0" }),
     close: async () => {},
   };
 }
@@ -849,9 +783,9 @@ describe("CLI — the ghost-manifest repro exits non-zero", () => {
           "--manifest",
           manifestPath,
           "--rev-a",
-          ".",
+          "rust:.",
           "--rev-b",
-          "HEAD",
+          "rust:HEAD",
           "--widths",
           "80",
           "--tiers",
@@ -881,14 +815,10 @@ describe("R-gate attribution through the divergence registry", () => {
 
   async function tsSide(): Promise<RenderOutput> {
     const source = await Bun.file(join(REPO_ROOT, WITNESS)).text();
-    const { text, codeRanges } = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, NARROW_MEASURE, undefined, undefined, {
-      sgr: "none",
-      hyperlinks: false,
-      tmux: false,
-    });
+    const { text, codeRanges } = renderSync(source, 80);
     const echo = codeRanges[0];
     if (echo === undefined) throw new Error("witness lost its echo range");
-    return { text, codeRanges, frontmatter: frontmatterFactsFrom([echo]) };
+    return { text, codeRanges, frontmatter: { parsed: false, diagnostic: [0, echo[0] - 1] } };
   }
 
   /** The Rust shape of the same render: a different, one-line-longer diagnostic. */
@@ -960,23 +890,6 @@ describe("R-gate attribution through the divergence registry", () => {
   test("identical outputs are never attributed", async () => {
     const ts = await tsSide();
     expect(attributeOutputs(ts, { ...ts }, context)).toBeNull();
-  });
-});
-
-describe("assertNodeModules", () => {
-  test("a root without node_modules/marked fails loudly with the install command", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "render-diff-nm-"));
-    try {
-      await expect(assertNodeModules(dir)).rejects.toThrow("bun install --frozen-lockfile");
-      await mkdir(join(dir, "node_modules"));
-      await expect(assertNodeModules(dir)).rejects.toThrow("has no marked");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("this checkout's install passes", async () => {
-    await expect(assertNodeModules(REPO_ROOT)).resolves.toBeUndefined();
   });
 });
 

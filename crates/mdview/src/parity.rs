@@ -1,10 +1,11 @@
 //! The hidden `mdview __parity` subcommand: the JSONL servers the Bun instruments drive
-//! (`scripts/revision.ts`'s `rust:` kind, `scripts/lexer-diff.ts`). Dispatched only when
+//! (`scripts/revision.ts`'s `rust:` kind; `scripts/lexer-diff.ts` until WP-9, `TS_BASELINE` = `c097c66`). Dispatched only when
 //! `args[0] == "__parity"`, and absent from help.
 //!
 //! - `serve`: one JSON request per line in, one JSON response per line out.
 //!   Request `{source, path?, width, tier, ambiguous, policy: {sgr, hyperlinks, tmux}, emoji?,
-//!   tokens?}`; response `{text, codeRanges, frontmatter?: {parsed, diagnostic?}}` or `{error}`.
+//!   tokens?}` — `policy` may instead be the string `"env"`, resolved from this process's
+//!   environment and stdout (the colour axis); response `{text, codeRanges, frontmatter?: {parsed, diagnostic?, echoRanges}}` or `{error}`.
 //! - `lex`: request `{body, tier}`; response `{tokens}` (`crate::lex`, the comrak adapter)
 //! - `style-table`: dump the committed SGR table (`style.rs`), one JSON line.
 //!
@@ -90,6 +91,40 @@ fn parse_tier(value: &Value) -> Result<Tier, String> {
     }
 }
 
+fn parse_emoji(request: &Value) -> Result<Option<bool>, String> {
+    match request.get("emoji") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err("bad emoji".into()),
+    }
+}
+
+/// `policy: "env"` — the policy this server process's own environment and stdout resolve to,
+/// with no flag and no config: what `renderDocumentDetailed`'s default policy was at
+/// `TS_BASELINE` (`c097c66`), and what the colour axis's four children each measure
+/// (`scripts/colour-axis.ts`). The server's stdout is a pipe, so `isTTY` is false.
+fn env_policy() -> Policy {
+    use crate::colour::{ColourPolicyInput, Env, resolve_colour_policy};
+    let env: Env = std::env::vars_os()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    resolve_colour_policy(&ColourPolicyInput {
+        flag: None,
+        config: None,
+        hyperlink_flag: None,
+        hyperlink_config: None,
+        env: Some(&env),
+        is_tty: Some(rustix::termios::isatty(std::io::stdout())),
+        platform: Some(std::env::consts::OS),
+        warn: None,
+    })
+}
+
 fn parse_options(request: &Value) -> Result<RenderOptions, String> {
     let width = field(request, "width")?
         .as_u64()
@@ -102,6 +137,17 @@ fn parse_options(request: &Value) -> Result<RenderOptions, String> {
         _ => return Err("bad ambiguous".into()),
     };
     let policy = field(request, "policy")?;
+    if policy.as_str() == Some("env") {
+        return Ok(RenderOptions {
+            width,
+            tier,
+            ambiguous,
+            policy: env_policy(),
+            emoji: parse_emoji(request)?,
+            path: None,
+            highlight_as: Default::default(),
+        });
+    }
     let sgr = match field(policy, "sgr")?.as_str() {
         Some("full") => Sgr::Full,
         Some("formats") => Sgr::Formats,
@@ -113,11 +159,7 @@ fn parse_options(request: &Value) -> Result<RenderOptions, String> {
             .as_bool()
             .ok_or_else(|| format!("bad policy.{name}"))
     };
-    let emoji = match request.get("emoji") {
-        None | Some(Value::Null) => None,
-        Some(Value::Bool(b)) => Some(*b),
-        Some(_) => return Err("bad emoji".into()),
-    };
+    let emoji = parse_emoji(request)?;
     let path = request
         .get("path")
         .and_then(Value::as_str)
@@ -183,6 +225,18 @@ pub fn handle_render(line: &str) -> String {
             if let Some((start, end)) = diagnostic {
                 facts["diagnostic"] = json!([start, end]);
             }
+            // How many of `codeRanges`' leading entries are frontmatter-echo ranges — what
+            // `scripts/revision.ts`'s measurer read from `formatMetaBlockDetailed` before WP-9.
+            if let (Some(meta), _) = crate::frontmatter::split_frontmatter(source) {
+                let block = crate::frontmatter::format_meta_block_detailed(
+                    &meta,
+                    options.width,
+                    crate::width::measure_for(options.ambiguous),
+                    options.policy.sgr,
+                )
+                .map_err(|e| e.to_string())?;
+                facts["echoRanges"] = json!(block.verbatim_ranges.len());
+            }
             response["frontmatter"] = facts;
         }
         Ok(response.to_string())
@@ -203,9 +257,9 @@ pub fn handle_lex(line: &str) -> String {
 }
 
 /// One `table-alloc` request line in, one response line out (WP-5a's allocator differential,
-/// `scripts/table-alloc-diff.ts`). Request `{table, width, tier, ambiguous}` where `table` is
+/// `scripts/table-alloc-diff.ts`, deleted at WP-9; `TS_BASELINE` = `c097c66`). Request `{table, width, tier, ambiguous}` where `table` is
 /// one census-normalized `table` token; response `{grid: {header, rows, aligns, columnCount},
-/// natural, widths, totalWidth, fits}` — `src/table.ts`'s `tableGrid`, `naturalWidths` and
+/// natural, widths, totalWidth, fits}` — `TS_BASELINE` `src/table.ts`'s `tableGrid`, `naturalWidths` and
 /// `allocateWidths`. The tier is validated but cannot move an allocation.
 pub fn handle_table_alloc(line: &str) -> String {
     use crate::table::{CellContent, allocate_widths, natural_widths, table_grid};

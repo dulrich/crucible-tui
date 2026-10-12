@@ -1,7 +1,7 @@
 //! Where a `[[slug]]` points — vault-root discovery, the lazy file index, D2's resolution
-//! order and the `file://` URI — ported from `src/wikiresolve.ts` (WP-8 of
+//! order and the `file://` URI — ported from `TS_BASELINE` `src/wikiresolve.ts` (WP-8 of
 //! `plans/mdview-rust-port.md`; no other WP names this module, and `cli.rs` is its only
-//! builder, as `src/cli.ts` is in TS).
+//! builder, as `TS_BASELINE` `src/cli.ts` is in TS).
 //!
 //! Pure over an injected [`WikiFs`], so tests build trees in memory and the renderer reads no
 //! filesystem (D6). Paths are JS-style strings joined with Node's posix `join` semantics.

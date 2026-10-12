@@ -1,4 +1,4 @@
-//! ANSI-safe prose wrapping, ported from `src/wrap.ts`.
+//! ANSI-safe prose wrapping, ported from `TS_BASELINE` `src/wrap.ts`.
 //!
 //! Both split paths consume `ansi::scan`'s span sequence; a word is carried as its spans
 //! (never re-flattened and re-scanned), widths are measured on visible text only, and an

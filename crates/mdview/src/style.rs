@@ -1,4 +1,4 @@
-//! The committed SGR style table and emitter, ported from `src/style.ts`.
+//! The committed SGR style table and emitter, ported from `TS_BASELINE` `src/style.ts`.
 //!
 //! `STYLE_TABLE` is exactly the `[open, close]` pairs this renderer may emit; `STYLE_CLASSES`
 //! classifies each as hue, format or control; [`emits_under`] is the whole mode rule.
@@ -47,7 +47,7 @@ pub struct StyleCode {
     pub close: &'static str,
 }
 
-/// The committed table, in `src/style.ts`'s declaration order.
+/// The committed table, in `TS_BASELINE` `src/style.ts`'s declaration order.
 pub const STYLE_TABLE: &[(StyleName, &str, StyleCode, StyleClass)] = &[
     (
         StyleName::Reset,
@@ -152,14 +152,19 @@ impl StyleName {
     }
 }
 
-/// The committed table as `__parity style-table` prints it: `JSON.stringify(STYLE_TABLE)`'s
-/// shape, `{name: {open, close}}` in declaration order.
+/// The committed table as `__parity style-table` prints it: `{name: {open, close, formats}}` in
+/// declaration order, where `formats` is `emits_under(name, Formats)` (the colour axis reads both).
 pub fn style_table_json() -> String {
     let mut map = serde_json::Map::new();
-    for (_, name, c, _) in STYLE_TABLE {
+    for (style, name, c, _) in STYLE_TABLE {
         map.insert(
             (*name).to_owned(),
-            serde_json::json!({ "open": c.open, "close": c.close }),
+            serde_json::json!({
+                "open": c.open,
+                "close": c.close,
+                // `emitsUnder(name, "formats")` — the colour axis's G3 `formats` arm.
+                "formats": emits_under(*style, SgrMode::Formats),
+            }),
         );
     }
     serde_json::Value::Object(map).to_string()

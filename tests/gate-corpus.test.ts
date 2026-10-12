@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { loadManifest, resolveCorpusFiles } from "../scripts/corpus";
-import { BUNDLED_DEFAULT_MANIFEST } from "../src/config";
+import { BUNDLED_DEFAULT_MANIFEST } from "../scripts/measure/config";
 
 // --- The gate corpus contract (WP-1, plans/gate-corpus-reframe.md) ----------
 //

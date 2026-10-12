@@ -1,4 +1,4 @@
-//! The pager, ported from `src/cli.ts`'s `runPager` (WP-8 of `plans/mdview-rust-port.md`).
+//! The pager, ported from `TS_BASELINE` `src/cli.ts`'s `runPager` (WP-8 of `plans/mdview-rust-port.md`).
 //!
 //! `less -R` when stdout is a TTY and `--no-pager` is absent; plain stdout when `less` cannot
 //! be spawned, exactly like TS's `child.on("error")` fallback. The TTY question is answered by
