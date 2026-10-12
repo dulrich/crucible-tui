@@ -2,7 +2,7 @@
 //! rewrites the buffer) and scripted prompt input. Every test works in its
 //! own fresh temp dir.
 
-use jsonedit::edit::{EditEnv, edit, split_shell};
+use jsonedit::edit::{EditEnv, edit, editor_args, split_shell};
 use jsonedit::{Dialect, Indent};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -237,4 +237,166 @@ fn editor_failure_aborts_and_editor_value_splits() {
     );
     assert!(split_shell("'open").is_err());
     let _ = Dialect::Json;
+}
+
+#[test]
+fn editor_args_line_hint_forms() {
+    let b = Path::new("/tmp/x.jsonedit-1-0.json");
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let mut ten = vec!["vim"];
+    ten.extend(["-c", "set nu"].repeat(5));
+    ten.extend(["+1", "+2", "+3", "+4", "+5"]);
+    // (editor, hint, expected args after the program)
+    let cases: Vec<(Vec<String>, Option<usize>, Vec<&str>)> = vec![
+        (s(&["vim"]), None, vec![b.to_str().unwrap()]),
+        (
+            s(&["vim", "-u", "NONE"]),
+            Some(7),
+            vec!["-u", "NONE", "+7", b.to_str().unwrap()],
+        ),
+        (
+            s(&["/usr/bin/nano"]),
+            Some(2),
+            vec!["+2", b.to_str().unwrap()],
+        ),
+        (
+            s(&["emacsclient", "-t"]),
+            Some(2),
+            vec!["-t", "+2", b.to_str().unwrap()],
+        ),
+        (s(&["hx"]), Some(4), vec!["/tmp/x.jsonedit-1-0.json:4"]),
+        (
+            s(&["subl", "-w"]),
+            Some(4),
+            vec!["-w", "/tmp/x.jsonedit-1-0.json:4"],
+        ),
+        (
+            s(&["code", "--wait"]),
+            Some(4),
+            vec!["--wait", "--goto", "/tmp/x.jsonedit-1-0.json:4"],
+        ),
+        (
+            s(&["codium", "-w"]),
+            Some(4),
+            vec!["-w", "--goto", "/tmp/x.jsonedit-1-0.json:4"],
+        ),
+        // Unknown editors, `--`, and an exhausted vim startup budget get no hint.
+        (s(&["ed"]), Some(4), vec![b.to_str().unwrap()]),
+        (s(&["vimx"]), Some(4), vec![b.to_str().unwrap()]),
+        (s(&["vim", "--"]), Some(4), vec!["--", b.to_str().unwrap()]),
+        (
+            s(&["code", "--wait", "--"]),
+            Some(4),
+            vec!["--wait", "--", b.to_str().unwrap()],
+        ),
+    ];
+    for (editor, hint, want) in cases {
+        let got = editor_args(&editor, b, hint);
+        assert_eq!(got, want, "{editor:?} {hint:?}");
+    }
+    // A `:` anywhere in the buffer path disables the colon forms only.
+    let cb = Path::new("/tmp/a:b/x.json");
+    for ed in ["hx", "subl", "code"] {
+        assert_eq!(
+            editor_args(&s(&[ed]), cb, Some(4)),
+            [cb.as_os_str()],
+            "{ed}"
+        );
+    }
+    assert_eq!(
+        editor_args(&s(&["vim"]), cb, Some(4)),
+        ["+4", "/tmp/a:b/x.json"]
+    );
+    let ten = s(&ten);
+    let got = editor_args(&ten, b, Some(7));
+    assert_eq!(got.last().unwrap(), b.as_os_str());
+    assert!(!got.iter().any(|a| a == "+7"), "{got:?}");
+}
+
+/// A fake editor named `vim` in `d`: call N logs its argv and copies
+/// `outN` over the buffer (its last argument) and, if present, `sideN`
+/// over `target` to simulate a concurrent change.
+fn fake_vim(d: &Dir, target: &Path) -> PathBuf {
+    let script = d.0.join("vim");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nd='{d}'\nn=$(cat \"$d/count\" 2>/dev/null || echo 0); n=$((n+1)); echo $n > \"$d/count\"\n\
+             echo \"call $n: $*\" >> \"$d/log\"\nfor b; do :; done\ncp \"$d/out$n\" \"$b\"\n\
+             if [ -f \"$d/side$n\" ]; then cp \"$d/side$n\" '{t}'; fi\n",
+            d = d.0.display(),
+            t = target.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+fn run_vim(target: &Path, vim: &Path, answers: &str) -> (i32, String) {
+    let mut env = EditEnv {
+        editor: vec![vim.to_str().unwrap().into()],
+        input: Box::new(std::io::Cursor::new(answers.as_bytes().to_vec())),
+        tty: true,
+    };
+    let mut err = Vec::new();
+    let code = edit(
+        target.to_str().unwrap(),
+        None,
+        Some(Indent::Spaces(2)),
+        &mut env,
+        &mut err,
+    );
+    (code, String::from_utf8(err).unwrap())
+}
+
+#[test]
+fn reedit_passes_line_hint_and_never_a_stale_one() {
+    // Invalid -> e: the retry opens at the first diagnostic's line.
+    let d = Dir::new("hint-invalid");
+    let t = d.file("x.json", ORIG);
+    d.file("out1", "{\n  \"a\": 1,\n  \"b\" 2\n}\n");
+    let good = d.file("out2", "{\n  \"a\": 1,\n  \"b\": 3\n}\n");
+    let (code, err) = run_vim(&t, &fake_vim(&d, &t), "e\n");
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(fs::read(&t).unwrap(), fs::read(&good).unwrap());
+    let log = fs::read_to_string(d.0.join("log")).unwrap();
+    let calls: Vec<&str> = log.lines().collect();
+    assert_eq!(calls.len(), 2, "{log}");
+    assert!(!calls[0].contains(" +"), "{log}");
+    assert!(calls[1].starts_with("call 2: +3 /"), "{log}");
+
+    // Indent mismatch -> e (hint = first mismatching line), then a
+    // concurrent change -> e (hint cleared), then written.
+    let d = Dir::new("hint-indent");
+    let t = d.file("x.json", ORIG);
+    d.file("out1", "{\n  \"a\": 1,\n\t\"b\": 2\n}\n");
+    d.file("out2", "{\n  \"a\": 9\n}\n");
+    d.file("side2", "{\"other\": 1}");
+    let good = d.file("out3", "{\n  \"a\": 9\n}\n");
+    let (code, err) = run_vim(&t, &fake_vim(&d, &t), "e\ne\n");
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("changed on disk"), "{err}");
+    assert_eq!(fs::read(&t).unwrap(), fs::read(&good).unwrap());
+    let log = fs::read_to_string(d.0.join("log")).unwrap();
+    let calls: Vec<&str> = log.lines().collect();
+    assert_eq!(calls.len(), 3, "{log}");
+    assert!(!calls[0].contains(" +"), "{log}");
+    assert!(calls[1].starts_with("call 2: +3 /"), "{log}");
+    assert!(!calls[2].contains(" +"), "{log}");
+}
+
+#[test]
+fn buffer_name_has_no_colon() {
+    let d = Dir::new("colon");
+    let t = d.file("a:b.json", ORIG);
+    let (code, err) = run(&t, "printf '{,}' > \"$1\"", "", false, None);
+    assert_eq!(code, 1);
+    let b = kept_buffer(&err);
+    let name = b.file_name().unwrap().to_str().unwrap().to_owned();
+    assert!(
+        name.starts_with("a_b.jsonedit-") && !name.contains(':'),
+        "{name}"
+    );
+    fs::remove_file(b).unwrap();
 }

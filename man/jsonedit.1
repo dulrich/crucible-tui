@@ -124,7 +124,27 @@ The value is split like a shell word list (quotes and backslashes are
 honoured, nothing is expanded), so
 .B code \-\-wait
 works.
+Graphical editors must be told to wait
+.RB ( "code \-\-wait" ", " "subl \-w" ),
+or jsonedit sees an unchanged buffer.
 A non\-zero editor exit is treated as abort.
+.IP
+When the editor is reopened after an invalid save or an indent warning,
+known editors are asked to open at the first problem line:
+.B +N FILE
+for vi, vim, nvim, nano, emacs, emacsclient, micro and kak;
+.B FILE:N
+for hx, helix and subl;
+.B \-\-goto FILE:N
+for code and codium.
+The program is matched by exact file name; any other editor is opened
+on the buffer alone.
+No hint is passed when the editor command contains
+.BR \-\- ,
+when a vi/vim/nvim command already uses Vim's ten startup commands,
+or (for the
+.B FILE:N
+forms) when the buffer path contains a colon.
 .SH FILES AND SAFETY
 The buffer is created mode 0600 in the temporary directory
 .RB ( $TMPDIR ,
