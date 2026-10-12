@@ -340,6 +340,12 @@ export interface ClassificationSummary {
    * failure, always counted and printed.
    */
   allowedDC: ComboDiff[];
+  /**
+   * Diffs a ratified `scripts/divergences.ts` entry claimed (`ComboRecord.attributed`, set
+   * pairwise by `scripts/render-diff.ts`). Never a failure; counted per id and printed. Class C
+   * is decided first and is never attributed away.
+   */
+  attributed: ComboDiff[];
   /** `expect === "b"` only: `(width, tier, ambiguous)` groups where overflow rose. */
   overflowRegressions: OverflowRegression[];
   /**
@@ -458,6 +464,7 @@ export function classifyDiffs(
       disallowed: [],
       allowedB: [],
       allowedDC: [],
+      attributed: [],
       overflowRegressions: [],
       detectorRegressions: [],
       emptyComparison: true,
@@ -474,6 +481,7 @@ export function classifyDiffs(
   const disallowed: ComboDiff[] = [];
   const allowedB: ComboDiff[] = [];
   const allowedDC: ComboDiff[] = [];
+  const attributed: ComboDiff[] = [];
   let diffedCombos = 0;
 
   for (const { before, after } of pairs) {
@@ -502,6 +510,12 @@ export function classifyDiffs(
       }
     } else if (channels.includes("codeContentSha")) {
       classC.push(diff);
+      continue;
+    }
+    if (after.attributed !== undefined) {
+      // A ratified registry entry (`scripts/divergences.ts`) claimed the pair while both
+      // outputs were in hand — D-A, today. Class C above still wins over it.
+      attributed.push(diff);
       continue;
     }
     if (expect === "a") {
@@ -585,6 +599,7 @@ export function classifyDiffs(
     disallowed,
     allowedB,
     allowedDC,
+    attributed,
     overflowRegressions,
     detectorRegressions,
     emptyComparison,

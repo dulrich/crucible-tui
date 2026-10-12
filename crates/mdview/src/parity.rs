@@ -4,7 +4,7 @@
 //!
 //! - `serve`: one JSON request per line in, one JSON response per line out.
 //!   Request `{source, path?, width, tier, ambiguous, policy: {sgr, hyperlinks, tmux}, emoji?,
-//!   tokens?}`; response `{text, codeRanges}` or `{error}`.
+//!   tokens?}`; response `{text, codeRanges, frontmatter?: {parsed, diagnostic?}}` or `{error}`.
 //! - `lex`: request `{body, tier}`; response `{tokens}` (`crate::lex`, the comrak adapter)
 //! - `style-table`: dump the committed SGR table (`style.rs`), one JSON line.
 //!
@@ -16,7 +16,7 @@ use std::io::{BufRead, Write};
 
 use serde_json::{Value, json};
 
-use crate::render::{Ambiguous, Policy, RenderOptions, Sgr, Tier, render};
+use crate::render::{Ambiguous, Policy, RenderOptions, Sgr, Tier, frontmatter_facts, render};
 use crate::token::Token;
 
 /// Run `__parity <sub>` over stdin/stdout.
@@ -143,7 +143,18 @@ pub fn handle_render(line: &str) -> String {
         };
         let output = render(source, tokens.as_deref(), &options).map_err(|e| e.to_string())?;
         let ranges: Vec<[usize; 2]> = output.code_ranges.iter().map(|&(a, b)| [a, b]).collect();
-        Ok(json!({ "text": output.text, "codeRanges": ranges }).to_string())
+        let mut response = json!({ "text": output.text, "codeRanges": ranges });
+        // The frontmatter facts D-A's predicate reads (`scripts/divergences.ts`, `RenderSide`).
+        if let Some((parsed, diagnostic)) =
+            frontmatter_facts(source, &options).map_err(|e| e.to_string())?
+        {
+            let mut facts = json!({ "parsed": parsed });
+            if let Some((start, end)) = diagnostic {
+                facts["diagnostic"] = json!([start, end]);
+            }
+            response["frontmatter"] = facts;
+        }
+        Ok(response.to_string())
     })();
     result.unwrap_or_else(|message| error_line(&message))
 }

@@ -318,6 +318,32 @@ function yamlDiagnostic(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// flow-key-mapping (unratified)
+// ---------------------------------------------------------------------------
+
+/** The `yaml` package's invented empty-string key, as `formatMapping` lays it out: `   : c`. */
+const EMPTY_KEY_LINE = /^ *: /;
+
+/**
+ * `k: [a, b]: c` (or `k: {a: 1}: c`): the `yaml` package parses it and invents a `""` key, so
+ * the TS side **parsed** and its metadata block carries a line whose key is blank; yaml-rust2
+ * rejects the same block ("mapping values are not allowed in this context"), so the Rust side
+ * **failed** with a diagnostic.
+ */
+function flowKeyMapping(site: Site): boolean {
+  if (!isRender(site)) return false;
+  const fa = site.ts.frontmatter;
+  const fb = site.rust.frontmatter;
+  if (!fa || !fb || !fa.parsed || fb.parsed || !fb.diagnostic) return false;
+  const [start, end] = fb.diagnostic;
+  // The summary is wrapped to the target width, so the message is matched with its line
+  // breaks folded back to single spaces.
+  const diagnostic = site.rust.text.split("\n").slice(start, end).map(stripSgr).join(" ").replace(/\s+/g, " ");
+  if (!diagnostic.includes("mapping values are not allowed in this context")) return false;
+  return site.ts.text.split("\n").some((line) => EMPTY_KEY_LINE.test(stripSgr(line)));
+}
+
+// ---------------------------------------------------------------------------
 // D-C hl-fence-claim
 // ---------------------------------------------------------------------------
 
@@ -474,6 +500,25 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/yaml-diagnostic.md",
     status: "pending-witness",
     predicate: yamlDiagnostic,
+  },
+  {
+    id: "flow-key-mapping",
+    kind: "frontmatter",
+    spec:
+      "YAML 1.2.2 §8.2.2 (\"Block Mappings\") and §7.4.2/§7.4.3 (a flow collection may be an " +
+      "implicit key only where a key is allowed — in a block-mapping *value*, `[a, b]: c` is a " +
+      "compact implicit mapping, which §8.2.2 does not permit on the value line): " +
+      "`not: [a, b]: c` is ill-formed, and yaml-rust2 rejects it (\"mapping values are not allowed " +
+      "in this context\"). The `yaml` package (2.9.0) accepts it: " +
+      "node_modules/yaml/dist/parse/parser.js:833-839 pops the flow collection when a `:` follows " +
+      "it at the parent block map's indent, :646-647 then opens a new block-map item with " +
+      "`key: null`, and node_modules/yaml/dist/nodes/addPairToJSMap.js:40-41 (stringifyKey) " +
+      "turns the null key into \"\" — `{\"not\":[\"a\",\"b\"],\"\":\"c\"}`, rendered as `not : a, b` / " +
+      "`    : c`. Synthetic only (census); no corpus file reaches it. Held for the user.",
+    ratified: null,
+    witness: "tests/fixtures/divergences/flow-key-mapping.md",
+    status: "pending-witness",
+    predicate: flowKeyMapping,
   },
   {
     id: "task-state-prepass",

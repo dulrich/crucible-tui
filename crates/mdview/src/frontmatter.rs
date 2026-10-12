@@ -301,6 +301,7 @@ struct Node {
 }
 
 struct Composer<'a> {
+    src: &'a str,
     parser: Parser<std::str::Chars<'a>>,
     anchors: HashMap<usize, (JsValue, String)>,
 }
@@ -310,7 +311,7 @@ impl Composer<'_> {
         self.parser
             .next_token()
             .map(|(e, _)| e)
-            .map_err(|e| e.to_string())
+            .map_err(|e| prettify_error(self.src, e.info(), e.marker().line(), e.marker().col()))
     }
 
     fn node(&mut self, event: Event) -> Result<Node, String> {
@@ -449,6 +450,65 @@ fn js_strict_equals(a: &JsValue, b: &JsValue) -> bool {
     }
 }
 
+/// `prettifyError` (`node_modules/yaml/dist/errors.js:22-62`), transcribed over yaml-rust2's own
+/// error position: `info` (yaml-rust2's text — D-A), then ` at line L, column C`, and — when
+/// the excerpt has a non-space character — `:`, a blank line, the source line (folded at 80
+/// UTF-16 units with `…`, re-centred when the column is past 60), the caret line, and a
+/// trailing newline. `line` is yaml-rust2's 1-based line and `col` its 0-based **char**
+/// column; every slice below is in UTF-16 units, as the JS is, and a cut surrogate decodes to
+/// U+FFFD (the bytes stdout receives from a lone JS surrogate). yaml-rust2 reports no end
+/// position, so the caret is always one `^` (`count = 1`, `errors.js:50`).
+fn prettify_error(src: &str, info: &str, line: usize, col: usize) -> String {
+    // `lc.lineStarts`: 0 and every offset after a `\n` — the pieces of `split('\n')`.
+    let pieces: Vec<&str> = src.split('\n').collect();
+    let line_text = line.checked_sub(1).and_then(|i| pieces.get(i).copied());
+    let col16: usize = line_text.map_or(col, |l| l.chars().take(col).map(char::len_utf16).sum());
+    let mut message = format!("{info} at line {line}, column {}", col16 + 1);
+    // `src.substring(lineStarts[line - 1], lineStarts[line]).replace(/[\n\r]+$/, '')`; a line
+    // past the last start reads `substring(undefined, undefined)`, the whole source.
+    let mut line_str: Vec<u16> = line_text
+        .unwrap_or(src)
+        .trim_end_matches(['\n', '\r'])
+        .encode_utf16()
+        .collect();
+    let ellipsis: u16 = 0x2026;
+    let mut ci = col16;
+    if ci >= 60 && line_str.len() > 80 {
+        let trim_start = (ci - 39).min(line_str.len() - 79);
+        let mut trimmed = vec![ellipsis];
+        trimmed.extend_from_slice(&line_str[trim_start..]);
+        line_str = trimmed;
+        ci -= trim_start - 1;
+    }
+    if line_str.len() > 80 {
+        line_str.truncate(79);
+        line_str.push(ellipsis);
+    }
+    let lead_blank = line_str[..ci.min(line_str.len())]
+        .iter()
+        .all(|&u| u == u16::from(b' '));
+    if line > 1 && lead_blank {
+        // `src.substring(lineStarts[line - 2], lineStarts[line - 1])`: the previous line and its
+        // `\n`.
+        if let Some(prev) = pieces.get(line - 2) {
+            let mut joined: Vec<u16> = prev.encode_utf16().collect();
+            joined.push(u16::from(b'\n'));
+            if joined.len() > 80 {
+                joined.truncate(79);
+                joined.extend("…\n".encode_utf16());
+            }
+            joined.extend_from_slice(&line_str);
+            line_str = joined;
+        }
+    }
+    if line_str.iter().any(|&u| u != u16::from(b' ')) {
+        let excerpt = String::from_utf16_lossy(&line_str);
+        let pointer = " ".repeat(ci);
+        message.push_str(&format!(":\n\n{excerpt}\n{pointer}^\n"));
+    }
+    message
+}
+
 /// `parse(meta, { logLevel: "error" })` under the core schema: the JS value, or why it failed
 /// (yaml-rust2's message, or ours for a condition `yaml` rejects — D-A).
 pub fn parse_frontmatter(meta: &str) -> Result<JsValue, String> {
@@ -466,6 +526,7 @@ pub fn parse_frontmatter(meta: &str) -> Result<JsValue, String> {
         }
     }
     let mut composer = Composer {
+        src: meta,
         parser: Parser::new_from_str(meta),
         anchors: HashMap::new(),
     };
@@ -847,6 +908,54 @@ mod tests {
         assert_eq!(&lines[lines.len() - 2..], &["a: [unterminated", "b: 1"]);
         let start = lines.len() - 1;
         assert_eq!(r.verbatim_ranges, vec![(start, start + 1)]);
+    }
+
+    #[test]
+    fn prettify_appends_position_excerpt_and_caret() {
+        assert_eq!(
+            prettify_error("a: 1\nb: x y: z", "info", 2, 4),
+            "info at line 2, column 5:\n\nb: x y: z\n    ^\n"
+        );
+    }
+
+    #[test]
+    fn prettify_includes_the_previous_line_at_a_line_start() {
+        assert_eq!(
+            prettify_error("a:\n  - b\nc", "info", 3, 0),
+            "info at line 3, column 1:\n\n  - b\nc\n^\n"
+        );
+    }
+
+    #[test]
+    fn prettify_recentres_and_folds_a_long_line_at_80_units() {
+        let line = "x".repeat(200);
+        let expected = format!(
+            "info at line 1, column 151:\n\n…{}…\n{}^\n",
+            "x".repeat(78),
+            " ".repeat(40)
+        );
+        assert_eq!(prettify_error(&line, "info", 1, 150), expected);
+    }
+
+    #[test]
+    fn prettify_counts_columns_in_utf16_units() {
+        // `😀` is one char and two UTF-16 units, as `yaml`'s `col` counts it.
+        assert_eq!(
+            prettify_error("k: 😀 x", "info", 1, 5),
+            "info at line 1, column 7:\n\nk: 😀 x\n      ^\n"
+        );
+    }
+
+    #[test]
+    fn a_failed_parse_diagnostic_has_the_excerpt_layout() {
+        let r = fmt("a: b\nk: x {a: b} c", 200);
+        let lines: Vec<&str> = r.text.split('\n').collect();
+        assert!(lines[0].ends_with(':'), "{lines:?}");
+        assert_eq!(lines[1], "");
+        assert_eq!(lines[2], "k: x {a: b} c");
+        assert!(lines[3].trim_start() == "^", "{lines:?}");
+        assert_eq!(lines[4], "");
+        assert_eq!(r.verbatim_ranges, vec![(6, 7)]);
     }
 
     #[test]

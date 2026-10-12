@@ -102,6 +102,12 @@ export interface ComboRecord extends ComboKey {
   fencePrefixOk?: boolean;
   /** Every SGR not authored verbatim in the source is a committed `STYLE_TABLE` open/close. */
   sgrVocabOk?: boolean;
+  /**
+   * Pairwise, set on the `after` side when both outputs differed and were in hand: the
+   * `scripts/divergences.ts` registry id the differing site was attributed to (ratified
+   * entries only). Absent = not attributed (or not differing). Never a body.
+   */
+  attributed?: string;
   // --- non-vacuity counters (every record since WP-1 of `plans/mdview-rust-port.md`) ---
   hasSgr?: boolean;
   hasOsc8?: boolean;
@@ -137,9 +143,60 @@ export interface RenderRequest {
   tokens?: unknown[];
 }
 
+/**
+ * What the frontmatter formatter reports about its own block (`scripts/divergences.ts`'s
+ * `RenderSide.frontmatter`): whether it parsed, and — only on failure — the 0-based half-open
+ * line span of the diagnostic within the rendered text.
+ */
+export interface FrontmatterFacts {
+  parsed: boolean;
+  diagnostic?: [number, number];
+}
+
 export interface RenderOutput {
   text: string;
   codeRanges: Array<[number, number]>;
+  /** Present when the document has frontmatter and the side reports it (D-A attribution). */
+  frontmatter?: FrontmatterFacts;
+}
+
+/**
+ * The facts from a `formatMetaBlockDetailed` result's `verbatimRanges`: the meta block opens
+ * the rendered document, and only a failed parse echoes under a diagnostic, so an echo range
+ * starting past line 1 means "failed, diagnostic on lines `[0, start - 1)`".
+ */
+export function frontmatterFactsFrom(verbatimRanges: Array<[number, number]>): FrontmatterFacts {
+  const first = verbatimRanges[0];
+  return first !== undefined && first[0] > 1 ? { parsed: false, diagnostic: [0, first[0] - 1] } : { parsed: true };
+}
+
+/** A `{parsed, diagnostic?}` value off the wire, or `undefined` when absent or malformed. */
+function frontmatterFactsOf(value: unknown): FrontmatterFacts | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { parsed, diagnostic } = value as { parsed?: unknown; diagnostic?: unknown };
+  if (typeof parsed !== "boolean") return undefined;
+  if (Array.isArray(diagnostic) && diagnostic.length === 2 && diagnostic.every((n) => typeof n === "number")) {
+    return { parsed, diagnostic: [diagnostic[0] as number, diagnostic[1] as number] };
+  }
+  return { parsed };
+}
+
+/**
+ * Refuse to link a `node_modules` that cannot resolve the TS renderer's dependencies. Without
+ * this, a worktree with no install leaves the materialized revision's `node_modules` symlink
+ * dangling and Bun **auto-installs the latest** packages on the first import — a newer
+ * `marked` that renders differently — so the differential silently measures the wrong
+ * renderer (WP-3 of `plans/mdview-rust-port.md` measured ~2,100 false diffs that way).
+ */
+export async function assertNodeModules(repoRoot: string): Promise<void> {
+  const marked = join(repoRoot, "node_modules", "marked", "package.json");
+  if ((await stat(marked).catch(() => null)) === null) {
+    throw new Error(
+      `render-diff: ${join(repoRoot, "node_modules")} is missing or has no marked — run ` +
+        "`bun install --frozen-lockfile` in that checkout first (without it Bun would auto-install " +
+        "the latest packages and the comparison would measure a different renderer)",
+    );
+  }
 }
 
 /** The JSONL request line both servers read (`crates/mdview/src/parity.rs`, `scripts/parity-ts-server.ts`). */
@@ -265,6 +322,7 @@ export async function materializeRevisionRoot(spec: string, repoRoot: string): P
   }
 
   const sha = resolveRef(spec, repoRoot);
+  await assertNodeModules(repoRoot);
   const tmpRoot = await mkdtemp(join(tmpdir(), "render-diff-"));
   try {
     exportTree(spec, repoRoot, ["src"], tmpRoot);
@@ -310,6 +368,14 @@ export async function loadTsRenderer(root: string): Promise<(req: WireRequest) =
   const glyphsMod = await importFrom(root, "src/glyphs.ts");
   const widthMod = await importFrom(root, "src/width.ts");
   const wikiMod = await importFrom(root, "src/wikiresolve.ts");
+  const frontmatterMod = await importFrom(root, "src/frontmatter.ts");
+  const splitFrontmatter = frontmatterMod.splitFrontmatter as (source: string) => { meta: string | null };
+  const formatMetaBlockDetailed = frontmatterMod.formatMetaBlockDetailed as (
+    meta: string,
+    width: number,
+    measure: unknown,
+    sgr: string,
+  ) => { verbatimRanges: Array<[number, number]> };
 
   const renderDocumentDetailed = renderMod.renderDocumentDetailed as RenderFn;
   const createWikiLinkResolver = wikiMod.createWikiLinkResolver as ResolverFactory;
@@ -349,7 +415,12 @@ export async function loadTsRenderer(root: string): Promise<(req: WireRequest) =
       policy,
       resolveWikiLink,
     );
-    return { text, codeRanges };
+    // The same revision's own formatter, asked the same question its render asked
+    // (`renderDocumentDetailed` calls it with exactly these arguments), for D-A's facts.
+    const { meta } = splitFrontmatter(req.source);
+    if (meta === null) return { text, codeRanges };
+    const metaResult = formatMetaBlockDetailed(meta, req.width, measure[req.ambiguous], policy.sgr);
+    return { text, codeRanges, frontmatter: frontmatterFactsFrom(metaResult.verbatimRanges) };
   };
 }
 
@@ -411,7 +482,7 @@ export function spawnJsonlServer(argv: string[], options: { cwd?: string; label:
           failAll(new Error(`${options.label}: unsolicited response line: ${line.slice(0, 200)}`));
           continue;
         }
-        let parsed: { text?: unknown; codeRanges?: unknown; error?: unknown };
+        let parsed: { text?: unknown; codeRanges?: unknown; frontmatter?: unknown; error?: unknown };
         try {
           parsed = JSON.parse(line) as typeof parsed;
         } catch {
@@ -421,7 +492,10 @@ export function spawnJsonlServer(argv: string[], options: { cwd?: string; label:
         if (typeof parsed.error === "string") {
           waiter.reject(new Error(`${options.label}: ${parsed.error}`));
         } else if (typeof parsed.text === "string" && Array.isArray(parsed.codeRanges)) {
-          waiter.resolve({ text: parsed.text, codeRanges: parsed.codeRanges as Array<[number, number]> });
+          const output: RenderOutput = { text: parsed.text, codeRanges: parsed.codeRanges as Array<[number, number]> };
+          const facts = frontmatterFactsOf(parsed.frontmatter);
+          if (facts !== undefined) output.frontmatter = facts;
+          waiter.resolve(output);
         } else {
           waiter.reject(new Error(`${options.label}: response has neither text/codeRanges nor error`));
         }

@@ -8,8 +8,11 @@ import { describe, expect, test } from "bun:test";
 // I/O, its pairing and its printing; revision materialization/loading, the pure diff
 // classification, and the shared hash primitive each got their own home. These four import
 // lines are the same surface this file always exercised.
+import { REGISTRY, type RenderSite } from "../scripts/divergences";
 import {
   assertOutsideRepo,
+  attributeOutputs,
+  formatAttributed,
   loadBaseline,
   pairRecords,
   parseArgs,
@@ -25,10 +28,13 @@ import {
   type PairedCombo,
 } from "../scripts/diff-classify";
 import {
+  assertNodeModules,
+  frontmatterFactsFrom,
   loadRevision,
   materializeRevisionRoot,
   type ComboRecord,
   type Measurer,
+  type RenderOutput,
   type RevisionHandle,
 } from "../scripts/revision";
 import { sha256Hex } from "../scripts/hash";
@@ -861,5 +867,115 @@ describe("CLI — the ghost-manifest repro exits non-zero", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WP-3 attempt 3 of `plans/mdview-rust-port.md`: the R-gate attributes a differing pair through
+// `scripts/divergences.ts` (D-A), and refuses to link a `node_modules` without `marked`.
+// ---------------------------------------------------------------------------
+
+describe("R-gate attribution through the divergence registry", () => {
+  const WITNESS = "tests/fixtures/witnesses/defect-1-2-unparseable-frontmatter.md";
+  const context = { path: WITNESS, tier: "unicode" as const, policy: "P0" as const };
+
+  async function tsSide(): Promise<RenderOutput> {
+    const source = await Bun.file(join(REPO_ROOT, WITNESS)).text();
+    const { text, codeRanges } = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, NARROW_MEASURE, undefined, undefined, {
+      sgr: "none",
+      hyperlinks: false,
+      tmux: false,
+    });
+    const echo = codeRanges[0];
+    if (echo === undefined) throw new Error("witness lost its echo range");
+    return { text, codeRanges, frontmatter: frontmatterFactsFrom([echo]) };
+  }
+
+  /** The Rust shape of the same render: a different, one-line-longer diagnostic. */
+  function withOtherDiagnostic(ts: RenderOutput): RenderOutput {
+    const [start, end] = ts.frontmatter?.diagnostic ?? [0, 0];
+    const lines = ts.text.split("\n");
+    const diagnostic = ["! could not parse frontmatter: other text", "at line 2, column 346:", "", "excerpt", "^", "", ""];
+    const delta = diagnostic.length - (end - start);
+    return {
+      text: [...lines.slice(0, start), ...diagnostic, ...lines.slice(end)].join("\n"),
+      codeRanges: ts.codeRanges.map(([a, b]): [number, number] => [a + delta, b + delta]),
+      frontmatter: { parsed: false, diagnostic: [start, start + diagnostic.length] },
+    };
+  }
+
+  const pairOf = (attributed: string | null): PairedCombo => ({
+    before: makeRecord({ textSha: "ts" }),
+    after: makeRecord({ textSha: "rust", ...(attributed !== null ? { attributed } : {}) }),
+  });
+
+  test("a D-A combo is attributed to yaml-diagnostic and does not fail the run", async () => {
+    const ts = await tsSide();
+    expect(ts.frontmatter?.parsed).toBe(false);
+    const id = attributeOutputs(ts, withOtherDiagnostic(ts), context);
+    expect(id).toBe("yaml-diagnostic");
+    const summary = classifyDiffs([pairOf(id)], "a");
+    expect({ ok: summary.ok, attributed: summary.attributed.length, disallowed: summary.disallowed.length }).toEqual({
+      ok: true,
+      attributed: 1,
+      disallowed: 0,
+    });
+    expect(formatAttributed(summary.attributed)).toBe("render-diff: attributed yaml-diagnostic=1");
+  });
+
+  test("a non-D-A diff on the same file is not attributed and still fails", async () => {
+    const ts = await tsSide();
+    const rust = withOtherDiagnostic(ts);
+    const lines = rust.text.split("\n");
+    lines[lines.length - 2] = `${lines[lines.length - 2] ?? ""} changed`;
+    const id = attributeOutputs(ts, { ...rust, text: lines.join("\n") }, context);
+    expect(id).toBeNull();
+    const summary = classifyDiffs([pairOf(id)], "a");
+    expect({ ok: summary.ok, disallowed: summary.disallowed.length }).toEqual({ ok: false, disallowed: 1 });
+    expect(formatAttributed(summary.attributed)).toBe("render-diff: attributed none");
+  });
+
+  test("an unratified match (flow-key-mapping) is not attributed and still fails", () => {
+    const ts: RenderOutput = {
+      text: "just a scalar: line\nnot : a, b\n    : c\n---\n\nbody",
+      codeRanges: [],
+      frontmatter: { parsed: true },
+    };
+    const rust: RenderOutput = {
+      text:
+        "! could not parse frontmatter: mapping values are not allowed in this context at line 2,\n" +
+        "column 12:\n\nnot: [a, b]: c\n           ^\n\njust a scalar: line\nnot: [a, b]: c\n---\n\nbody",
+      codeRanges: [[7, 8]],
+      frontmatter: { parsed: false, diagnostic: [0, 6] },
+    };
+    const entry = REGISTRY.find((e) => e.id === "flow-key-mapping");
+    expect(entry?.ratified).toBeNull();
+    const site: RenderSite = { kind: "render", path: "x", tier: "unicode", policy: "P0", ts, rust };
+    expect(entry?.predicate(site)).toBe(true);
+    const id = attributeOutputs(ts, rust, context);
+    expect(id).toBeNull();
+    expect(classifyDiffs([pairOf(id)], "a").ok).toBe(false);
+  });
+
+  test("identical outputs are never attributed", async () => {
+    const ts = await tsSide();
+    expect(attributeOutputs(ts, { ...ts }, context)).toBeNull();
+  });
+});
+
+describe("assertNodeModules", () => {
+  test("a root without node_modules/marked fails loudly with the install command", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "render-diff-nm-"));
+    try {
+      await expect(assertNodeModules(dir)).rejects.toThrow("bun install --frozen-lockfile");
+      await mkdir(join(dir, "node_modules"));
+      await expect(assertNodeModules(dir)).rejects.toThrow("has no marked");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("this checkout's install passes", async () => {
+    await expect(assertNodeModules(REPO_ROOT)).resolves.toBeUndefined();
   });
 });
