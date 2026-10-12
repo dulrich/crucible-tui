@@ -6,21 +6,35 @@
  * (`plans/post-refactor-code-quality-remediation.md`) with no behaviour change — the same
  * four channels, the same class-C rule, the same `ok` expression.
  *
+ * **WP-1 of `plans/mdview-rust-port.md`** added the policy and emoji axes, D-C's channels for
+ * P2–P4 (`proseSha`, `echoSha`, `fenceStrippedSha`, the pairwise `fencePrefixOk`,
+ * `sgrVocabOk`; a `textSha`/`codeContentSha`-only diff there is `allowedDC`, never a failure),
+ * and the non-vacuity counters with their `requireNonzero` gate. `computeComboRecord` is async
+ * now and measures through a `Measurer` it is handed — the current checkout's measurement
+ * code — rather than through the revision handle.
+ *
  * **Nothing here reads a process, a file, an argument or a clock.** `computeComboRecord`
- * renders through a `RevisionHandle` it is handed; everything below it is a function of its
+ * renders through a `RevisionHandle` and measures through a `Measurer` it is handed; everything below it is a function of its
  * arguments. The CLI that parses flags, resolves corpora, writes baselines and prints the
  * summary is `scripts/render-diff.ts`, which imports downward into this module and into
  * `./revision`; neither imports it back.
  */
 import { sha256Hex } from "./hash";
-import type {
-  AmbiguousModeName,
-  ComboErrorEntry,
-  ComboKey,
-  ComboRecord,
-  DetectorCounts,
-  GlyphTierName,
-  RevisionHandle,
+import {
+  POLICIES,
+  emojiOf,
+  policyOf,
+  type AmbiguousModeName,
+  type ComboErrorEntry,
+  type ComboKey,
+  type ComboRecord,
+  type DetectorCounts,
+  type GlyphTierName,
+  type Measurer,
+  type PolicyName,
+  type RenderOutput,
+  type RenderRequest,
+  type RevisionHandle,
 } from "./revision";
 
 /**
@@ -47,46 +61,186 @@ export function extractCodeContent(text: string, codeRanges: Array<[number, numb
 export interface ComboResult {
   record: ComboRecord | null;
   error: ComboErrorEntry | null;
+  /**
+   * The rendered output, handed back transiently so a caller holding both sides can run the
+   * pairwise fence check (`fencePrefixOk`). Never stored in a record or a baseline.
+   */
+  output?: RenderOutput;
 }
 
-/** Render, detect and hash one `(file × width × tier × ambiguous)` combination. */
-export function computeComboRecord(
-  handle: RevisionHandle,
-  file: string,
-  source: string,
-  width: number,
-  tier: GlyphTierName,
-  ambiguous: AmbiguousModeName,
-): ComboResult {
-  try {
-    const { text, codeRanges } = handle.render(source, width, tier, ambiguous);
-    const detectors = handle.detect(text, width, codeRanges, ambiguous);
-    const overflowed = handle.overflowed(text, width, codeRanges, ambiguous);
-    return {
-      record: {
-        file,
-        width,
-        tier,
-        ambiguous,
-        textSha: sha256Hex(text),
-        codeContentSha: sha256Hex(extractCodeContent(text, codeRanges)),
-        codeRanges,
-        detectors,
-        overflowed,
-      },
-      error: null,
-    };
-  } catch (error) {
-    return {
-      record: null,
-      error: { file, width, tier, ambiguous, message: error instanceof Error ? error.message : String(error) },
-    };
+/** True when the policy turns the highlighter on, so D-C's channels judge the combo. */
+export function isDcPolicy(policy: PolicyName): boolean {
+  return policy === "P2" || policy === "P3" || policy === "P4";
+}
+
+/** Lines `[start, end]` (1-based, inclusive) of every range, as a set of 1-based numbers. */
+function linesIn(ranges: Array<[number, number]>): Set<number> {
+  const lines = new Set<number>();
+  for (const [start, end] of ranges) for (let n = start; n <= end; n += 1) lines.add(n);
+  return lines;
+}
+
+/** Split `codeRanges` into the frontmatter-echo ranges (the first `echoCount`) and fence ranges. */
+export function splitRanges(
+  codeRanges: Array<[number, number]>,
+  echoCount: number,
+): { echo: Array<[number, number]>; fence: Array<[number, number]> } {
+  return { echo: codeRanges.slice(0, echoCount), fence: codeRanges.slice(echoCount) };
+}
+
+/** A line with its SGR spans removed and every other span (text, OSC-8, DCS, malformed) kept. */
+function stripSgr(line: string, measurer: Measurer): string {
+  return measurer
+    .scan(line)
+    .filter((span) => span.kind !== "sgr")
+    .map((span) => span.raw)
+    .join("");
+}
+
+/**
+ * The SGR vocabulary check, over **generated** sequences only: every SGR span in `text` that
+ * does not occur verbatim in `source` must be a committed `STYLE_TABLE` open or close. An
+ * authored escape keeps its reference bytes and is checked by the exact channels instead.
+ */
+export function sgrVocabularyOk(text: string, source: string, measurer: Measurer): boolean {
+  for (const span of measurer.scan(text)) {
+    if (span.kind !== "sgr") continue;
+    if (measurer.styleCodes.has(span.raw)) continue;
+    if (source.includes(span.raw)) continue;
+    return false;
   }
+  return true;
+}
+
+/**
+ * Render, measure and hash one `(file × width × tier × ambiguous × policy × emoji)` combination.
+ * `handle` renders; `measurer` (the current checkout's measurement code) measures — so both
+ * sides of a comparison are measured identically, whatever renders them.
+ */
+export async function computeComboRecord(
+  handle: RevisionHandle,
+  measurer: Measurer,
+  request: RenderRequest & { path: string },
+): Promise<ComboResult> {
+  const { path: file, width, tier, ambiguous, policy, emoji } = request;
+  const key: ComboKey = { file, width, tier, ambiguous, policy, emoji };
+  try {
+    const output = await handle.render(request);
+    const { text, codeRanges } = output;
+    const detectors = measurer.detect(text, width, codeRanges, ambiguous);
+    const overflowed = measurer.overflowed(text, width, codeRanges, ambiguous);
+    const spans = measurer.scan(text);
+    const echoCount = Math.min(
+      codeRanges.length,
+      measurer.echoRangeCount(request.source, width, ambiguous, POLICIES[policy].sgr),
+    );
+    const { echo, fence } = splitRanges(codeRanges, echoCount);
+    const lines = text.split("\n");
+    let highlightedFences = 0;
+    for (const [start, end] of fence) {
+      for (let n = start; n <= end; n += 1) {
+        if (measurer.scan(lines[n - 1] ?? "").some((span) => span.kind === "sgr")) {
+          highlightedFences += 1;
+          break;
+        }
+      }
+    }
+    const record: ComboRecord = {
+      ...key,
+      textSha: sha256Hex(text),
+      codeContentSha: sha256Hex(extractCodeContent(text, codeRanges)),
+      codeRanges,
+      detectors,
+      overflowed,
+      hasSgr: spans.some((span) => span.kind === "sgr"),
+      hasOsc8: spans.some((span) => span.kind === "osc8"),
+      hasDcs: spans.some((span) => span.kind === "dcs"),
+      highlightedFences,
+    };
+    if (isDcPolicy(policy)) {
+      const inCode = linesIn(codeRanges);
+      record.proseSha = sha256Hex(lines.filter((_, index) => !inCode.has(index + 1)).join("\n"));
+      record.echoSha = sha256Hex(extractCodeContent(text, echo));
+      record.fenceStrippedSha = sha256Hex(
+        extractCodeContent(text, fence)
+          .split("\n")
+          .map((line) => stripSgr(line, measurer))
+          .join("\n"),
+      );
+      record.sgrVocabOk = sgrVocabularyOk(text, request.source, measurer);
+    }
+    return { record, error: null, output };
+  } catch (error) {
+    return { record: null, error: { ...key, message: error instanceof Error ? error.message : String(error) } };
+  }
+}
+
+/**
+ * The pairwise half of D-C's fence rule: every fence line that differs between the two sides
+ * must first diverge **inside an SGR sequence on at least one side** — so the bytes before the
+ * first divergence (indent, list/quote prefix, any prose sharing the line) are byte-identical,
+ * and the divergence itself is highlighter markup, never a visible byte, an OSC-8 or a DCS.
+ *
+ * Fence ranges are compared positionally; mismatched range lists return `false` (the exact
+ * `codeRanges` channel reports the shift on its own). What this cannot do — and says so — is
+ * tell a highlighter SGR from a prose SGR sharing the same physical line: both are SGR, and the
+ * D-C allowance is SGR-granular (`hl-fence-claim` is the named entry for the one known case).
+ * Nor does it stand alone: a visible byte inserted exactly where the other side starts an SGR
+ * passes here and is caught by `fenceStrippedSha`, which is why both are recorded.
+ */
+export function fencePrefixesOk(
+  before: RenderOutput,
+  after: RenderOutput,
+  echoCount: number,
+  measurer: Measurer,
+): boolean {
+  const fenceA = before.codeRanges.slice(echoCount);
+  const fenceB = after.codeRanges.slice(echoCount);
+  if (fenceA.length !== fenceB.length) return false;
+  const linesA = before.text.split("\n");
+  const linesB = after.text.split("\n");
+  for (let r = 0; r < fenceA.length; r += 1) {
+    const [startA, endA] = fenceA[r]!;
+    const [startB, endB] = fenceB[r]!;
+    if (endA - startA !== endB - startB) return false;
+    for (let offset = 0; offset <= endA - startA; offset += 1) {
+      const a = linesA[startA - 1 + offset] ?? "";
+      const b = linesB[startB - 1 + offset] ?? "";
+      if (a === b) continue;
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+      if (!insideSgr(a, i, measurer) && !insideSgr(b, i, measurer)) return false;
+    }
+  }
+  return true;
+}
+
+/** Whether byte offset `index` of `line` falls inside (or at the start of) an SGR span. */
+function insideSgr(line: string, index: number, measurer: Measurer): boolean {
+  let offset = 0;
+  for (const span of measurer.scan(line)) {
+    const end = offset + span.raw.length;
+    if (index >= offset && index < end) return span.kind === "sgr";
+    offset = end;
+  }
+  return false;
 }
 
 // --- Diffing and classification -------------------------------------------------------
 
-export type DiffChannel = "textSha" | "codeContentSha" | "codeRanges" | "detectors";
+export type DiffChannel =
+  | "textSha"
+  | "codeContentSha"
+  | "codeRanges"
+  | "detectors"
+  | "proseSha"
+  | "echoSha"
+  | "fenceStrippedSha"
+  | "fencePrefix"
+  | "sgrVocab";
+
+/** The D-C channels whose diff is a code-content (class-C-like) failure under P2–P4. */
+const DC_CODE_CHANNELS: readonly DiffChannel[] = ["echoSha", "fenceStrippedSha", "fencePrefix", "sgrVocab"];
 
 function codeRangesEqual(a: Array<[number, number]>, b: Array<[number, number]>): boolean {
   if (a.length !== b.length) return false;
@@ -97,13 +251,25 @@ function detectorsEqual(a: DetectorCounts, b: DetectorCounts): boolean {
   return a.orphans === b.orphans && a.overIndent === b.overIndent && a.columnZero === b.columnZero;
 }
 
-/** Which of the four channels differ between two records for the same combo key. */
+/**
+ * Which channels differ between two records for the same combo key. The four historical
+ * channels always; under P2–P4 also D-C's — `proseSha`, `echoSha`, `fenceStrippedSha` (a
+ * difference, or absence on one side), `fencePrefix` (the pairwise check failed) and
+ * `sgrVocab` (either side generated an uncommitted SGR).
+ */
 export function diffCombo(before: ComboRecord, after: ComboRecord): DiffChannel[] {
   const channels: DiffChannel[] = [];
   if (before.textSha !== after.textSha) channels.push("textSha");
   if (before.codeContentSha !== after.codeContentSha) channels.push("codeContentSha");
   if (!codeRangesEqual(before.codeRanges, after.codeRanges)) channels.push("codeRanges");
   if (!detectorsEqual(before.detectors, after.detectors)) channels.push("detectors");
+  if (isDcPolicy(policyOf(before))) {
+    if (before.proseSha !== after.proseSha) channels.push("proseSha");
+    if (before.echoSha !== after.echoSha) channels.push("echoSha");
+    if (before.fenceStrippedSha !== after.fenceStrippedSha) channels.push("fenceStrippedSha");
+    if (after.fencePrefixOk === false || before.fencePrefixOk === false) channels.push("fencePrefix");
+    if (before.sgrVocabOk === false || after.sgrVocabOk === false) channels.push("sgrVocab");
+  }
   return channels;
 }
 
@@ -168,6 +334,12 @@ export interface ClassificationSummary {
   disallowed: ComboDiff[];
   /** Non-`codeContentSha` diffs permitted because `expect === "b"`. */
   allowedB: ComboDiff[];
+  /**
+   * P2–P4 only: diffs confined to `textSha`/`codeContentSha` while every D-C channel agrees —
+   * highlighter SGR inside fences and nothing else (D-C, `plans/mdview-rust-port.md`). Never a
+   * failure, always counted and printed.
+   */
+  allowedDC: ComboDiff[];
   /** `expect === "b"` only: `(width, tier, ambiguous)` groups where overflow rose. */
   overflowRegressions: OverflowRegression[];
   /**
@@ -188,7 +360,48 @@ export interface ClassificationSummary {
    * cause legible either way.
    */
   emptyComparison: boolean;
+  /** The non-vacuity counters, summed per side over every paired combo. */
+  nonvacuity: { before: NonvacuityCounters; after: NonvacuityCounters };
+  /** One named reason per required counter found at zero on either side. */
+  nonvacuityFailures: string[];
   ok: boolean;
+}
+
+export type NonvacuityCounter = "sgr" | "osc8" | "dcs" | "fences";
+export const NONVACUITY_COUNTERS: readonly NonvacuityCounter[] = ["sgr", "osc8", "dcs", "fences"];
+
+/** Combos carrying SGR / OSC-8 / DCS, and the number of highlighted fence ranges. */
+export type NonvacuityCounters = Record<NonvacuityCounter, number>;
+
+/** Sum one side's non-vacuity counters; a record without them (an old baseline) counts zero. */
+export function sumNonvacuity(records: ComboRecord[]): NonvacuityCounters {
+  const sums: NonvacuityCounters = { sgr: 0, osc8: 0, dcs: 0, fences: 0 };
+  for (const record of records) {
+    if (record.hasSgr === true) sums.sgr += 1;
+    if (record.hasOsc8 === true) sums.osc8 += 1;
+    if (record.hasDcs === true) sums.dcs += 1;
+    sums.fences += record.highlightedFences ?? 0;
+  }
+  return sums;
+}
+
+/**
+ * The non-vacuity requirement: a required counter at zero on **either** side is a named
+ * failure. A capability gate whose evidence never occurred proves nothing about it.
+ */
+export function nonvacuityFailuresFor(
+  counters: { before: NonvacuityCounters; after: NonvacuityCounters },
+  required: readonly NonvacuityCounter[],
+): string[] {
+  const failures: string[] = [];
+  for (const counter of required) {
+    for (const side of ["before", "after"] as const) {
+      if (counters[side][counter] === 0) {
+        failures.push(`required non-vacuity counter "${counter}" is zero on the ${side === "before" ? "rev-a" : "rev-b"} side`);
+      }
+    }
+  }
+  return failures;
 }
 
 /**
@@ -213,6 +426,8 @@ export interface ClassifyOptions {
    * must say so explicitly rather than getting it as the silent default.
    */
   allowEmpty?: boolean;
+  /** Counters that must be non-zero on both sides (`--require-nonzero`). */
+  requireNonzero?: readonly NonvacuityCounter[];
 }
 
 /** The three detector channels, in the order the plan names them. */
@@ -242,9 +457,15 @@ export function classifyDiffs(
       classC: [],
       disallowed: [],
       allowedB: [],
+      allowedDC: [],
       overflowRegressions: [],
       detectorRegressions: [],
       emptyComparison: true,
+      nonvacuity: { before: sumNonvacuity([]), after: sumNonvacuity([]) },
+      nonvacuityFailures: nonvacuityFailuresFor(
+        { before: sumNonvacuity([]), after: sumNonvacuity([]) },
+        options.requireNonzero ?? [],
+      ),
       ok: false,
     };
   }
@@ -252,15 +473,34 @@ export function classifyDiffs(
   const classC: ComboDiff[] = [];
   const disallowed: ComboDiff[] = [];
   const allowedB: ComboDiff[] = [];
+  const allowedDC: ComboDiff[] = [];
   let diffedCombos = 0;
 
   for (const { before, after } of pairs) {
     const channels = diffCombo(before, after);
     if (channels.length === 0) continue;
     diffedCombos += 1;
-    const key: ComboKey = { file: before.file, width: before.width, tier: before.tier, ambiguous: before.ambiguous };
+    const key: ComboKey = {
+      file: before.file,
+      width: before.width,
+      tier: before.tier,
+      ambiguous: before.ambiguous,
+      policy: policyOf(before),
+      emoji: emojiOf(before),
+    };
     const diff: ComboDiff = { key, channels, before, after };
-    if (channels.includes("codeContentSha")) {
+    if (isDcPolicy(policyOf(before))) {
+      // D-C: the code-content analogue is the echo/fence-stripped/prefix/vocabulary channels;
+      // a diff in textSha/codeContentSha alone is highlighter SGR and is allowed.
+      if (channels.some((channel) => DC_CODE_CHANNELS.includes(channel))) {
+        classC.push(diff);
+        continue;
+      }
+      if (channels.every((channel) => channel === "textSha" || channel === "codeContentSha")) {
+        allowedDC.push(diff);
+        continue;
+      }
+    } else if (channels.includes("codeContentSha")) {
       classC.push(diff);
       continue;
     }
@@ -324,7 +564,14 @@ export function classifyDiffs(
     }
   }
 
+  const nonvacuity = {
+    before: sumNonvacuity(pairs.map((pair) => pair.before)),
+    after: sumNonvacuity(pairs.map((pair) => pair.after)),
+  };
+  const nonvacuityFailures = nonvacuityFailuresFor(nonvacuity, options.requireNonzero ?? []);
+
   const ok =
+    nonvacuityFailures.length === 0 &&
     classC.length === 0 &&
     disallowed.length === 0 &&
     detectorRegressions.length === 0 &&
@@ -337,9 +584,12 @@ export function classifyDiffs(
     classC,
     disallowed,
     allowedB,
+    allowedDC,
     overflowRegressions,
     detectorRegressions,
     emptyComparison,
+    nonvacuity,
+    nonvacuityFailures,
     ok,
   };
 }

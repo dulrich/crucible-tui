@@ -280,7 +280,7 @@ for (const pkg of packages) {
 
 lines.push("");
 lines.push("=".repeat(48));
-lines.push("Cargo (Rust) runtime closure — jsonedit");
+lines.push("Cargo (Rust) runtime closure — jsonedit, mdview");
 lines.push("=".repeat(48));
 lines.push("");
 lines.push(

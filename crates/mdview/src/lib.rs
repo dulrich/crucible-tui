@@ -1,0 +1,49 @@
+//! mdview — the Rust port of the terminal markdown viewer (`plans/mdview-rust-port.md`).
+//!
+//! WP-1 is the skeleton: every module the port needs is declared here, each a stub its owning
+//! work package fills, so parallel packages touch disjoint files and never collide in this
+//! file. `run` is the CLI entry (`main.rs` is the only place its error is caught); `render` is
+//! the library entry; `__parity` is the hidden instrument server.
+
+pub mod ansi;
+pub mod blocks;
+pub mod cli;
+pub mod colour;
+pub mod config;
+pub mod context;
+pub mod emoji_data;
+pub mod frontmatter;
+pub mod glyphs;
+pub mod highlight;
+pub mod inline;
+pub mod lang;
+pub mod lex;
+pub mod list_layout;
+pub mod list_lines;
+pub mod lists;
+pub mod overflow;
+pub mod pager;
+pub mod parity;
+pub mod probe;
+pub mod render;
+pub mod style;
+pub mod table;
+pub mod text;
+pub mod token;
+pub mod walk;
+pub mod width;
+pub mod wikilink;
+pub mod wikiresolve;
+pub mod wrap;
+
+pub use render::{RenderError, RenderOptions, RenderOutput, render};
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The CLI entry. Returns the exit code, or an error message for `main.rs` to print.
+pub fn run(args: &[String]) -> Result<i32, String> {
+    if args.first().map(String::as_str) == Some("__parity") {
+        return parity::run(&args[1..]);
+    }
+    Err("the Rust viewer is not implemented yet (plans/mdview-rust-port.md)".into())
+}

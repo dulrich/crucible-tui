@@ -103,22 +103,38 @@ import {
   type CorpusSpec,
 } from "./corpus";
 import {
+  NONVACUITY_COUNTERS,
   classifyDiffs,
   computeComboRecord,
+  fencePrefixesOk,
+  sumNonvacuity,
   type ClassificationSummary,
   type ComboDiff,
+  type ComboResult,
   type ExpectClass,
+  type NonvacuityCounter,
+  type NonvacuityCounters,
   type PairedCombo,
 } from "./diff-classify";
 import {
+  EMOJI_AXES,
+  POLICIES,
+  POLICY_NAMES,
+  emojiOf,
+  loadMeasurer,
   loadRevision,
+  policyOf,
   type AmbiguousModeName,
   type ComboErrorEntry,
   type ComboRecord,
+  type EmojiAxis,
   type GlyphTierName,
+  type Measurer,
+  type PolicyName,
   type RevisionHandle,
 } from "./revision";
 import { DEFAULT_WIDTHS, parseWidths } from "./sweep-options";
+import { normalizeTokens } from "./token-schema";
 
 // --- Baseline artifact ------------------------------------------------------------
 
@@ -194,6 +210,26 @@ interface CliOptions {
    * exists to close.
    */
   allowEmpty: boolean;
+  /** `--policy P0,P1,...` (default `P0`) — WP-1 of `plans/mdview-rust-port.md`. */
+  policies: PolicyName[];
+  /** `--emoji default,on,off` (default `default`). */
+  emojis: EmojiAxis[];
+  /** `--input source|tokens`: `tokens` attaches the current checkout's census tokens to rev-B's requests. */
+  input: "source" | "tokens";
+  /** `--shard i/n` (1-based): keep selected file index `k` iff `k % n === i - 1`. */
+  shard?: { index: number; count: number };
+  /** `--require-free list,table`: skip files whose `lexBody` tokens contain these types. */
+  requireFree: string[];
+  /** `--require-nonzero sgr,osc8,dcs,fences`. */
+  requireNonzero: NonvacuityCounter[];
+}
+
+function parseList<T extends string>(flag: string, value: string, allowed: readonly T[]): T[] {
+  const parts = value.split(",").map((part) => part.trim());
+  for (const part of parts) {
+    if (!allowed.includes(part as T)) throw new Error(`${flag} entries must be ${allowed.join("/")}, got: ${part}`);
+  }
+  return parts as T[];
 }
 
 export function parseArgs(argv: string[]): CliOptions {
@@ -205,6 +241,11 @@ export function parseArgs(argv: string[]): CliOptions {
     tiers: ["unicode", "ascii"],
     ambiguous: ["narrow", "wide"],
     allowEmpty: false,
+    policies: ["P0"],
+    emojis: ["default"],
+    input: "source",
+    requireFree: [],
+    requireNonzero: [],
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -255,6 +296,30 @@ export function parseArgs(argv: string[]): CliOptions {
         if (mode !== "narrow" && mode !== "wide") throw new Error(`--ambiguous entries must be narrow/wide, got: ${mode}`);
       }
       options.ambiguous = modes as AmbiguousModeName[];
+    } else if (arg === "--policy") {
+      options.policies = parseList("--policy", next(), POLICY_NAMES);
+    } else if (arg === "--emoji") {
+      options.emojis = parseList("--emoji", next(), EMOJI_AXES);
+    } else if (arg === "--input") {
+      const value = next();
+      if (value !== "source" && value !== "tokens") throw new Error(`--input must be "source" or "tokens", got: ${value}`);
+      options.input = value;
+    } else if (arg === "--shard") {
+      const value = next();
+      const match = /^(\d+)\/(\d+)$/.exec(value);
+      const shardIndex = match ? Number(match[1]) : NaN;
+      const shardCount = match ? Number(match[2]) : NaN;
+      if (!match || shardCount < 1 || shardIndex < 1 || shardIndex > shardCount) {
+        throw new Error(`--shard must be i/n with 1 <= i <= n, got: ${value}`);
+      }
+      options.shard = { index: shardIndex, count: shardCount };
+    } else if (arg === "--require-free") {
+      options.requireFree = next()
+        .split(",")
+        .map((part) => part.trim())
+        .filter((part) => part !== "");
+    } else if (arg === "--require-nonzero") {
+      options.requireNonzero = parseList("--require-nonzero", next(), NONVACUITY_COUNTERS);
     } else {
       throw new Error(`render-diff: unrecognized argument ${arg}`);
     }
@@ -353,49 +418,199 @@ export async function selectCorpora(options: CliOptions): Promise<{ manifestPath
   return { manifestPath, corpora };
 }
 
-/** Render every selected file at every requested `(width, tier, ambiguous)` combo. */
-async function renderAll(
-  handle: RevisionHandle,
+/** Keep the selected files whose global index `k` (across corpora, in order) has `k % n === i - 1`. */
+export function applyShard(corpora: SelectedCorpus[], shard: { index: number; count: number } | undefined): SelectedCorpus[] {
+  if (shard === undefined) return corpora;
+  let k = 0;
+  return corpora.map(({ spec, files }) => ({
+    spec,
+    files: files.filter(() => {
+      const keep = k % shard.count === shard.index - 1;
+      k += 1;
+      return keep;
+    }),
+  }));
+}
+
+/** Whether a (raw or census) token tree contains a token of one of `types`, at any depth. */
+export function tokensContainType(tokens: unknown, types: ReadonlySet<string>): boolean {
+  if (types.size === 0 || tokens === null || typeof tokens !== "object") return false;
+  if (Array.isArray(tokens)) return tokens.some((token) => tokensContainType(token, types));
+  const record = tokens as Record<string, unknown>;
+  if (typeof record.type === "string" && types.has(record.type)) return true;
+  for (const [key, value] of Object.entries(record)) {
+    if (key === "raw" || key === "text") continue;
+    if (value !== null && typeof value === "object" && tokensContainType(value, types)) return true;
+  }
+  return false;
+}
+
+/** The combo axes one run renders, every file at every combination. */
+export interface RenderAxes {
+  widths: number[];
+  tiers: GlyphTierName[];
+  ambiguous: AmbiguousModeName[];
+  policies: PolicyName[];
+  emojis: EmojiAxis[];
+}
+
+interface ComboSpec {
+  width: number;
+  tier: GlyphTierName;
+  ambiguous: AmbiguousModeName;
+  policy: PolicyName;
+  emoji: EmojiAxis;
+}
+
+function combosOf(axes: RenderAxes): ComboSpec[] {
+  const combos: ComboSpec[] = [];
+  for (const width of axes.widths) {
+    for (const tier of axes.tiers) {
+      for (const ambiguous of axes.ambiguous) {
+        for (const policy of axes.policies) {
+          for (const emoji of axes.emojis) combos.push({ width, tier, ambiguous, policy, emoji });
+        }
+      }
+    }
+  }
+  return combos;
+}
+
+interface FileVisit {
+  file: string;
+  source: string;
+  /** Census tokens per tier, present only under `--input tokens`. */
+  tokens: Partial<Record<GlyphTierName, unknown[]>>;
+}
+
+/**
+ * Walk every selected file once: read it (a read failure becomes one error per combo, on every
+ * side named in `sides`), apply `--require-free`, compute `--input tokens`' census tokens, and
+ * hand the visit to `onFile`.
+ */
+async function visitFiles(
   corpora: SelectedCorpus[],
-  widths: number[],
-  tiers: GlyphTierName[],
-  ambiguous: AmbiguousModeName[],
-): Promise<{ records: ComboRecord[]; errors: ComboErrorEntry[] }> {
-  const records: ComboRecord[] = [];
-  const errors: ComboErrorEntry[] = [];
+  axes: RenderAxes,
+  measurer: Measurer,
+  options: { requireFree: string[]; input: "source" | "tokens" },
+  readErrors: ComboErrorEntry[][],
+  onFile: (visit: FileVisit) => Promise<void>,
+): Promise<{ skippedRequireFree: number }> {
+  const freeTypes = new Set(options.requireFree);
+  let skippedRequireFree = 0;
   for (const { files } of corpora) {
     for (const file of files) {
       let source: string;
       try {
         source = await readFile(file, "utf8");
       } catch (error) {
-        for (const width of widths) {
-          for (const tier of tiers) {
-            for (const mode of ambiguous) {
-              errors.push({
-                file,
-                width,
-                tier,
-                ambiguous: mode,
-                message: `read failed: ${error instanceof Error ? error.message : String(error)}`,
-              });
-            }
-          }
+        const message = `read failed: ${error instanceof Error ? error.message : String(error)}`;
+        for (const combo of combosOf(axes)) {
+          for (const errors of readErrors) errors.push({ file, ...combo, message });
         }
         continue;
       }
-      for (const width of widths) {
-        for (const tier of tiers) {
-          for (const mode of ambiguous) {
-            const { record, error } = computeComboRecord(handle, file, source, width, tier, mode);
-            if (record) records.push(record);
-            if (error) errors.push(error);
-          }
-        }
+      if (freeTypes.size > 0 && axes.tiers.some((tier) => tokensContainType(measurer.lexBody(source, tier), freeTypes))) {
+        skippedRequireFree += 1;
+        continue;
       }
+      const tokens: FileVisit["tokens"] = {};
+      if (options.input === "tokens") {
+        for (const tier of axes.tiers) tokens[tier] = normalizeTokens(measurer.lexBody(source, tier));
+      }
+      await onFile({ file, source, tokens });
     }
   }
-  return { records, errors };
+  return { skippedRequireFree };
+}
+
+function requestFor(visit: FileVisit, combo: ComboSpec, withTokens: boolean) {
+  const tokens = withTokens ? visit.tokens[combo.tier] : undefined;
+  return { source: visit.source, path: visit.file, ...combo, ...(tokens !== undefined ? { tokens } : {}) };
+}
+
+/** Render every selected file at every requested combo on one revision (`--baseline`). */
+async function renderAll(
+  handle: RevisionHandle,
+  measurer: Measurer,
+  corpora: SelectedCorpus[],
+  axes: RenderAxes,
+  options: { requireFree: string[] },
+): Promise<{ records: ComboRecord[]; errors: ComboErrorEntry[]; skippedRequireFree: number }> {
+  const records: ComboRecord[] = [];
+  const errors: ComboErrorEntry[] = [];
+  const combos = combosOf(axes);
+  const { skippedRequireFree } = await visitFiles(
+    corpora,
+    axes,
+    measurer,
+    { requireFree: options.requireFree, input: "source" },
+    [errors],
+    async (visit) => {
+      const results = await Promise.all(
+        combos.map((combo) => computeComboRecord(handle, measurer, requestFor(visit, combo, false))),
+      );
+      for (const { record, error } of results) {
+        if (record) records.push(record);
+        if (error) errors.push(error);
+      }
+    },
+  );
+  return { records, errors, skippedRequireFree };
+}
+
+/**
+ * Render every selected file at every requested combo on **both** revisions, side by side, so
+ * the pairwise D-C fence check (`fencePrefixesOk`) runs while both texts are in hand; the
+ * texts are dropped as soon as the pair is recorded. Under `--input tokens` only rev-B's
+ * requests carry tokens. Each file's combos are issued together, so a server side pipelines.
+ */
+async function renderPaired(
+  handleA: RevisionHandle,
+  handleB: RevisionHandle,
+  measurer: Measurer,
+  corpora: SelectedCorpus[],
+  axes: RenderAxes,
+  options: { requireFree: string[]; input: "source" | "tokens" },
+): Promise<{
+  before: ComboRecord[];
+  after: ComboRecord[];
+  errorsA: ComboErrorEntry[];
+  errorsB: ComboErrorEntry[];
+  skippedRequireFree: number;
+}> {
+  const before: ComboRecord[] = [];
+  const after: ComboRecord[] = [];
+  const errorsA: ComboErrorEntry[] = [];
+  const errorsB: ComboErrorEntry[] = [];
+  const combos = combosOf(axes);
+  const collect = (result: ComboResult, records: ComboRecord[], errors: ComboErrorEntry[]): void => {
+    if (result.record) records.push(result.record);
+    if (result.error) errors.push(result.error);
+  };
+  const { skippedRequireFree } = await visitFiles(corpora, axes, measurer, options, [errorsA, errorsB], async (visit) => {
+    const results = await Promise.all(
+      combos.map(async (combo) => {
+        const [a, b] = await Promise.all([
+          computeComboRecord(handleA, measurer, requestFor(visit, combo, false)),
+          computeComboRecord(handleB, measurer, requestFor(visit, combo, options.input === "tokens")),
+        ]);
+        if (a.record && b.record && a.output && b.output && b.record.fenceStrippedSha !== undefined) {
+          const echoCount = Math.min(
+            a.output.codeRanges.length,
+            measurer.echoRangeCount(visit.source, combo.width, combo.ambiguous, POLICIES[combo.policy].sgr),
+          );
+          b.record.fencePrefixOk = fencePrefixesOk(a.output, b.output, echoCount, measurer);
+        }
+        return [a, b] as const;
+      }),
+    );
+    for (const [a, b] of results) {
+      collect(a, before, errorsA);
+      collect(b, after, errorsB);
+    }
+  });
+  return { before, after, errorsA, errorsB, skippedRequireFree };
 }
 
 export interface PairRecordsResult {
@@ -407,7 +622,8 @@ export interface PairRecordsResult {
 }
 
 /**
- * Pair every `before`/`after` record sharing a `(file, width, tier, ambiguous)` key.
+ * Pair every `before`/`after` record sharing a `(file, width, tier, ambiguous, policy, emoji)`
+ * key (an absent policy/emoji reads as `P0`/`default`, so old baselines still pair).
  *
  * **Reports what it drops, rather than dropping it silently.** A `before` record
  * with no `after` counterpart (or vice versa) means the two renders produced a
@@ -419,7 +635,8 @@ export interface PairRecordsResult {
  * and fail loudly rather than silently comparing a subset.
  */
 export function pairRecords(before: ComboRecord[], after: ComboRecord[]): PairRecordsResult {
-  const key = (r: ComboRecord): string => `${r.file} ${r.width} ${r.tier} ${r.ambiguous}`;
+  const key = (r: ComboRecord): string =>
+    `${r.file} ${r.width} ${r.tier} ${r.ambiguous} ${policyOf(r)} ${emojiOf(r)}`;
   const afterByKey = new Map(after.map((r) => [key(r), r]));
   const matchedAfterKeys = new Set<string>();
   const pairs: PairedCombo[] = [];
@@ -438,6 +655,13 @@ export function pairRecords(before: ComboRecord[], after: ComboRecord[]): PairRe
   return { pairs, unpairedBefore, unpairedAfter };
 }
 
+/** `render-diff: nonvacuity sgr=A/B osc8=A/B dcs=A/B fences=A/B` — printed on every run. */
+export function formatNonvacuity(before: NonvacuityCounters, after: NonvacuityCounters | null): string {
+  return `render-diff: nonvacuity ${NONVACUITY_COUNTERS.map(
+    (counter) => `${counter}=${before[counter]}/${after === null ? "-" : after[counter]}`,
+  ).join(" ")}`;
+}
+
 function printClassification(
   summary: ClassificationSummary,
   errorsBefore: number,
@@ -454,10 +678,12 @@ function printClassification(
   console.log(
     `render-diff: expect=${summary.expect} combos=${summary.totalCombos} diffed=${summary.diffedCombos} ` +
       `classC=${summary.classC.length} disallowed=${summary.disallowed.length} allowedB=${summary.allowedB.length} ` +
+      `allowedDC=${summary.allowedDC.length} ` +
       `overflowRegressions=${summary.overflowRegressions.length} ` +
       `detectorRegressions=${summary.detectorRegressions.length} errorsA=${errorsBefore} errorsB=${errorsAfter} ` +
       `unpairedA=${unpairedBefore} unpairedB=${unpairedAfter} ok=${summary.ok}`,
   );
+  for (const failure of summary.nonvacuityFailures) console.log(`  NON-VACUITY FAILURE: ${failure}`);
   if (unpairedBefore > 0 || unpairedAfter > 0) {
     console.log(
       `  UNPAIRED: ${unpairedBefore} combo(s) rendered on one side only, ${unpairedAfter} on the other — the ` +
@@ -465,16 +691,18 @@ function printClassification(
     );
   }
   const describe = (d: ComboDiff): string =>
-    `[${d.channels.join(",")}] width=${d.key.width} tier=${d.key.tier} ambiguous=${d.key.ambiguous} ${d.key.file}`;
+    `[${d.channels.join(",")}] width=${d.key.width} tier=${d.key.tier} ambiguous=${d.key.ambiguous} ` +
+    `policy=${policyOf(d.key)} emoji=${emojiOf(d.key)} ${d.key.file}`;
   const printGroup = (label: string, diffs: ComboDiff[]): void => {
     if (diffs.length === 0) return;
     console.log(`-- ${label} (${diffs.length}) --`);
     for (const diff of diffs.slice(0, 50)) console.log(`  ${describe(diff)}`);
     if (diffs.length > 50) console.log(`  ... and ${diffs.length - 50} more`);
   };
-  printGroup("class C (forbidden — codeContentSha changed)", summary.classC);
+  printGroup("class C (forbidden — code content changed: codeContentSha, or under P2–P4 a D-C code channel)", summary.classC);
   printGroup("disallowed under --expect a", summary.disallowed);
   printGroup("class B (enumerated, allowed under --expect b)", summary.allowedB);
+  printGroup("D-C (highlighter SGR inside fences only, allowed)", summary.allowedDC);
   for (const reg of summary.overflowRegressions) {
     console.log(
       `  OVERFLOW REGRESSION width=${reg.width} tier=${reg.tier} ambiguous=${reg.ambiguous} ` +
@@ -489,6 +717,16 @@ function printClassification(
   }
 }
 
+function axesOf(options: CliOptions): RenderAxes {
+  return {
+    widths: options.widths,
+    tiers: options.tiers,
+    ambiguous: options.ambiguous,
+    policies: options.policies,
+    emojis: options.emojis,
+  };
+}
+
 async function runCli(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const repoRootResult = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "pipe" });
@@ -497,13 +735,24 @@ async function runCli(): Promise<void> {
     process.exit(1);
   }
   const repoRoot = repoRootResult.stdout.toString().trim();
+  const measurer = await loadMeasurer(repoRoot);
+  const classifyOptions = { allowEmpty: options.allowEmpty, requireNonzero: options.requireNonzero };
+  const printSkipped = (skipped: number): void => {
+    if (options.requireFree.length > 0) {
+      console.log(`render-diff: --require-free ${options.requireFree.join(",")} skipped ${skipped} file(s)`);
+    }
+  };
 
   if (options.baselineOut) {
     const started = performance.now();
-    const { manifestPath, corpora } = await selectCorpora(options);
+    const { manifestPath, corpora: selected } = await selectCorpora(options);
+    const corpora = applyShard(selected, options.shard);
     const handle = await loadRevision(options.revA ?? ".", repoRoot);
-    const { records, errors } = await renderAll(handle, corpora, options.widths, options.tiers, options.ambiguous);
-    await handle.close();
+    const { records, errors, skippedRequireFree } = await renderAll(handle, measurer, corpora, axesOf(options), {
+      requireFree: options.requireFree,
+    }).finally(() => handle.close());
+    printSkipped(skippedRequireFree);
+    console.log(formatNonvacuity(sumNonvacuity(records), null));
     if (records.length === 0 && !options.allowEmpty) {
       throw new Error(
         `render-diff: 0 combos were rendered — refusing to write a baseline that measured nothing ` +
@@ -533,35 +782,40 @@ async function runCli(): Promise<void> {
     const errors: ComboErrorEntry[] = [];
     const after: ComboRecord[] = [];
     const sourceCache = new Map<string, string | null>();
-    for (const record of baseline.combos) {
-      let source = sourceCache.get(record.file);
-      if (source === undefined) {
-        try {
-          source = await readFile(record.file, "utf8");
-        } catch (error) {
-          source = null;
-          errors.push({ ...record, message: `read failed: ${error instanceof Error ? error.message : String(error)}` });
+    try {
+      for (const record of baseline.combos) {
+        let source = sourceCache.get(record.file);
+        if (source === undefined) {
+          try {
+            source = await readFile(record.file, "utf8");
+          } catch (error) {
+            source = null;
+            errors.push({ ...record, message: `read failed: ${error instanceof Error ? error.message : String(error)}` });
+          }
+          sourceCache.set(record.file, source);
         }
-        sourceCache.set(record.file, source);
+        if (source === null) continue;
+        const { record: rendered, error } = await computeComboRecord(handle, measurer, {
+          source,
+          path: record.file,
+          width: record.width,
+          tier: record.tier,
+          ambiguous: record.ambiguous,
+          policy: policyOf(record),
+          emoji: emojiOf(record),
+        });
+        if (rendered) after.push(rendered);
+        if (error) errors.push(error);
       }
-      if (source === null) continue;
-      const { record: rendered, error } = computeComboRecord(
-        handle,
-        record.file,
-        source,
-        record.width,
-        record.tier,
-        record.ambiguous,
-      );
-      if (rendered) after.push(rendered);
-      if (error) errors.push(error);
+    } finally {
+      await handle.close();
     }
-    await handle.close();
 
     const { pairs, unpairedBefore, unpairedAfter } = pairRecords(baseline.combos, after);
-    const summary = classifyDiffs(pairs, options.expect, { allowEmpty: options.allowEmpty });
+    const summary = classifyDiffs(pairs, options.expect, classifyOptions);
     console.log(`render-diff: against ${resolve(options.against)} (baseline revision ${baseline.revisionLabel})`);
     console.log(`render-diff: live revision ${handle.label}, wall ${((performance.now() - started) / 1000).toFixed(1)}s`);
+    console.log(formatNonvacuity(sumNonvacuity(baseline.combos), sumNonvacuity(after)));
     printClassification(summary, baseline.errors.length, errors.length, unpairedBefore, unpairedAfter);
     const unpaired = unpairedBefore > 0 || unpairedAfter > 0;
     process.exit(summary.ok && errors.length === 0 && !unpaired ? 0 : 1);
@@ -569,20 +823,45 @@ async function runCli(): Promise<void> {
 
   if (options.revA && options.revB) {
     const started = performance.now();
-    const { corpora } = await selectCorpora(options);
+    const { corpora: selected } = await selectCorpora(options);
+    const corpora = applyShard(selected, options.shard);
     const handleA = await loadRevision(options.revA, repoRoot);
-    const handleB = await loadRevision(options.revB, repoRoot);
-    const [{ records: before, errors: errorsA }, { records: after, errors: errorsB }] = await Promise.all([
-      renderAll(handleA, corpora, options.widths, options.tiers, options.ambiguous),
-      renderAll(handleB, corpora, options.widths, options.tiers, options.ambiguous),
-    ]);
-    await Promise.all([handleA.close(), handleB.close()]);
+    let handleB: RevisionHandle;
+    try {
+      handleB = await loadRevision(options.revB, repoRoot);
+    } catch (error) {
+      await handleA.close();
+      throw error;
+    }
+    const { before, after, errorsA, errorsB, skippedRequireFree } = await renderPaired(
+      handleA,
+      handleB,
+      measurer,
+      corpora,
+      axesOf(options),
+      { requireFree: options.requireFree, input: options.input },
+    ).finally(() => Promise.all([handleA.close(), handleB.close()]));
 
     const { pairs, unpairedBefore, unpairedAfter } = pairRecords(before, after);
-    const summary = classifyDiffs(pairs, options.expect, { allowEmpty: options.allowEmpty });
+    const summary = classifyDiffs(pairs, options.expect, classifyOptions);
     console.log(`render-diff: rev-a=${handleA.label} rev-b=${handleB.label}`);
+    console.log(
+      `render-diff: policy=${options.policies.join(",")} emoji=${options.emojis.join(",")} input=${options.input}` +
+        `${options.shard ? ` shard=${options.shard.index}/${options.shard.count}` : ""}`,
+    );
     console.log(`render-diff: wall ${((performance.now() - started) / 1000).toFixed(1)}s`);
+    printSkipped(skippedRequireFree);
+    console.log(formatNonvacuity(sumNonvacuity(before), sumNonvacuity(after)));
     printClassification(summary, errorsA.length, errorsB.length, unpairedBefore, unpairedAfter);
+    for (const [label, errors] of [
+      ["A", errorsA],
+      ["B", errorsB],
+    ] as const) {
+      for (const error of errors.slice(0, 5)) {
+        console.log(`  ERROR ${label}: ${error.message.split("\n")[0]} (${error.file} width=${error.width})`);
+      }
+      if (errors.length > 5) console.log(`  ... and ${errors.length - 5} more errors on side ${label}`);
+    }
     const unpaired = unpairedBefore > 0 || unpairedAfter > 0;
     process.exit(summary.ok && errorsA.length === 0 && errorsB.length === 0 && !unpaired ? 0 : 1);
   }
