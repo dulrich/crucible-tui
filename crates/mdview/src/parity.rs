@@ -28,6 +28,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             serve(stdin.lock(), stdout.lock(), handle_render).map_err(|e| e.to_string())?
         }
         Some("lex") => serve(stdin.lock(), stdout.lock(), handle_lex).map_err(|e| e.to_string())?,
+        Some("table-alloc") => {
+            serve(stdin.lock(), stdout.lock(), handle_table_alloc).map_err(|e| e.to_string())?
+        }
         Some("style-table") => {
             let mut out = stdout.lock();
             writeln!(out, "{}", crate::style::style_table_json()).map_err(|e| e.to_string())?;
@@ -167,6 +170,77 @@ pub fn handle_lex(line: &str) -> String {
         let tier = parse_tier(field(&request, "tier")?)?;
         let tokens = crate::lex::lex(body, tier);
         Ok(json!({ "tokens": tokens }).to_string())
+    })();
+    result.unwrap_or_else(|message| error_line(&message))
+}
+
+/// One `table-alloc` request line in, one response line out (WP-5a's allocator differential,
+/// `scripts/table-alloc-diff.ts`). Request `{table, width, tier, ambiguous}` where `table` is
+/// one census-normalized `table` token; response `{grid: {header, rows, aligns, columnCount},
+/// natural, widths, totalWidth, fits}` — `src/table.ts`'s `tableGrid`, `naturalWidths` and
+/// `allocateWidths`. The tier is validated but cannot move an allocation.
+pub fn handle_table_alloc(line: &str) -> String {
+    use crate::table::{CellContent, allocate_widths, natural_widths, table_grid};
+    use crate::text::Align;
+    let result = (|| -> Result<String, String> {
+        let request: Value = serde_json::from_str(line).map_err(|e| format!("bad request: {e}"))?;
+        let width = field(&request, "width")?
+            .as_u64()
+            .and_then(|w| usize::try_from(w).ok())
+            .ok_or("bad width")?;
+        parse_tier(field(&request, "tier")?)?;
+        let ambiguous = match field(&request, "ambiguous")?.as_str() {
+            Some("narrow") => Ambiguous::Narrow,
+            Some("wide") => Ambiguous::Wide,
+            _ => return Err("bad ambiguous".into()),
+        };
+        let tokens = parse_tokens(&Value::Array(vec![field(&request, "table")?.clone()]))?;
+        let Some(Token::Table {
+            header,
+            rows,
+            align,
+        }) = tokens.first()
+        else {
+            return Err("table is not a table token".into());
+        };
+        let grid = table_grid(header, rows, align);
+        let measure = crate::width::measure_for(ambiguous);
+        let natural = natural_widths(&grid.header, &grid.rows, measure);
+        let allocation = allocate_widths(&natural, width);
+        let cell = |c: &CellContent| {
+            let spans: Vec<Value> = c
+                .spans
+                .iter()
+                .map(|s| {
+                    let styles: Vec<&str> = s.styles.iter().map(|n| n.as_str()).collect();
+                    json!({ "start": s.start, "end": s.end, "styles": styles })
+                })
+                .collect();
+            json!({ "text": c.text, "spans": spans })
+        };
+        let row = |r: &Vec<CellContent>| Value::Array(r.iter().map(cell).collect());
+        let aligns: Vec<&str> = grid
+            .aligns
+            .iter()
+            .map(|a| match a {
+                Align::Left => "left",
+                Align::Center => "center",
+                Align::Right => "right",
+            })
+            .collect();
+        Ok(json!({
+            "grid": {
+                "header": row(&grid.header),
+                "rows": grid.rows.iter().map(row).collect::<Vec<_>>(),
+                "aligns": aligns,
+                "columnCount": grid.column_count,
+            },
+            "natural": natural,
+            "widths": allocation.widths,
+            "totalWidth": allocation.total_width,
+            "fits": allocation.fits,
+        })
+        .to_string())
     })();
     result.unwrap_or_else(|message| error_line(&message))
 }
