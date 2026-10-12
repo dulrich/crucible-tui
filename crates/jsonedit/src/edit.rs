@@ -5,6 +5,7 @@
 
 use crate::indent::{self, Detection, Indent};
 use crate::validate::{Dialect, validate};
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -104,6 +105,79 @@ pub fn split_shell(s: &str) -> Result<Vec<String>, String> {
     Ok(words)
 }
 
+/// How an editor takes a "open at line N" hint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HintForm {
+    /// `+N FILE` — vi, vim, nvim, nano, emacs, emacsclient, micro, kak.
+    Plus,
+    /// `FILE:N` — Helix, Sublime Text.
+    Colon,
+    /// `--goto FILE:N` — VS Code, VSCodium.
+    Goto,
+}
+
+/// The hint form for an editor program, by exact file name; `None` means
+/// the editor is not known to accept one and gets no hint.
+pub fn hint_form(program: &str) -> Option<HintForm> {
+    let name = Path::new(program).file_name()?.to_str()?;
+    Some(match name {
+        "vi" | "vim" | "nvim" | "nano" | "emacs" | "emacsclient" | "micro" | "kak" => {
+            HintForm::Plus
+        }
+        "hx" | "helix" | "subl" => HintForm::Colon,
+        "code" | "codium" => HintForm::Goto,
+        _ => return None,
+    })
+}
+
+/// Vim accepts at most ten `+cmd` / `-c` / `-S` startup arguments combined.
+const VIM_STARTUP_LIMIT: usize = 10;
+
+/// The editor's arguments after the program: the user's own, then the
+/// buffer, with a line hint when the editor accepts one. The hint is
+/// suppressed when the user's arguments contain `--` (everything after it
+/// is a file name) or, for vi/vim/nvim, already use the startup-command limit;
+/// the `FILE:N` forms are also suppressed when the buffer path contains `:`.
+pub fn editor_args(editor: &[String], buffer: &Path, hint: Option<usize>) -> Vec<OsString> {
+    let user = &editor[1..];
+    let mut args: Vec<OsString> = user.iter().map(OsString::from).collect();
+    let colon = |n: usize| {
+        let mut a = buffer.as_os_str().to_os_string();
+        a.push(format!(":{n}"));
+        a
+    };
+    let vim_full = || {
+        matches!(
+            Path::new(&editor[0]).file_name().and_then(|n| n.to_str()),
+            Some("vi" | "vim" | "nvim")
+        ) && user
+            .iter()
+            .filter(|a| a.starts_with('+') || *a == "-c" || *a == "-S")
+            .count()
+            >= VIM_STARTUP_LIMIT
+    };
+    let colon_safe = !buffer.as_os_str().as_encoded_bytes().contains(&b':');
+    let form = match hint {
+        Some(n) if !user.iter().any(|a| a == "--") => hint_form(&editor[0])
+            .filter(|f| *f == HintForm::Plus || colon_safe)
+            .map(|f| (f, n)),
+        _ => None,
+    };
+    match form {
+        Some((HintForm::Plus, n)) if !vim_full() => {
+            args.push(format!("+{n}").into());
+            args.push(buffer.into());
+        }
+        Some((HintForm::Colon, n)) => args.push(colon(n)),
+        Some((HintForm::Goto, n)) => {
+            args.push("--goto".into());
+            args.push(colon(n));
+        }
+        _ => args.push(buffer.into()),
+    }
+    args
+}
+
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn unique() -> String {
@@ -132,6 +206,8 @@ fn make_buffer(target: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
         name.push('.');
         name.push_str(&ext.to_string_lossy());
     }
+    // `:` would make an editor's `FILE:N` hint ambiguous; the name is cosmetic.
+    let name = name.replace(':', "_");
     let path = std::env::temp_dir().join(name);
     let mut f = create_0600(&path)?;
     f.write_all(bytes)?;
@@ -280,10 +356,11 @@ pub fn edit(
         code
     };
 
+    // Line to reopen at on a re-edit; never set for the first launch.
+    let mut hint: Option<usize> = None;
     loop {
         let status = std::process::Command::new(&env.editor[0])
-            .args(&env.editor[1..])
-            .arg(&buffer)
+            .args(editor_args(&env.editor, &buffer, hint))
             .status();
         match status {
             Ok(s) if s.success() => {}
@@ -315,7 +392,10 @@ pub fn edit(
                 "(e)dit again, e(x)it without saving, (a)bort keeping the buffer?",
                 "exa",
             ) {
-                Some('e') => continue,
+                Some('e') => {
+                    hint = diags.first().map(|d| d.line);
+                    continue;
+                }
                 Some('x') => return discard(err, 1, "exited without saving"),
                 _ => return abort(err, "aborted"),
             }
@@ -338,7 +418,10 @@ pub fn edit(
                         "wexa",
                     ) {
                         Some('w') => {}
-                        Some('e') => continue,
+                        Some('e') => {
+                            hint = bad.first().copied();
+                            continue;
+                        }
                         Some('x') => return discard(err, 1, "exited without saving"),
                         _ => return abort(err, "aborted"),
                     }
@@ -362,6 +445,7 @@ pub fn edit(
                 Some('e') => {
                     // The user has been told; the new disk bytes become the baseline.
                     original = now;
+                    hint = None;
                     continue;
                 }
                 _ => return abort(err, "aborted"),
