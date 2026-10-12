@@ -233,7 +233,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 bun run build:rust
-./target/x86_64-unknown-linux-musl/release/jsonedit --version
+./target/x86_64-unknown-linux-musl/release/jsonedit --check crates/jsonedit/tests/fixtures/valid.json
 bun run sweep
 bun run sweep -- --glyphs ascii
 bun run sweep -- --colour-mode both

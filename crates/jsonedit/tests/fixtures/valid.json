@@ -1,0 +1,5 @@
+{
+  "name": "jsonedit",
+  "nested": [{"a": 1}, {"a": 2}],
+  "unicode": "\u00fc"
+}
