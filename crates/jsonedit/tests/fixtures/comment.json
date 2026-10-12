@@ -1,0 +1,4 @@
+{
+  // not allowed in strict JSON
+  "a": 1
+}

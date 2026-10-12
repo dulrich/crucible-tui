@@ -149,7 +149,12 @@ const steps: Step[] = [
   { name: "build (rust)", run: () => sh(["bun", "run", "build:rust"]) },
   {
     name: "artifact smoke (jsonedit)",
-    run: () => sh(["./target/x86_64-unknown-linux-musl/release/jsonedit", "--version"]),
+    run: () =>
+      sh([
+        "./target/x86_64-unknown-linux-musl/release/jsonedit",
+        "--check",
+        "crates/jsonedit/tests/fixtures/valid.json",
+      ]),
   },
   { name: "sweep (unicode)", run: () => sh(["bun", "run", "sweep"]) },
   { name: "sweep (ascii)", run: () => sh(["bun", "run", "sweep", "--", "--glyphs", "ascii"]) },

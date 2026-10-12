@@ -1,0 +1,6 @@
+{
+  // JSON5
+  unquoted: 'single',
+  hex: 0xFF,
+  inf: Infinity,
+}
