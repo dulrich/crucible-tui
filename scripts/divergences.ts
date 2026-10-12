@@ -568,6 +568,153 @@ function htmlCloseTagInterrupt(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// WP-9 lexer drafts (unratified): list-blockquote-interrupt, codespan-mask-skew,
+// image-alt-backtick, autolink-backslash-paren, link-label-hard-break
+// ---------------------------------------------------------------------------
+
+/**
+ * `list-blockquote-interrupt` matches a block array holding, at the same index on both sides,
+ * a `list` whose TS last item ends in a `blockquote`, where the Rust side's next block is a
+ * `blockquote` with the same children. marked 14's list item loop has no blockquote break, so a
+ * column-0 `>` line joins the item; CommonMark's block quote may interrupt a paragraph and is
+ * never a lazy line, so it ends the list.
+ */
+function listBlockquoteInterrupt(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  return ts.some((list, k) => {
+    if (list.type !== "list" || rust[k]?.type !== "list") return false;
+    const items = asArray(list.items as Node[] | undefined);
+    const tail = asArray(items[items.length - 1]?.tokens as Node[] | undefined).at(-1);
+    const next = rust[k + 1];
+    if (tail?.type !== "blockquote" || next?.type !== "blockquote") return false;
+    return JSON.stringify(tail.tokens) === JSON.stringify(next.tokens);
+  });
+}
+
+const codespanTexts = (nodes: Node[]): string[] =>
+  nodes.flatMap((n) => (n.type === "codespan" ? [s(n.text)] : Array.isArray(n.tokens) ? codespanTexts(n.tokens as Node[]) : []));
+
+/**
+ * `codespan-mask-skew` matches an inline array where both sides recognise the same code spans,
+ * in order, at least one of them holding a backtick (`` ` ``` ` ``), no single-tilde `del` or
+ * mixed tilde/backtick run is involved, and both sides spell the same characters once
+ * delimiter runs are removed — so the only difference is which emphasis delimiters paired.
+ * marked 14 masks code spans before pairing emphasis with `blockSkip`'s `` `[^`]*?` ``, which
+ * pairs single backticks whatever the run length, so a span delimited by one backtick around
+ * a longer run masks the wrong ranges and hides later `**` from the pairing.
+ */
+function codespanMaskSkew(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (ts.length === 0 || rust.length === 0) return false;
+  const a = codespanTexts(ts);
+  if (JSON.stringify(a) !== JSON.stringify(codespanTexts(rust)) || !a.some((t) => t.includes("`"))) return false;
+  if (countSingleTildeDel(ts) !== countSingleTildeDel(rust) || hasMixedRunText(ts)) return false;
+  return leafLetters(ts) === leafLetters(rust);
+}
+
+const decodeEntities = (v: string): string =>
+  v.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
+/**
+ * `image-alt-backtick` matches an inline array where the Rust side holds an `image` whose alt
+ * text carries an odd number of backticks (an unmatched one), the TS side holds no image with
+ * that alt, and a TS `text` opens with `![`. marked 14's `_inlineLabel` admits a backtick only
+ * as part of a paired `` `…` ``, so the label fails and `![` stays literal; CommonMark reads an
+ * unmatched backtick string as literal text, so the image stands.
+ */
+function imageAltBacktick(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const tsAlts = new Set(ts.filter((n) => n.type === "image").map((n) => s(n.text)));
+  if (!ts.some((n) => n.type === "text" && s(n.raw).startsWith("!["))) return false;
+  return asArray(site.rust).some(
+    (n) =>
+      n.type === "image" && !tsAlts.has(s(n.text)) && (decodeEntities(s(n.text)).match(/`/g)?.length ?? 0) % 2 === 1,
+  );
+}
+
+/**
+ * `autolink-backslash-paren` matches an inline array where the Rust side holds a bare
+ * autolink (`href === text`) containing `\(`, and the TS side holds a bare autolink whose
+ * href is a proper prefix of it ending at that backslash, followed by a `text` opening `(`.
+ * marked 14's GFM `_backpedal` admits `(` only inside a closed `\([^)]*\)`, so an unclosed `(`
+ * ends the URL; the GFM autolink extension ends an extended autolink only at whitespace or `<`
+ * and trims trailing punctuation and an unbalanced trailing `)`, never at an interior `(`.
+ */
+function autolinkBackslashParen(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  return asArray(site.rust).some((r) => {
+    const href = s(r.href);
+    if (r.type !== "link" || href !== s(r.text) || !href.includes("\\(")) return false;
+    return ts.some((t, i) => {
+      const h = s(t.href);
+      return (
+        t.type === "link" &&
+        h === s(t.text) &&
+        h.endsWith("\\") &&
+        h.length < href.length &&
+        href.startsWith(h) &&
+        href[h.length] === "(" &&
+        ts[i + 1]?.type === "text" &&
+        s(ts[i + 1]?.raw).startsWith("(")
+      );
+    });
+  });
+}
+
+const TRAILING_BREAK = /( {2,}|\\)\n$/;
+
+/**
+ * `link-label-hard-break` matches an inline array whose TS side ends in a `text` carrying a
+ * trailing hard break (`  \n` or `\\\n`) and whose Rust side is the same array with that text
+ * trimmed of the break and a `br` appended. marked 14 lexes a link label as its own source and
+ * its `br` rule's `(?!\s*$)` refuses a break at the end of that source, so the spaces and
+ * newline stay in the text; CommonMark §6.7 refuses a hard break only at the end of a block,
+ * and link text is inline content, so the break stands.
+ */
+function linkLabelHardBreak(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (rust.length !== ts.length + 1 || rust.at(-1)?.type !== "br") return false;
+  const last = ts.at(-1);
+  if (last?.type !== "text" || "tokens" in last || !TRAILING_BREAK.test(s(last.raw))) return false;
+  const trimmed = s(last.raw).replace(TRAILING_BREAK, "");
+  const prev = rust.at(-2);
+  if (prev?.type !== "text" || s(prev.raw) !== trimmed) return false;
+  return JSON.stringify(ts.slice(0, -1)) === JSON.stringify(rust.slice(0, -2));
+}
+
+/**
+ * `item-html-line` matches a list item's block array whose TS side ends `[text, html]`, the
+ * `html` one line starting `<`, and whose Rust side is the same array with those two folded
+ * into one `text` reading `<text>\n<html>`. In a list item marked 14 lexes with `top` false, so
+ * no paragraph rule runs (node_modules/marked/lib/marked.esm.js:1468) and `blockText` takes one
+ * line at a time (:991); the next line meets the `html` rule (:1417) first, which starts a
+ * type-7 block. CommonMark §4.6: a type-7 block cannot interrupt a paragraph, so the tag line
+ * is paragraph continuation (inline HTML, §6.6).
+ */
+function itemHtmlLine(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (ts.length < 2 || rust.length !== ts.length - 1) return false;
+  const html = ts.at(-1);
+  const text = ts.at(-2);
+  const merged = rust.at(-1);
+  if (html?.type !== "html" || text?.type !== "text" || merged?.type !== "text") return false;
+  const tag = s(html.text);
+  if (!tag.startsWith("<") || tag.includes("\n")) return false;
+  if (s(merged.text) !== `${s(text.text)}\n${tag}`) return false;
+  return JSON.stringify(ts.slice(0, -2)) === JSON.stringify(rust.slice(0, -1));
+}
+
+// ---------------------------------------------------------------------------
 // hljs-prototype-key
 // ---------------------------------------------------------------------------
 
@@ -750,6 +897,94 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/hljs-prototype-key.md",
     status: "live",
     predicate: hljsPrototypeKey,
+  },
+  {
+    id: "list-blockquote-interrupt",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §5.1 "Block quotes" (a block quote can interrupt a paragraph) and §5.2 ' +
+      '"List items" rule 5 / §5 laziness (a lazy line is paragraph continuation text only): ' +
+      "`1. two` followed by `> quoted` at column 0 ends the list with a top-level block quote. " +
+      "marked 14's list item loop (node_modules/marked/lib/marked.esm.js:440-444, breaks on a " +
+      "next bullet, hr, fence, heading or `<(?:[a-z].*>|!--)` only) has no blockquote break, so " +
+      "the `>` line joins the item.",
+    ratified: null,
+    witness: "tests/fixtures/divergences/list-blockquote-interrupt.md",
+    status: "live",
+    predicate: listBlockquoteInterrupt,
+  },
+  {
+    id: "codespan-mask-skew",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.1 "Code spans": a code span begins and ends with backtick strings ' +
+      "of equal length, so `` ` ``` ` `` is one span holding ```` ``` ````; §6.2 emphasis then " +
+      "pairs the `**` after it. marked 14 masks code spans before emphasis pairing with " +
+      "`blockSkip` (node_modules/marked/lib/marked.esm.js:1125, `` `[^`]*?` ``, applied at " +
+      ":1537-1538), which pairs single backticks regardless of run length; the mask lands " +
+      "between the real spans and hides the later `**` delimiters, which stay literal.",
+    ratified: null,
+    witness: "tests/fixtures/divergences/codespan-mask-skew.md",
+    status: "live",
+    predicate: codespanMaskSkew,
+  },
+  {
+    id: "image-alt-backtick",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.1 "Code spans": "if a backtick string is not closed by a matching ' +
+      'backtick string, we just have literal backticks"; §6.4 "Images": the description follows ' +
+      "the link-text rules, so `![a '`' b](pic.png)` is an image. marked 14's `_inlineLabel` " +
+      "(node_modules/marked/lib/marked.esm.js:1166) admits a backtick only inside a paired " +
+      "`` `[^`]*` ``, so an unmatched one fails the label and `![` stays literal text.",
+    ratified: null,
+    witness: "tests/fixtures/divergences/image-alt-backtick.md",
+    status: "live",
+    predicate: imageAltBacktick,
+  },
+  {
+    id: "autolink-backslash-paren",
+    kind: "lexer",
+    spec:
+      'GFM spec 0.29-gfm "Autolinks (extension)": an extended autolink runs to the next ' +
+      "whitespace or `<`; only trailing punctuation and an unbalanced trailing `)` are trimmed, " +
+      "so `https://example.com/Thing_\\(kind\\` is one link. marked 14's GFM `_backpedal` " +
+      "(node_modules/marked/lib/marked.esm.js:1228, applied at :929) admits `(` only in a closed " +
+      "`\\([^)]*\\)`, so an unclosed `(` ends the URL at the backslash before it.",
+    ratified: null,
+    witness: "tests/fixtures/divergences/autolink-backslash-paren.md",
+    status: "live",
+    predicate: autolinkBackslashParen,
+  },
+  {
+    id: "link-label-hard-break",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.7 "Hard line breaks": two or more spaces (or a backslash) before a ' +
+      "line ending are a hard break; the only exception is the end of a block, and link text " +
+      "is inline content, so `[url  \\n](url)` holds a break. marked 14 lexes the label as its " +
+      "own source and its `br` rule (node_modules/marked/lib/marked.esm.js:1118, " +
+      "`( {2,}|\\\\)\\n(?!\\s*$)`) refuses a break at that source's end, so the spaces and " +
+      "newline stay in the text.",
+    ratified: null,
+    witness: "tests/fixtures/divergences/link-label-hard-break.md",
+    status: "live",
+    predicate: linkLabelHardBreak,
+  },
+  {
+    id: "item-html-line",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §4.6 "HTML blocks": "All types of HTML blocks except type 7 may ' +
+      'interrupt a paragraph", so an indented `<img … />` line directly under a list item\'s ' +
+      "text continues that paragraph as inline HTML (§6.6). In a list item marked 14 lexes with " +
+      "`top` false: no paragraph rule (node_modules/marked/lib/marked.esm.js:1468), `blockText` " +
+      "takes one line (:991), and the `html` rule (:1417) runs before `text` (:1484), so the " +
+      "tag line becomes a separate type-7 html block.",
+    ratified: null,
+    witness: "tests/fixtures/divergences/item-html-line.md",
+    status: "live",
+    predicate: itemHtmlLine,
   },
 ];
 
