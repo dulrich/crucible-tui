@@ -43,7 +43,21 @@ function spec(entry: Divergence, ts: Node[], source: string): Node[] {
   }
   if (entry.id === "task-state-prepass") {
     const fenceBody = source.slice(source.indexOf("```text\n") + "```text\n".length).replace(/\n$/, "");
-    return ts.map((n) => (n.type === "code" ? { ...n, text: fenceBody } : n));
+    // The quoted custom-state item: comrak's relaxed tasklist recognises it (WP-7).
+    const recognise = (n: Node): Node => {
+      if (n.type !== "list") return n;
+      const items = (n.items as Node[]).map((item) => {
+        const [head, ...rest] = item.tokens as Node[];
+        if (item.task || head?.type !== "text" || !String(head.text).startsWith("[/] ")) return item;
+        const cut = (t: Node): Node => ({ ...t, raw: String(t.raw).slice(4), text: String(t.text).slice(4) });
+        const inner = head.tokens as Node[];
+        return { ...item, task: true, checked: true, tokens: [{ ...cut(head), tokens: [cut(inner[0]!), ...inner.slice(1)] }, ...rest] };
+      });
+      return { ...n, items };
+    };
+    return ts.map((n) =>
+      n.type === "code" ? { ...n, text: fenceBody } : n.type === "blockquote" ? { ...n, tokens: (n.tokens as Node[]).map(recognise) } : n,
+    );
   }
   throw new Error(`no synthetic Rust side for ${entry.id}`);
 }
@@ -110,16 +124,35 @@ describe("divergence registry — attribution", () => {
   });
 });
 
-describe("lexer-diff against the stub", () => {
-  test("the stub `mdview __parity lex` reports errors and never passes", async () => {
+describe("lexer-diff against the comrak adapter (WP-7)", () => {
+  test("`mdview __parity lex` matches the TS tokens on a fixture at both tiers", async () => {
     const mdview = buildDefaultMdview();
     const summary = await runLexerDiff({
       files: [resolve(REPO_ROOT, "tests/fixtures/simple.md")],
       tiers: ["unicode", "ascii"],
       mdview,
     });
-    expect(summary.errors).toBe(2);
-    expect(summary.pairs).toBe(0);
-    expect(summary.ok).toBe(false);
+    expect(summary.errors).toBe(0);
+    expect(summary.pairs).toBe(2);
+    expect(summary.disallowed).toBe(0);
+    expect(summary.ok).toBe(true);
   }, 300_000);
+
+  test("the task-state-prepass witness is attributed, never disallowed, against the real adapter", async () => {
+    const mdview = buildDefaultMdview();
+    const summary = await runLexerDiff({
+      files: [resolve(REPO_ROOT, "tests/fixtures/divergences/task-state-prepass.md")],
+      tiers: ["unicode", "ascii"],
+      mdview,
+    });
+    expect(summary.disallowed).toBe(0);
+    expect(summary.errors).toBe(0);
+    expect(summary.attributed["task-state-prepass"]).toBeGreaterThanOrEqual(4);
+  }, 300_000);
+
+  test("an equal-length array whose node types differ is one site, not positional pairs", () => {
+    const t = (raw: string): Node => ({ type: "text", raw, text: raw });
+    const sites = diffTokens([t("a"), { type: "codespan", text: "b" }], [t("a"), t("b")], "unicode");
+    expect(sites.map((x) => x.path)).toEqual(["$"]);
+  });
 });
