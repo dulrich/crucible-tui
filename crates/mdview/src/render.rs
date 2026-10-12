@@ -1,4 +1,4 @@
-//! The render entry point, ported from `src/render.ts` (WP-3 of `plans/mdview-rust-port.md`):
+//! The render entry point, ported from `TS_BASELINE` `src/render.ts` (WP-3 of `plans/mdview-rust-port.md`):
 //! the code sentinel, `wrapCode`, the code-range walk, the post-compose passes and
 //! `renderDocumentDetailed`'s orchestration.
 //!
@@ -7,8 +7,8 @@
 //! parity server reports `unimplemented: <feature>` and `render-diff` counts it as an error.
 //!
 //! Five visitors — `list`, `text`, `paragraph`, `heading`, `blockquote` — share one render's
-//! layout state and live in `list_layout.rs` (`src/list-layout.ts`); the renderer object here
-//! delegates to them, exactly as `src/render.ts` assigns `createListTextLayout`'s methods.
+//! layout state and live in `list_layout.rs` (`TS_BASELINE` `src/list-layout.ts`); the renderer object here
+//! delegates to them, exactly as `TS_BASELINE` `src/render.ts` assigns `createListTextLayout`'s methods.
 
 use std::rc::Rc;
 use std::sync::LazyLock;
@@ -29,21 +29,21 @@ use crate::walk::{self, R, Visitors};
 use crate::width::{Measure, measure_for};
 use crate::wikilink;
 
-/// Glyph capability tier (mirrors `src/glyphs.ts`'s `GlyphTier`).
+/// Glyph capability tier (mirrors `TS_BASELINE` `src/glyphs.ts`'s `GlyphTier`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     Unicode,
     Ascii,
 }
 
-/// East Asian Ambiguous width (mirrors `src/width.ts`'s `AmbiguousWidth`).
+/// East Asian Ambiguous width (mirrors `TS_BASELINE` `src/width.ts`'s `AmbiguousWidth`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ambiguous {
     Narrow,
     Wide,
 }
 
-/// How much SGR a render emits (mirrors `src/colour.ts`'s `SgrMode`).
+/// How much SGR a render emits (mirrors `TS_BASELINE` `src/colour.ts`'s `SgrMode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sgr {
     Full,
@@ -177,7 +177,7 @@ fn strip_emoji_trailing_space(body: &str, code_ranges: &[(usize, usize)]) -> Str
         .join("\n")
 }
 
-/// The owned renderer object: every visitor `src/render.ts` installs, over one layout.
+/// The owned renderer object: every visitor `TS_BASELINE` `src/render.ts` installs, over one layout.
 pub(crate) struct Renderer<'a> {
     layout: &'a LayoutContext,
     /// `createListTextLayout(layout, SENTINEL)`: the five layout-state visitors.
@@ -219,7 +219,7 @@ impl Visitors for Renderer<'_> {
     }
 
     fn table(&self, token: &Token) -> R {
-        // `src/render.ts:813`: the budget is `max(1, targetWidth - prefix.width())`.
+        // `TS_BASELINE` `src/render.ts:813`: the budget is `max(1, targetWidth - prefix.width())`.
         let Token::Table {
             header,
             rows,
@@ -367,7 +367,7 @@ pub fn render(
             &options.highlight_as,
             Rc::new(SyntectSupport),
         ),
-        // `createWikiLinkResolver(resolve(file))`, only under hyperlinks (`src/cli.ts`); the
+        // `createWikiLinkResolver(resolve(file))`, only under hyperlinks (`TS_BASELINE` `src/cli.ts`); the
         // path arrives already absolute (`cli.rs`, `parity.rs`).
         resolve_wiki_link: options
             .policy

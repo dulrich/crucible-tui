@@ -1,12 +1,12 @@
 //! Display width: the owned port of `string-width@8.2.2` (`node_modules/string-width/index.js`)
-//! and of `src/width.ts`'s `Measure` around it.
+//! and of `TS_BASELINE` `src/width.ts`'s `Measure` around it.
 //!
 //! Not `unicode-width`: that crate disagrees with string-width on ambiguous characters
 //! (spike S5). The data tables are generated (`width/tables.rs`, `bun run
 //! scripts/gen-width-tables.ts`) from two independent inputs — the engine's `\p{…}` classes
 //! and `get-east-asian-width@1.6.0`'s `lookup.js` — and this file is the algorithm.
 //!
-//! The probe and its cache are `src/width.ts` too, but live in `probe.rs`.
+//! The probe and its cache are `TS_BASELINE` `src/width.ts` too, but live in `probe.rs`.
 //!
 //! Two seams this port documents rather than hides:
 //! - **Segmentation.** TS segments with ICU (`Intl.Segmenter`), this with
@@ -27,7 +27,7 @@ use unicode_segmentation::UnicodeSegmentation;
 pub use crate::render::Ambiguous as AmbiguousWidth;
 use crate::text::utf16_len;
 
-/// `ansi-regex@6.2.2`'s pattern, which both `src/width.ts`'s `ANSI_SEQUENCE` and
+/// `ansi-regex@6.2.2`'s pattern, which both `TS_BASELINE` `src/width.ts`'s `ANSI_SEQUENCE` and
 /// `strip-ansi` use. `\d` is spelled `[0-9]` (the `regex` crate's `\d` is Unicode).
 static ANSI_SEQUENCE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -209,14 +209,14 @@ pub fn string_width(input: &str, ambiguous_is_narrow: bool) -> usize {
     width
 }
 
-/// The cap `src/width.ts` puts on each per-cluster cache before clearing it.
+/// The cap `TS_BASELINE` `src/width.ts` puts on each per-cluster cache before clearing it.
 const WIDTH_CACHE_LIMIT: usize = 4096;
 
 thread_local! {
     static CACHES: RefCell<[HashMap<String, usize>; 2]> = RefCell::new([HashMap::new(), HashMap::new()]);
 }
 
-/// A display-width ruler with its ambiguous mode attached (`src/width.ts`'s `Measure`).
+/// A display-width ruler with its ambiguous mode attached (`TS_BASELINE` `src/width.ts`'s `Measure`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Measure {
     pub ambiguous: AmbiguousWidth,

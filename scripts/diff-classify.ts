@@ -22,7 +22,6 @@
 import { sha256Hex } from "./hash";
 import { CODE_CONTENT_CLAIMS } from "./divergences";
 import {
-  POLICIES,
   emojiOf,
   policyOf,
   type AmbiguousModeName,
@@ -41,7 +40,7 @@ import {
 /**
  * The text covered by `codeRanges`, extracted by 1-based inclusive line range and
  * concatenated in document order, newline-joined. Two sources feed `codeRanges` in
- * `src/render.ts` — fenced code blocks, and a frontmatter block that failed to parse
+ * `TS_BASELINE` `src/render.ts` — fenced code blocks, and a frontmatter block that failed to parse
  * and is echoed raw — and both are "reproduced verbatim, may not reflow", which is
  * exactly what this channel exists to pin. An empty `codeRanges` yields `""`.
  */
@@ -133,7 +132,7 @@ export async function computeComboRecord(
     const spans = measurer.scan(text);
     const echoCount = Math.min(
       codeRanges.length,
-      measurer.echoRangeCount(request.source, width, ambiguous, POLICIES[policy].sgr),
+      measurer.echoRangeCount(output),
     );
     const { echo, fence } = splitRanges(codeRanges, echoCount);
     const lines = text.split("\n");
@@ -442,7 +441,7 @@ const DETECTOR_NAMES: Array<keyof DetectorCounts> = ["orphans", "overIndent", "c
 
 // A composite group key's field separator, joining width/tier/ambiguous-mode below.
 // `String.fromCharCode(0)` rather than a raw NUL byte typed into the source, for the
-// same reason `src/render.ts`'s `SENTINEL` is spelled this way: a literal NUL embedded
+// same reason `TS_BASELINE` `src/render.ts`'s `SENTINEL` is spelled this way: a literal NUL embedded
 // in this file makes it binary to `grep`/`rg` — both skip it silently without `-a`/
 // `--text`, so a search for a symbol that is right here returns nothing. A space would
 // not do instead: `tier` and `ambiguous` are themselves plain words with no embedded

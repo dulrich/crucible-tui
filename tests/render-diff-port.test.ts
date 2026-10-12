@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { Marked } from "marked";
 
 // WP-1 of `plans/mdview-rust-port.md`: the differential's new axes and kinds — the policy/emoji
 // axes, D-C's channels, the non-vacuity requirement, the `ts-server:` transport and the stub
@@ -21,11 +20,6 @@ import {
   type ComboRecord,
   type RenderRequest,
 } from "../scripts/revision";
-import { splitFrontmatter } from "../src/frontmatter";
-import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
-import { DEL_TOKENIZER } from "../src/inline";
-import { lexBody, preprocessBody } from "../src/render";
-import { wikiLinkExtension } from "../src/wikilink";
 
 const REPO_ROOT = process.cwd();
 const FIXTURES = [
@@ -157,34 +151,6 @@ describe("render-diff flags", () => {
 });
 
 describe("transports", () => {
-  test("ts-server: records are identical to the in-process TS handle across P0–P4", async () => {
-    const measurer = await loadMeasurer(REPO_ROOT);
-    const inProcess = await loadRevision(REPO_ROOT, REPO_ROOT);
-    const server = await loadRevision(`ts-server:${REPO_ROOT}`, REPO_ROOT);
-    try {
-      expect(server.kind).toBe("ts-server");
-      let compared = 0;
-      for (const relative of FIXTURES) {
-        const path = join(REPO_ROOT, relative);
-        const source = await readFile(path, "utf8");
-        for (const policy of POLICY_NAMES) {
-          const request = { source, path, width: 80, tier: "unicode", ambiguous: "narrow", policy, emoji: "default" } as const;
-          const [a, b] = await Promise.all([
-            computeComboRecord(inProcess, measurer, request),
-            computeComboRecord(server, measurer, request),
-          ]);
-          expect(a.error).toBeNull();
-          expect(b.error).toBeNull();
-          expect(b.record).toEqual(a.record!);
-          compared += 1;
-        }
-      }
-      expect(compared).toBe(FIXTURES.length * POLICY_NAMES.length);
-    } finally {
-      await Promise.all([inProcess.close(), server.close()]);
-    }
-  }, 30_000);
-
   test("a server that dies or errors rejects its requests rather than hanging", async () => {
     const request = { source: "", width: 80, tier: "unicode", ambiguous: "narrow", policy: { sgr: "none", hyperlinks: false, tmux: false } } as const;
     const dead = spawnJsonlServer([process.execPath, "-e", "process.exit(3)"], { label: "dead" });
@@ -197,10 +163,12 @@ describe("transports", () => {
     await complaining.close();
   }, 15_000);
 
-  test("rust: the real server renders and pairs every combo (it was a stub that errored until WP-4b/5b/6a)", async () => {
+  test("rust: the real server renders and pairs every combo, identically against itself", async () => {
+    // The TypeScript side this paired with was deleted at WP-9 (`TS_BASELINE` = `c097c66`);
+    // the same handle on both sides is the null run, so every policy must pair class-A.
     const measurer = await loadMeasurer(REPO_ROOT);
-    const ts = await loadRevision(REPO_ROOT, REPO_ROOT);
     const rust = await loadRevision(`rust:${REPO_ROOT}`, REPO_ROOT);
+    const ts = rust;
     try {
       expect(rust.kind).toBe("rust");
       const path = join(REPO_ROOT, FIXTURES[0]!);
@@ -227,24 +195,9 @@ describe("transports", () => {
       // pair agrees is the R-gate's question (and D-A/D-C attribution), not this test's.
       expect(errors).toBe(0);
       expect(pairs.length).toBe(POLICY_NAMES.length);
-      expect(classifyDiffs(pairs, "a").diffedCombos).toBeGreaterThanOrEqual(0);
+      expect(classifyDiffs(pairs, "a").diffedCombos).toBe(0);
     } finally {
-      await Promise.all([ts.close(), rust.close()]);
+      await rust.close();
     }
   }, 600_000);
-});
-
-describe("lexBody", () => {
-  test("is exactly preprocessBody, then one Marked with the wiki-link extension and the owned del tokenizer, lexed once", async () => {
-    for (const relative of FIXTURES) {
-      const { body } = splitFrontmatter(await readFile(join(REPO_ROOT, relative), "utf8"));
-      for (const glyphs of [UNICODE_GLYPHS, ASCII_GLYPHS]) {
-        const instance = new Marked();
-        instance.use({ extensions: [wikiLinkExtension] });
-        instance.use({ tokenizer: DEL_TOKENIZER });
-        const expected = instance.lexer(preprocessBody(body, glyphs));
-        expect(JSON.stringify(lexBody(body, glyphs))).toBe(JSON.stringify(expected));
-      }
-    }
-  });
 });

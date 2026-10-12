@@ -1,4 +1,4 @@
-//! The list/text layout state machine, ported from `src/list-layout.ts` (WP-4a of
+//! The list/text layout state machine, ported from `TS_BASELINE` `src/list-layout.ts` (WP-4a of
 //! `plans/mdview-rust-port.md`): the five visitors that share one render's layout state —
 //! `list`, `text`, `paragraph`, `heading` and `blockquote` — and the module-level helpers only
 //! they call (`isHardBoundary`, `coalesceTightItemLines`, `currentListBudget`,

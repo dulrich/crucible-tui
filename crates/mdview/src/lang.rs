@@ -1,4 +1,4 @@
-//! Fence-language aliases and the supported-language fallback, ported from `src/lang.ts`.
+//! Fence-language aliases and the supported-language fallback, ported from `TS_BASELINE` `src/lang.ts`.
 //!
 //! `supportsLanguage` is the highlighter's (highlight.js in TS, syntect at WP-6), so it is a
 //! parameter here: [`LanguageSupport`]. Until WP-6 fills it, [`AliasOnlySupport`] answers

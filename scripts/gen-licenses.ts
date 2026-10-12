@@ -17,7 +17,7 @@
  * notice file. Neither package is in this tree any more. `cli-table3` left
  * with `marked-terminal` (WP-6 of `plans/marked-terminal-replacement.md`),
  * and `@colors/colors` left at WP-2 of `plans/colour-policy.md`, when
- * `src/table.ts`'s border/head styling moved onto `src/style.ts`'s committed
+ * `TS_BASELINE` `src/table.ts`'s border/head styling moved onto `src/style.ts`'s committed
  * style table — so the direct-ownership note this header used to carry about
  * both is history, not current fact. The rule stays: any dependency may do
  * what `cli-table3` did.
@@ -148,8 +148,11 @@ function visit(name: string, fromDir: string): void {
   }
 }
 
-const rootPkg = readJson(join(ROOT, "package.json")) as { dependencies: Record<string, string> };
-for (const depName of Object.keys(rootPkg.dependencies)) {
+// Empty since WP-9 of `plans/mdview-rust-port.md`: the renderer is Rust, and every npm package
+// left is a devDependency of the scripts. The walk stays, so a runtime dependency added later
+// is noticed rather than silently unlisted.
+const rootPkg = readJson(join(ROOT, "package.json")) as { dependencies?: Record<string, string> };
+for (const depName of Object.keys(rootPkg.dependencies ?? {})) {
   visit(depName, ROOT);
 }
 
@@ -366,7 +369,42 @@ for (const grammar of grammars) {
   lines.push("-".repeat(48));
 }
 
-const counts = `${packages.length} npm packages + ${crates.length} crates + ${grammars.length} vendored grammars`;
+// --- Vendored notices (crates/mdview/notices/) -------------------------------
+// Code and data ported or generated into the binary from packages outside the Cargo closure
+// (string-width, get-east-asian-width, node-emoji/emojilib, highlight.js's alias names, the
+// Unicode data licence, two-face's syntax licences). `gen-licenses` never walks
+// devDependencies, so none of these would carry over on their own; the directory's README.md
+// says what each file covers.
+const NOTICE_DIR = join(ROOT, "crates", "mdview", "notices");
+const notices = readdirSync(NOTICE_DIR)
+  .filter((f) => f.endsWith(".LICENSE.txt"))
+  .sort()
+  .map((f) => ({ name: f.slice(0, -".LICENSE.txt".length), text: readFileSync(join(NOTICE_DIR, f), "utf8").trimEnd() }));
+
+lines.push("");
+lines.push("=".repeat(48));
+lines.push("Vendored notices — mdview");
+lines.push("=".repeat(48));
+lines.push("");
+lines.push(
+  "Licence texts for code and tables ported or generated into the mdview binary from sources " +
+    "outside its Cargo closure; crates/mdview/notices/README.md records what each covers.",
+);
+lines.push("");
+lines.push(`${notices.length} vendored notices.`);
+lines.push("");
+lines.push("-".repeat(48));
+
+for (const notice of notices) {
+  lines.push("");
+  lines.push(notice.name);
+  lines.push("");
+  lines.push(notice.text);
+  lines.push("");
+  lines.push("-".repeat(48));
+}
+
+const counts = `${packages.length} npm packages + ${crates.length} crates + ${grammars.length} vendored grammars + ${notices.length} vendored notices`;
 const output = `${lines.join("\n")}\n`;
 const targetPath = join(ROOT, "THIRD-PARTY-LICENSES.txt");
 

@@ -4,24 +4,16 @@
  * verification entrypoint. `bun run verify` is the one command AGENTS.md's
  * Run section and `.github/workflows/ci.yml` both call.
  *
- * Every step below runs the same command that already existed for it before
- * WP-1 (see AGENTS.md's Run section for the byte-identical list) plus three
- * gates that existed but were not wired into any single chain: the compiled
- * build, a smoke of the built artifact, and license freshness (in `--check`
- * mode, which never writes `THIRD-PARTY-LICENSES.txt`).
- *
- * The Cargo workspace (WP-1 of `plans/jsonedit.md`) adds five steps after
- * the mdview self-smoke and before the sweeps: `cargo fmt --check`, clippy
- * with warnings denied, `cargo test`, the static musl `bun run build:rust`
- * (via `cargo auditable`), and a smoke of the built jsonedit artifact. Every
- * graph-consuming cargo call runs `--locked`. `verify` never runs `cargo
- * install` or `rustup` either — toolchain setup stays outside, like `bun
- * install`.
- *
- * The Rust port (`plans/mdview-rust-port.md`) adds nine steps after the jsonedit
- * smoke: three generated-table freshness checks, the T0 frontmatter census,
- * table-allocator diff and lexer diff, the T0 render differential under P0/P1 and P2, and the CLI
- * differential against the musl mdview binary `build (rust)` produced.
+ * The renderer is Rust since WP-9 of `plans/mdview-rust-port.md` (the TypeScript renderer's
+ * last commit is `TS_BASELINE` = `c097c66`), so the chain is: the scripts' own typecheck and
+ * lint, the Cargo gates (`cargo fmt --check`, clippy with warnings denied, `cargo test`), the
+ * static musl `bun run build:rust` (via `cargo auditable`) and a smoke of both built artifacts,
+ * then `bun test tests` — after the build, because the instruments' tests drive the built
+ * mdview through `mdview __parity` — license freshness (in `--check` mode, which never writes
+ * `THIRD-PARTY-LICENSES.txt`), the three generated-table freshness checks, a Rust-vs-Rust
+ * render differential against `HEAD` over the T0 gate corpus, the sweeps, the colour axis, and
+ * the security scan. Every graph-consuming cargo call runs `--locked`; `verify` never runs
+ * `cargo install`, `rustup` or `bun install`.
  *
  * Runs fail-fast, in order, and prints which step failed. `verify` never
  * runs `bun install` — local floats (`bun install`), CI freezes (`bun
@@ -130,21 +122,6 @@ function runSecurityStep(): StepResult {
 const steps: Step[] = [
   { name: "typecheck", run: () => sh(["bun", "run", "typecheck"]) },
   { name: "lint", run: () => sh(["bun", "run", "lint"]) },
-  { name: "test", run: () => sh(["bun", "test", "tests"]) },
-  { name: "build", run: () => sh(["bun", "run", "build"]) },
-  {
-    name: "artifact smoke",
-    run: () => sh(["./dist/mdview", "--check", "--width", "80", "tests/fixtures/wide-table.md"]),
-  },
-  {
-    name: "license freshness",
-    run: () => sh(["bun", "run", "scripts/gen-licenses.ts", "--check"]),
-  },
-  {
-    name: "self-smoke (--check)",
-    run: () =>
-      sh(["bun", "run", "src/cli.ts", "--check", "--width", "80", "tests/fixtures/wide-table.md"]),
-  },
   { name: "cargo fmt", run: () => sh(["cargo", "fmt", "--all", "--check"]) },
   {
     name: "cargo clippy",
@@ -152,6 +129,11 @@ const steps: Step[] = [
   },
   { name: "cargo test", run: () => sh(["cargo", "test", "--workspace", "--locked"]) },
   { name: "build (rust)", run: () => sh(["bun", "run", "build:rust"]) },
+  {
+    name: "artifact smoke (mdview)",
+    run: () =>
+      sh(["./target/x86_64-unknown-linux-musl/release/mdview", "--check", "--width", "80", "tests/fixtures/wide-table.md"]),
+  },
   {
     name: "artifact smoke (jsonedit)",
     run: () =>
@@ -161,33 +143,24 @@ const steps: Step[] = [
         "crates/jsonedit/tests/fixtures/valid.json",
       ]),
   },
-  // --- The Rust port's gates (`plans/mdview-rust-port.md`; wired by the orchestrator per
-  // audit finding E2, after the WP-9 entry gate passed). Generated Rust tables must match
-  // their generators; the frontmatter census and the table allocator agree on T0; the T0
-  // render differential (TS working tree vs the Rust renderer fed marked's tokens) is
-  // class-A or registry-attributed, with non-vacuity counters required under P2; and the
-  // CLI differential runs against the musl binary `build (rust)` just produced. T1 and T2
-  // stay opt-in: their manifests are not in this repo.
+  { name: "test", run: () => sh(["bun", "test", "tests"]) },
+  {
+    name: "license freshness",
+    run: () => sh(["bun", "run", "scripts/gen-licenses.ts", "--check"]),
+  },
+  // Generated Rust tables must match their generators (audit item E3: each generator's npm
+  // input is a pinned devDependency, so the generated file keeps a durable source).
   { name: "emoji table freshness", run: () => sh(["bun", "run", "scripts/gen-emoji-table.ts", "--check"]) },
   { name: "width table freshness", run: () => sh(["bun", "run", "scripts/gen-width-tables.ts", "--check"]) },
   { name: "hljs map freshness", run: () => sh(["bun", "run", "scripts/gen-hljs-map.ts", "--check"]) },
-  { name: "frontmatter census (T0)", run: () => sh(["bun", "run", "scripts/frontmatter-census.ts", "--no-t1"]) },
-  { name: "table allocator diff (T0)", run: () => sh(["bun", "run", "scripts/table-alloc-diff.ts"]) },
-  { name: "lexer diff (T0)", run: () => sh(["bun", "run", "scripts/lexer-diff.ts"]) },
   {
-    name: "render diff (T0, P0/P1)",
+    // The Rust-vs-Rust regression differential over the T0 gate corpus, every policy: the
+    // working tree against `HEAD`, both built with `parity-tokens` into the parity cache.
+    // Class-A identical, or a registry-attributed diff, or the step fails.
+    name: "render diff (T0, rust:HEAD vs rust:.)",
     run: () =>
-      sh(["bun", "run", "scripts/render-diff.ts", "--rev-a", ".", "--rev-b", "rust:.", "--input", "tokens", "--policy", "P0,P1"]),
+      sh(["bun", "run", "scripts/render-diff.ts", "--rev-a", "rust:HEAD", "--rev-b", "rust:.", "--policy", "P0,P1,P2,P3,P4", "--require-nonzero", "sgr,fences"]),
   },
-  {
-    name: "render diff (T0, P2)",
-    run: () =>
-      sh([
-        "bun", "run", "scripts/render-diff.ts", "--rev-a", ".", "--rev-b", "rust:.", "--input", "tokens",
-        "--policy", "P2", "--require-nonzero", "sgr,fences",
-      ]),
-  },
-  { name: "cli diff", run: () => sh(["bun", "run", "scripts/cli-diff.ts"]) },
   { name: "sweep (unicode)", run: () => sh(["bun", "run", "sweep"]) },
   { name: "sweep (ascii)", run: () => sh(["bun", "run", "sweep", "--", "--glyphs", "ascii"]) },
   {

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { hasSequences, link, sanitizeHref, scan, stripSequences, type SpanKind } from "../src/ansi";
-import { NARROW_MEASURE, WIDE_MEASURE } from "../src/width";
+import { hasSequences, scan, stripSequences, type SpanKind } from "../scripts/measure/ansi";
+import { NARROW_MEASURE, WIDE_MEASURE } from "../scripts/measure/width";
+import { osc8Link as link } from "./helpers/osc8";
 
-// Control bytes are built, never pasted — the same convention `src/ansi.ts` itself
+// Control bytes are built, never pasted — the same convention `TS_BASELINE` `src/ansi.ts` itself
 // follows, and for the same reason: a literal ESC in a source file is invisible in every
 // editor and every diff.
 const ESC = String.fromCharCode(0x1b);
@@ -181,46 +182,5 @@ describe("stripSequences and hasSequences", () => {
     const text = `${ESC}[1ma${link("b", "https://example.invalid", true)}c${ESC}[2Jd`;
     expect(stripSequences(text)).toBe("abcd");
     expect(stripSequences(text)).toBe(scan(text).visible);
-  });
-});
-
-describe("link — the owned OSC-8 emitter (ansi-escapes@7.3.0, base.js:141-145)", () => {
-  test("the plain shape is the transcribed one, byte for byte", () => {
-    expect(link("label", "https://example.invalid/a")).toBe(
-      `${ESC}]8;;https://example.invalid/a${BEL}label${ESC}]8;;${BEL}`,
-    );
-  });
-
-  test("the tmux envelope wraps both halves and doubles every ESC (base.js:18-27)", () => {
-    expect(link("label", "https://example.invalid")).not.toContain(`${ESC}Ptmux;`);
-    expect(link("label", "https://example.invalid", true)).toBe(
-      `${ESC}Ptmux;${ESC}${ESC}]8;;https://example.invalid${BEL}${ESC}\\label` +
-        `${ESC}Ptmux;${ESC}${ESC}]8;;${BEL}${ESC}\\`,
-    );
-  });
-
-  test("tmux-ness is an argument, never an environment read", () => {
-    // The point of taking this over from `ansi-escapes`, whose `isTmux` was a
-    // `process.env` read at module load: two calls in one process, two answers.
-    expect(link("a", "u", false)).not.toBe(link("a", "u", true));
-  });
-
-  test("the destination is sanitized at emission — Decision 1", () => {
-    // A document's own href is the one place content is interpolated into a control
-    // sequence. An authored BEL would otherwise terminate the sequence early and ship the
-    // rest of the URL to the screen as text.
-    const hostile = `https://example.invalid/${BEL}x${ESC}]0;title${BEL}${ST}`;
-    expect(sanitizeHref(hostile)).toBe("https://example.invalid/x]0;title");
-    const emitted = link("label", hostile);
-    expect(emitted).toBe(`${ESC}]8;;https://example.invalid/x]0;title${BEL}label${ESC}]8;;${BEL}`);
-    expect(kinds(emitted)).toEqual(["osc8", "text", "osc8"]);
-    expect(scan(emitted).malformed).toBe(false);
-    expect(scan(emitted).visible).toBe("label");
-  });
-
-  test("a sanitized hostile href stays one span under tmux too", () => {
-    const emitted = link("label", `https://example.invalid/${ESC}\\`, true);
-    expect(kinds(emitted)).toEqual(["dcs", "text", "dcs"]);
-    expect(scan(emitted).visible).toBe("label");
   });
 });

@@ -166,15 +166,16 @@ afterAll(async () => {
 });
 
 describe("scripts/ import graph", () => {
-  test("the graph is non-empty and reaches src/ — a checker that resolved nothing would pass everything", () => {
+  test("the graph is non-empty and reaches scripts/measure/ — a checker that resolved nothing would pass everything", () => {
     expect(seeds.length).toBeGreaterThan(5);
     const reached = [...edges.keys()].map(rel);
     expect(reached).toContain(join("scripts", "corpus.ts"));
     expect(reached).toContain(join("scripts", "sweep.ts"));
     expect(reached).toContain(join("scripts", "render-diff.ts"));
-    // Following relative imports out of `scripts/` must actually cross into `src/`, or the
-    // resolver is silently dropping every `../src/...` edge.
-    expect(reached.some((path) => path.startsWith(`src${"/"}`))).toBe(true);
+    // Following relative imports must actually reach `scripts/measure/` (the measurement modules
+    // that left `src/` at WP-9 of `plans/mdview-rust-port.md`), or the
+    // resolver is silently dropping every subdirectory edge.
+    expect(reached.some((path) => path.startsWith(join("scripts", "measure") + "/"))).toBe(true);
   });
 
   test("every relative import under scripts/ resolves to a file that exists", () => {

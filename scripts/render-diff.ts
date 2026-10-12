@@ -41,8 +41,8 @@
  * exports its `src/` into a fresh `mkdtemp` directory outside the repo tree, with
  * `node_modules` symlinked in
  * from the invoking checkout so `marked`, `marked-terminal`, `string-width`, etc.
- * resolve. `src/render.ts`, `src/detectors.ts`, `src/overflow.ts`, `src/glyphs.ts`
- * and `src/width.ts` are then imported **by absolute path**, once per revision, so
+ * resolve. `TS_BASELINE` `src/render.ts`, `src/detectors.ts`, `src/overflow.ts`, `src/glyphs.ts`
+ * and `TS_BASELINE` `src/width.ts` are then imported **by absolute path**, once per revision, so
  * two different versions of the renderer coexist in one process without a second
  * `bun test`-style subprocess per file. This is the first of the two prior-art
  * shapes named in this WP's brief (worktree copy + absolute-path import + symlinked
@@ -119,7 +119,6 @@ import {
 } from "./diff-classify";
 import {
   EMOJI_AXES,
-  POLICIES,
   POLICY_NAMES,
   emojiOf,
   loadMeasurer,
@@ -137,7 +136,6 @@ import {
 } from "./revision";
 import { attribute, type RenderSide, type RenderSite } from "./divergences";
 import { DEFAULT_WIDTHS, parseWidths } from "./sweep-options";
-import { normalizeTokens } from "./token-schema";
 
 // --- Baseline artifact ------------------------------------------------------------
 
@@ -550,7 +548,7 @@ async function visitFiles(
       }
       const tokens: FileVisit["tokens"] = {};
       if (options.input === "tokens") {
-        for (const tier of axes.tiers) tokens[tier] = normalizeTokens(measurer.lexBody(source, tier));
+        for (const tier of axes.tiers) tokens[tier] = measurer.lexBody(source, tier);
       }
       await onFile({ file, source, tokens });
     }
@@ -632,7 +630,7 @@ async function renderPaired(
         if (a.record && b.record && a.output && b.output && b.record.fenceStrippedSha !== undefined) {
           const echoCount = Math.min(
             a.output.codeRanges.length,
-            measurer.echoRangeCount(visit.source, combo.width, combo.ambiguous, POLICIES[combo.policy].sgr),
+            measurer.echoRangeCount(a.output),
           );
           b.record.fencePrefixOk = fencePrefixesOk(a.output, b.output, echoCount, measurer);
         }

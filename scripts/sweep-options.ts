@@ -23,7 +23,7 @@
  * 80, 100 and 160 are kept rather than swapped out: they are the recorded baseline for
  * every dated full-corpus run in the private archive's `measurements/`, and 80 is the
  * narrowest case the table allocator has to survive (it is where the accepted-by-design
- * many-column overflows in `src/AGENTS.md` live). Adding widths only ever adds combos.
+ * many-column overflows in `crates/mdview/AGENTS.md` live). Adding widths only ever adds combos.
  */
 export const DEFAULT_WIDTHS = [80, 100, 116, 160, 346];
 

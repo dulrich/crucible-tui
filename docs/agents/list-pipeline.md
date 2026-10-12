@@ -1,7 +1,9 @@
 # The list pipeline — renderer reference
 
-*Reference record for `src/`, moved out of `src/AGENTS.md` at WP-4 of
-`plans/docs-and-memory-curation.md`. **`src/AGENTS.md` is the parent contract — read it
+> **Historical as of `TS_BASELINE` (`c097c66`).** The TypeScript renderer this record cites as live code was deleted at WP-9 of `plans/mdview-rust-port.md`; its `src/*.ts` paths name that sha's tree, and the Rust port of each module is `crates/mdview/src/<name>.rs`. The measurements stand as recorded.
+
+*Reference record for `src/`, moved out of `crates/mdview/AGENTS.md` at WP-4 of
+`plans/docs-and-memory-curation.md`. **`crates/mdview/AGENTS.md` is the parent contract — read it
 first**, and read its "How to read this file" for the two conventions everything below is
 written under: every requirement is stated with the measurement that established it, and a
 citation like `index.js:539-578` is historical evidence from `marked-terminal@7.3.0`
@@ -24,7 +26,7 @@ landed **byte-identical**: not one measurement, guard, ordering or conditional i
 changed, which is why the text below is left as it was written rather than re-edited around a
 file rename. `src/render.ts` still owns lexing, the `LayoutContext`, visitor assembly, the
 walk, the code-range sentinel (`wrapCode`/`extractCodeRanges`) and the post-processing pass.
-See `src/AGENTS.md`, "What each renderer method must do", for the live ownership table.
+See `crates/mdview/AGENTS.md`, "What each renderer method must do", for the live ownership table.
 
 ## The list pipeline
 
@@ -292,7 +294,7 @@ punctuation-leading artifact the older plan recorded. Witnessed at
 evidence the older plan pointed a future package at and that turned out to live in an
 archive no session can open. **Not fixed here either**: the guard is correct for the
 reason it exists, decoding earlier would reopen the emoji-substitution-inside-verbatim-
-content hazard `COLON_REPLACER` exists to prevent (see "The sentinels" in `src/AGENTS.md`,
+content hazard `COLON_REPLACER` exists to prevent (see "The sentinels" in `crates/mdview/AGENTS.md`,
 "`COLON_REPLACER` is a first-class owned mechanism"), and a repair needs the guard to know an item's
 *true* text column rather than merely which grid column it must avoid — the same
 missing primitive `LIST_LINE_PREFIX` lacks, so the repair this witness is waiting for
@@ -411,6 +413,8 @@ to date), and a coloured one still keeps it. **Reproducing a defect inside a fen
 contract; fixing it is forbidden.** Neutering this exception — the "obvious" simplification of
 claiming every line on stripped bytes — immediately produces **20 class-C violations**.
 
+> **Now governed by D-C's `hl-fence-claim` (lockstep, WP-9 of `plans/mdview-rust-port.md`).** The Rust port keeps the raw-byte claim for fence lines, but its highlighter is syntect rather than highlight.js 10.7.3, so *which* coloured fence lines start with an escape — and therefore keep their pad — differs from the TypeScript renderer's. D-C, ratified with the plan's approval on 2026-10-11, admits exactly that difference: the registry's `hl-fence-claim` entry (`scripts/divergences.ts`, witness `tests/fixtures/divergences/hl-fence-claim.md`) attributes a list-embedded fence line whose pad moved because its leading escape did. Colourless output is unchanged, and the 20-violation measurement above stands as the TypeScript renderer's, as of `TS_BASELINE` (`c097c66`).
+
 Related and settled the same way: `isPointedLine`'s vocabulary stays the two literals `\*` and
 `\d+\.` and nothing else, the indent stays an **exact** multiple of four, and no space is
 required after the marker. Widening it to the glyph tier's bullets would claim a fence line
@@ -438,7 +442,7 @@ Two things it must never do, **both invisible to every gate `bun run verify` run
 of which it did until WP-2f:
 
 **It must never rewrite a line that belongs to a fenced block.** The rendering policy
-(`src/AGENTS.md`) is unqualified — fenced code is never rewritten, because the corpus's
+(`crates/mdview/AGENTS.md`) is unqualified — fenced code is never rewritten, because the corpus's
 fences are gate commands
 meant to be pasted and a wrapped command is a wrong command. This pass had no sentinel walk
 and split fence content mid-command like any other long line, and no gate could see it.
@@ -502,7 +506,7 @@ These read as leftovers unless the file says they were measured, so:
 | `coalesceTightItemLines` | **retained**, semantics unchanged | The `text` seam's coalescing half; WP-2b's forbidden case is excluded by condition 3, not by this pass |
 | the `MARKER_SHAPED_LINE` guard | **retained** | Two shapes, not one, and it now runs at every budget (see the loose-item section) |
 | `substituteBullets` | **retained** — WP-4 expected WP-5 to retire it | Three independent blockers: widening `isPointedLine` moves fence bytes (class C); the bullet a line gets is chosen by its **rendered indent**, which a blockquote shifts after composition returns (`- outer` / `  > - quoted` renders `•` then `‣`, not `•` then `◦`); and `fixNestedLists`' `POINT_REGEX` must find the literal `*` on the hybrid join line, so composition-time glyphs would leave every tight item's nested list glued to its parent's text |
-| `rewriteTaskState` + `TASK_STATE_SENTINEL` | **retained** — the plan predicted deletion | See "Two deferred findings that are current, retained behaviour" in `src/AGENTS.md` |
+| `rewriteTaskState` + `TASK_STATE_SENTINEL` | **retained** — the plan predicted deletion | See "Two deferred findings that are current, retained behaviour" in `crates/mdview/AGENTS.md` |
 
 **The nested-list geometry measurements in this file are *colourless* measurements** (finding
 F1), and that qualification used to be missing throughout. It matters: before WP-5 several

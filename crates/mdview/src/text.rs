@@ -1,4 +1,4 @@
-//! Grapheme splitting and display-width padding, ported from `src/text.ts`, plus the JS
+//! Grapheme splitting and display-width padding, ported from `TS_BASELINE` `src/text.ts`, plus the JS
 //! string-semantics primitives the port needs everywhere (Critical Files 8 of
 //! `plans/mdview-rust-port.md`).
 //!
@@ -75,7 +75,7 @@ pub fn byte_to_utf16(s: &str, byte: usize) -> usize {
 /// Split a string into grapheme clusters, so emoji sequences are never cut apart.
 ///
 /// TS uses ICU's `Intl.Segmenter`; this is `unicode-segmentation`'s extended clusters.
-/// Their agreement over the corpus is measured by `scripts/width-census.ts` (WP-2 gate 2).
+/// Their agreement over the corpus is measured by `scripts/width-census.ts` (WP-2 gate 2; deleted at WP-9, `TS_BASELINE` = `c097c66`).
 pub fn graphemes(text: &str) -> Vec<&str> {
     text.graphemes(true).collect()
 }

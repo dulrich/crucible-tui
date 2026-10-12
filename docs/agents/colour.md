@@ -1,7 +1,9 @@
 # Colour — the owned decision, the three levels, and the reader inventory
 
-*Reference record for `src/`, moved out of `src/AGENTS.md` at WP-4 of
-`plans/docs-and-memory-curation.md`. **`src/AGENTS.md` is the parent contract — read it
+> **Historical as of `TS_BASELINE` (`c097c66`).** The TypeScript renderer this record cites as live code was deleted at WP-9 of `plans/mdview-rust-port.md`; its `src/*.ts` paths name that sha's tree, and the Rust port of each module is `crates/mdview/src/<name>.rs`. The measurements stand as recorded.
+
+*Reference record for `src/`, moved out of `crates/mdview/AGENTS.md` at WP-4 of
+`plans/docs-and-memory-curation.md`. **`crates/mdview/AGENTS.md` is the parent contract — read it
 first**, and read its "How to read this file" for the two conventions everything below is
 written under: every requirement is stated with the measurement that established it, and a
 citation like `index.js:591` is historical evidence from `marked-terminal@7.3.0` rather
@@ -12,7 +14,7 @@ it is an on-demand reference read, not a per-directory auto-loaded contract.*
 the three-level `SgrMode` and the hue/format split, the reader inventory with each reader's
 threshold, and the policy-resolution history including the styled-runs predecessor.
 
-**Two neighbours this record leans on, both still in `src/AGENTS.md`:** "Colourless gates
+**Two neighbours this record leans on, both still in `crates/mdview/AGENTS.md`:** "Colourless gates
 cannot see colour-only defects" (the measurement rule this record's own figures are subject
 to, and its WP-3 closure) and the rendering policy's highlighting-path entry. The removal
 of the packages that used to make this decision — `supports-color`, `supports-hyperlinks`,
@@ -111,7 +113,7 @@ close over all fourteen gate-corpus files at three widths in both glyph tiers:
 into the markdown *source* before the lexer, so it styled at every colour level including
 colourless and its bytes were not in the committed table. `src/wikilink.ts` replaced it with a
 carrier pair through the lexer and a post-walk pass over `applyStyle` (see "The sentinels",
-`src/AGENTS.md`),
+`crates/mdview/AGENTS.md`),
 and the sentence above is now unqualified. Measured: the forced-colour render is byte-identical
 across the change in all 84 colour-on combos, the colour-off render lost exactly those four
 escape codes on the one gate-corpus file that carries a wiki-link and moved no visible
@@ -220,10 +222,12 @@ justification**; everywhere else the rule is Decision 8's.
 
 **Two things this package deliberately did not touch, and both are user-withheld ground —
 one of them since fixed by a later plan.** The task-state pre-pass
-(`src/render.ts:193-213`, `rewriteTaskState`; "The task-state pre-pass", `src/AGENTS.md`) keeps
+(`src/render.ts:193-213`, `rewriteTaskState`; "The task-state pre-pass", `crates/mdview/AGENTS.md`) keeps
 its class-C exception
 withheld and its 84 corrupted lines exactly as they are — any task-state byte movement
-anywhere is a defect. The wiki-link verbatim defect ("The wiki-link carrier defect",
+anywhere is a defect.
+
+> **Closed by D-B (lockstep, WP-9 of `plans/mdview-rust-port.md`).** The withheld exception above was resolved by the port rather than by this plan: D-B, ratified with `plans/mdview-rust-port.md`'s approval on 2026-10-11, retires the pre-pass — the Rust renderer does not rewrite task lines marked treats as fenced code, so the 84 corrupted lines render verbatim, and comrak's tasklist recognises the blockquoted and ordered task items the pre-pass never reached. The divergence is the registry's `task-state-prepass` entry (`scripts/divergences.ts`, witness `tests/fixtures/divergences/task-state-prepass.md`). The measurements in this paragraph are the TypeScript renderer's, as of `TS_BASELINE` (`c097c66`). The wiki-link verbatim defect ("The wiki-link carrier defect",
 `docs/agents/wiki-link-record.md`)
 was still recorded-not-fixed at the time this package landed — its pinned witnesses in
 `tests/render.test.ts` and `tests/wikilink.test.ts` had only their policy literals migrated

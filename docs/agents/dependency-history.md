@@ -1,5 +1,7 @@
 # Dependency history — the forensic record of every removal
 
+> **Historical as of `TS_BASELINE` (`c097c66`).** The TypeScript renderer this record cites as live code was deleted at WP-9 of `plans/mdview-rust-port.md`; its `src/*.ts` paths name that sha's tree, and the Rust port of each module is `crates/mdview/src/<name>.rs`. The measurements stand as recorded.
+
 *Moved out of the root `AGENTS.md` at WP-4 of `plans/docs-and-memory-curation.md`.*
 
 **The rule lives in the root `AGENTS.md`; this file is the evidence.** The root carries the

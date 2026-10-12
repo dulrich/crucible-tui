@@ -1,20 +1,37 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { findFirstOverflow, isLineExempt } from "../src/overflow";
-import { findListOrphans } from "../src/detectors";
-import { main } from "../src/cli";
+import { join, resolve } from "node:path";
+import { findFirstOverflow, isLineExempt } from "../scripts/measure/overflow";
+import { findListOrphans } from "../scripts/measure/detectors";
 import { sweepCorpus, type CorpusSpec, type SweepOptions } from "../scripts/corpus";
-import { renderDocumentDetailed } from "../src/render";
-import { UNICODE_GLYPHS } from "../src/glyphs";
-import { NARROW_MEASURE } from "../src/width";
+import { NARROW_MEASURE } from "../scripts/measure/width";
+import { mdviewBinary } from "../scripts/revision";
+import { renderSync } from "./helpers/render";
+
+/** `mdview --check --no-pager` itself, in a clean config home with the tier and ruler pinned. */
+async function runCheck(width: number, file: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  const configHome = await mkdtemp(join(tmpdir(), "mdview-overflow-"));
+  try {
+    const proc = Bun.spawnSync(
+      [mdviewBinary(resolve(import.meta.dir, "..")), "--check", "--width", String(width), "--no-pager", file],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, MDVIEW_GLYPHS: "unicode", MDVIEW_AMBIGUOUS: "narrow", XDG_CONFIG_HOME: configHome },
+      },
+    );
+    return { code: proc.exitCode ?? 1, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
+  } finally {
+    await rm(configHome, { recursive: true, force: true });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // WP-2 (plans/tn-review-remediation.md): the width gate used to exist three times —
-// `checkOverflow` in src/cli.ts, `findOverflow` in scripts/sweep.ts, and a third copy
-// of the code-range predicate in src/detectors.ts. This file pins the canonical
+// `checkOverflow` in TS_BASELINE src/cli.ts, `findOverflow` in scripts/sweep.ts, and a third copy
+// of the code-range predicate in TS_BASELINE src/detectors.ts. This file pins the canonical
 // implementation and, more importantly, pins that **both** gate entry points reach it:
 // the CLI's copy was previously verified only by proxy through the sweep's, which is
 // exactly the situation in which two implementations drift unnoticed.
@@ -60,7 +77,7 @@ describe("isLineExempt", () => {
 
   test("the detectors' opt-in `codeRanges` still means 'exempt nothing' when omitted", () => {
     // The one asymmetry WP-2 had to preserve rather than flatten: `isLineExempt` takes a
-    // required array, and `src/detectors.ts` decides at its own boundary what "no ranges
+    // required array, and `TS_BASELINE` `src/detectors.ts` decides at its own boundary what "no ranges
     // supplied" means, because `DetectorOptions.codeRanges` is opt-in and turning it on
     // would move `findListOrphans`' frozen historical counts.
     const rendered = ["  • a bullet item whose text runs on and on and on and then", "    wraps", "  • next"].join("\n");
@@ -118,36 +135,26 @@ describe("both width-gate entry points run the one implementation", () => {
   const width = 40;
 
   test("the CLI's --check reports exactly what findFirstOverflow returns", async () => {
-    const expected = findFirstOverflow(
-      renderDocumentDetailed(source, width, UNICODE_GLYPHS, NARROW_MEASURE).text,
-      width,
-      renderDocumentDetailed(source, width, UNICODE_GLYPHS, NARROW_MEASURE).codeRanges,
-      NARROW_MEASURE,
-    );
+    const { text, codeRanges } = renderSync(source, width);
+    const expected = findFirstOverflow(text, width, codeRanges, NARROW_MEASURE);
     expect(expected).not.toBeNull();
 
-    const env = process.env;
-    const configHome = await mkdtemp(join(tmpdir(), "mdview-overflow-"));
-    process.env = { ...env, MDVIEW_GLYPHS: "unicode", MDVIEW_AMBIGUOUS: "narrow", XDG_CONFIG_HOME: configHome };
-    try {
-      await expect(main(["--check", "--width", String(width), "--no-pager", fixture("wide-table.md")])).rejects.toThrow(
-        `line ${expected?.line} exceeds target width ${width} (measured ${expected?.width})`,
-      );
-    } finally {
-      process.env = env;
-      await rm(configHome, { recursive: true, force: true });
-    }
+    const result = await runCheck(width, fixture("wide-table.md"));
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      `line ${expected?.line} exceeds target width ${width} (measured ${expected?.width})`,
+    );
   });
 
   test("the sweep reports exactly what findFirstOverflow returns, for the same document", async () => {
-    const { text, codeRanges } = renderDocumentDetailed(source, width, UNICODE_GLYPHS, NARROW_MEASURE);
+    const { text, codeRanges } = renderSync(source, width);
     const expected = findFirstOverflow(text, width, codeRanges, NARROW_MEASURE);
 
     const root = await mkdtemp(join(tmpdir(), "mdview-overflow-corpus-"));
     try {
       await writeFile(join(root, "wide-table.md"), source, "utf8");
       const spec: CorpusSpec = { name: "one-file", root, walkAll: true };
-      const options: SweepOptions = { widths: [width], all: true, glyphs: UNICODE_GLYPHS, detect: false };
+      const options: SweepOptions = { widths: [width], all: true, glyphs: "unicode", detect: false };
       const result = await sweepCorpus(spec, options);
       expect(result.overflow).toHaveLength(1);
       expect(result.overflow[0]?.line).toBe(expected?.line ?? 0);
@@ -160,25 +167,11 @@ describe("both width-gate entry points run the one implementation", () => {
 
   test("both entry points agree that the same document is clean at its --check gate width", async () => {
     // The gate the repo actually runs (`--check --width 80 tests/fixtures/wide-table.md`).
-    const { text, codeRanges } = renderDocumentDetailed(source, 80, UNICODE_GLYPHS, NARROW_MEASURE);
+    const { text, codeRanges } = renderSync(source, 80);
     expect(findFirstOverflow(text, 80, codeRanges, NARROW_MEASURE)).toBeNull();
 
-    const chunks: string[] = [];
-    const original = process.stdout.write.bind(process.stdout);
-    const env = process.env;
-    const configHome = await mkdtemp(join(tmpdir(), "mdview-overflow-"));
-    process.env = { ...env, MDVIEW_GLYPHS: "unicode", MDVIEW_AMBIGUOUS: "narrow", XDG_CONFIG_HOME: configHome };
-    process.stdout.write = ((chunk: string) => {
-      chunks.push(String(chunk));
-      return true;
-    }) as typeof process.stdout.write;
-    try {
-      await main(["--check", "--width", "80", "--no-pager", fixture("wide-table.md")]);
-    } finally {
-      process.stdout.write = original;
-      process.env = env;
-      await rm(configHome, { recursive: true, force: true });
-    }
-    expect(chunks.join("")).toBe(text);
+    const result = await runCheck(80, fixture("wide-table.md"));
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(text);
   });
 });

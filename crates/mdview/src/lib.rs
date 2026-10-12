@@ -50,7 +50,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     match cli::main(args) {
         Ok(code) => Ok(code),
         Err(cli::CliError::Message(message)) => Err(message),
-        // The incomplete renderer is not a user error: one line, exit 2, so `cli-diff`
+        // The incomplete renderer is not a user error: one line, exit 2, so `cli-diff` (deleted at WP-9; `TS_BASELINE` = `c097c66`)
         // counts it as `pending-renderer` rather than a mismatch. Gone once WP-3..6 land.
         Err(cli::CliError::Render(error)) => {
             use std::io::Write;

@@ -14,9 +14,8 @@ import {
   type CorpusSpec,
   type SweepOptions,
 } from "../scripts/corpus";
-import { BUNDLED_DEFAULT_MANIFEST, resolveCorpusManifestPath, type MdviewConfig } from "../src/config";
-import { findFirstOverflow } from "../src/overflow";
-import { UNICODE_GLYPHS } from "../src/glyphs";
+import { BUNDLED_DEFAULT_MANIFEST, resolveCorpusManifestPath, type MeasureConfig as MdviewConfig } from "../scripts/measure/config";
+import { findFirstOverflow } from "../scripts/measure/overflow";
 
 describe("strideSample", () => {
   const items = Array.from({ length: 1000 }, (_, index) => `path-${String(index).padStart(4, "0")}.md`);
@@ -49,8 +48,8 @@ describe("strideSample", () => {
   });
 });
 
-// The gate the sweep runs. Its implementation moved to `src/overflow.ts` in WP-2 (it was
-// a copy of `src/cli.ts`'s, argument for argument); these cases stay here because they are
+// The gate the sweep runs. Its implementation moved to `TS_BASELINE` `src/overflow.ts` in WP-2 (it was
+// a copy of `TS_BASELINE` `src/cli.ts`'s, argument for argument); these cases stay here because they are
 // about what the sweep reports. `tests/overflow.test.ts` pins the canonical function
 // itself, including that both entry points reach it.
 describe("findFirstOverflow (the width gate the sweep runs)", () => {
@@ -151,7 +150,7 @@ describe("symlinked subtree disclosure (WP-1)", () => {
     const { root, target } = await makeRootWithSymlinkedSubtree();
     try {
       const spec: CorpusSpec = { name: "with-link", root, walkAll: true };
-      const options: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+      const options: SweepOptions = { widths: [80], all: false, glyphs: "unicode", detect: false };
       const result = await sweepCorpus(spec, options);
       expect(result.symlinkedDirsSkipped).toBe(1);
     } finally {
@@ -164,7 +163,7 @@ describe("symlinked subtree disclosure (WP-1)", () => {
     const root = await makeRootWithoutSymlinks();
     try {
       const spec: CorpusSpec = { name: "no-link", root, walkAll: true };
-      const options: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+      const options: SweepOptions = { widths: [80], all: false, glyphs: "unicode", detect: false };
       const result = await sweepCorpus(spec, options);
       expect(result.symlinkedDirsSkipped).toBe(0);
     } finally {
@@ -431,7 +430,7 @@ describe("corpus manifest resolution precedence (WP-1: flag > env > config > bun
 
 describe("sample honoured / overridden (WP-1: replaces the spec.name === \"vault\" hardcode)", () => {
   let dir = "";
-  const baseOptions: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+  const baseOptions: SweepOptions = { widths: [80], all: false, glyphs: "unicode", detect: false };
 
   async function makeCorpusDir(fileCount: number): Promise<string> {
     const d = await mkdtemp(join(tmpdir(), "mdview-sample-"));
@@ -515,7 +514,7 @@ describe("selectCorpusFiles — the one sampling policy (WP-4 invariant 1)", () 
 // is a different case (a user-supplied pattern can be typo'd) and keeps the original
 // error behaviour untouched.
 describe("a markdown-free root is a skip, not an error", () => {
-  const baseOptions: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+  const baseOptions: SweepOptions = { widths: [80], all: false, glyphs: "unicode", detect: false };
 
   test("`walkAll` against a root with no markdown files skips, with a distinguishing reason, and does not affect the exit-code contract", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mdview-empty-walkall-"));

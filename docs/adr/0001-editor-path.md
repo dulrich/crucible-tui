@@ -15,8 +15,8 @@ longer callbacks a third-party walker invokes — landed at WP-2 of
 `string` (`marked.d.ts`'s callback type is unchanged), so the widened
 `{ text, style, sourceStart, sourceEnd }` return type this ADR's Decision 1 describes
 remains the open successor work. What "mdview's own renderer overrides" (Decision 4)
-means has also changed shape: it is no longer `src/render.ts` alone but is spread across
-`src/inline.ts`, `src/blocks.ts`, `src/lists.ts` and `src/table.ts`. The decision text
+means has also changed shape: it is no longer `TS_BASELINE` `src/render.ts` alone but is spread across
+`TS_BASELINE` `src/inline.ts`, `src/blocks.ts`, `src/lists.ts` and `src/table.ts`. The decision text
 below — the OpenTUI recommendation, the Ink rejection, the source-mapping analysis —
 stands untouched; this note records what has moved since it was written. One behaviour has moved *toward* this ADR's subject without being it: since `plans/follow-wiki-links.md` the viewer **navigates** a wiki-link, by emitting an OSC-8 `file://` link the terminal follows — which is a hyperlink in a rendered string, not the document model with source coordinates that Decision 1 describes, and it neither depends on nor advances the widened return type.
 
@@ -67,14 +67,14 @@ rather than build now — what the migration looks like if editing is ever taken
    them is why it is the specific recommendation here rather than "some TUI framework."
 
 3. **What survives the transition, unchanged:** the Markdown *parse* (`marked`'s
-   lexer/tokenizer), the fence-language and theme mapping (`src/lang.ts`), any
+   lexer/tokenizer), the fence-language and theme mapping (`TS_BASELINE` `src/lang.ts`), any
    persistent index built for large vaults, and the CLI surface and its subcommands
-   (`src/cli.ts`). None of that is ANSI-string-shaped; all of it operates on tokens,
+   (`TS_BASELINE` `src/cli.ts`). None of that is ANSI-string-shaped; all of it operates on tokens,
    language identifiers, or file paths, and stays valid regardless of what renders the
    result to a terminal.
 
 4. **What does not survive:** `marked-terminal` itself, and every one of mdview's own
-   renderer overrides in `src/render.ts` that currently produce ANSI text directly
+   renderer overrides in `TS_BASELINE` `src/render.ts` that currently produce ANSI text directly
    (`paragraph`, `list`, `heading`, `blockquote`, the table renderer). All of that logic
    — wrapping rules, list-budget arithmetic, glyph-tier substitution — has to be
    re-expressed as span-production rather than string-production, because the display

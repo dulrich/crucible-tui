@@ -1,8 +1,7 @@
 /**
- * Revision materialization and loading for the differential harness — one `(file × width ×
- * tier × ambiguous-mode × policy × emoji)` renderer, loaded from a named revision's own copy
- * of `src/` (or, since WP-1 of `plans/mdview-rust-port.md`, served over JSONL by a
- * subprocess: the `ts-server:` and `rust:` kinds).
+ * Revision building and loading for the differential harness — one `(file × width × tier ×
+ * ambiguous-mode × policy × emoji)` renderer, served over JSONL by a revision's own
+ * `mdview __parity serve` (`kind: "rust"`, `rust:<dir|ref>`).
  *
  * Split out of `scripts/render-diff.ts` at WP-R1
  * (`plans/post-refactor-code-quality-remediation.md`) with no behaviour change. It owns the
@@ -12,30 +11,25 @@
  * lets `scripts/diff-classify.ts` import downward into this module rather than the two of them
  * importing each other.
  *
- * **Three revision kinds** (WP-1 of `plans/mdview-rust-port.md`):
+ * **One revision kind since WP-9 of `plans/mdview-rust-port.md`.** The TypeScript kinds — the
+ * in-process `<dir|ref>` and `ts-server:<dir|ref>` behind `scripts/parity-ts-server.ts` — were
+ * deleted with the TypeScript renderer; they exist at `TS_BASELINE` (`c097c66`). A `rust:`
+ * side is `crates/mdview` built with `--features parity-tokens` into a cache outside every
+ * checkout, so `--rev-a rust:<ref> --rev-b rust:.` is a Rust-vs-Rust regression differential.
  *
- * - `<dir|ref>` — the revision's TypeScript renderer, imported into this process (`kind: "ts"`).
- * - `ts-server:<dir|ref>` — the same renderer, behind `scripts/parity-ts-server.ts`'s JSONL
- *   protocol in a subprocess (`kind: "ts-server"`). It exists to prove the transport: a
- *   `ts-server:` side must be class-A identical to the in-process side at every axis.
- * - `rust:<dir|ref>` — `crates/mdview` built with `--features parity-tokens`, one long-lived
- *   `mdview __parity serve` per handle (`kind: "rust"`).
- *
- * **Measurement left the handle** at the same WP. Detector counts, overflow, the escape scan,
- * the style table and the frontmatter-echo range count come from `loadMeasurer(repoRoot)` —
- * the *current checkout's* `src/` — so both sides of a comparison are measured by the same
- * code, and a Rust side (which has no TS measurement code at all) is measured exactly as the
- * TS side is.
- *
- * **This module imports no other module of this repo.** It reaches a revision's renderer
- * exclusively through `importFrom`'s dynamic, absolute-path `import()` — which is precisely
- * the point: a static `../src/render` import here would load *this* checkout's renderer, and
- * the harness exists to load someone else's.
+ * **Measurement is not the handle's.** Detector counts, overflow and the escape scan come from
+ * `scripts/measure/` (moved out of `src/` at WP-9), and the style table and lexer from the
+ * current checkout's own built binary (`mdviewBinary`), so both sides of a comparison are
+ * measured by the same code.
  */
-import { mkdir, mkdtemp, rm, stat, symlink } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { mkdir, rm, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { scan } from "./measure/ansi";
+import { findColumnZeroMarkers, findContinuationOverIndent, findListOrphans } from "./measure/detectors";
+import { findFirstOverflow } from "./measure/overflow";
+import { splitFrontmatter } from "./measure/frontmatter";
+import { measureFor } from "./measure/width";
 
 export type GlyphTierName = "unicode" | "ascii";
 export type AmbiguousModeName = "narrow" | "wide";
@@ -151,6 +145,8 @@ export interface RenderRequest {
 export interface FrontmatterFacts {
   parsed: boolean;
   diagnostic?: [number, number];
+  /** How many leading `codeRanges` are frontmatter-echo ranges (`formatMetaBlockDetailed`'s `verbatimRanges`). */
+  echoRanges?: number;
 }
 
 export interface RenderOutput {
@@ -160,53 +156,30 @@ export interface RenderOutput {
   frontmatter?: FrontmatterFacts;
 }
 
-/**
- * The facts from a `formatMetaBlockDetailed` result's `verbatimRanges`: the meta block opens
- * the rendered document, and only a failed parse echoes under a diagnostic, so an echo range
- * starting past line 1 means "failed, diagnostic on lines `[0, start - 1)`".
- */
-export function frontmatterFactsFrom(verbatimRanges: Array<[number, number]>): FrontmatterFacts {
-  const first = verbatimRanges[0];
-  return first !== undefined && first[0] > 1 ? { parsed: false, diagnostic: [0, first[0] - 1] } : { parsed: true };
-}
-
 /** A `{parsed, diagnostic?}` value off the wire, or `undefined` when absent or malformed. */
 function frontmatterFactsOf(value: unknown): FrontmatterFacts | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { parsed, diagnostic } = value as { parsed?: unknown; diagnostic?: unknown };
+  const { parsed, diagnostic, echoRanges } = value as { parsed?: unknown; diagnostic?: unknown; echoRanges?: unknown };
   if (typeof parsed !== "boolean") return undefined;
+  const facts: FrontmatterFacts = { parsed };
   if (Array.isArray(diagnostic) && diagnostic.length === 2 && diagnostic.every((n) => typeof n === "number")) {
-    return { parsed, diagnostic: [diagnostic[0] as number, diagnostic[1] as number] };
+    facts.diagnostic = [diagnostic[0] as number, diagnostic[1] as number];
   }
-  return { parsed };
+  if (typeof echoRanges === "number") facts.echoRanges = echoRanges;
+  return facts;
 }
 
 /**
- * Refuse to link a `node_modules` that cannot resolve the TS renderer's dependencies. Without
- * this, a worktree with no install leaves the materialized revision's `node_modules` symlink
- * dangling and Bun **auto-installs the latest** packages on the first import — a newer
- * `marked` that renders differently — so the differential silently measures the wrong
- * renderer (WP-3 of `plans/mdview-rust-port.md` measured ~2,100 false diffs that way).
+ * The JSONL request line `mdview __parity serve` reads (`crates/mdview/src/parity.rs`). `policy`
+ * may be `"env"`: the server resolves it from its own environment (the colour axis).
  */
-export async function assertNodeModules(repoRoot: string): Promise<void> {
-  const marked = join(repoRoot, "node_modules", "marked", "package.json");
-  if ((await stat(marked).catch(() => null)) === null) {
-    throw new Error(
-      `render-diff: ${join(repoRoot, "node_modules")} is missing or has no marked — run ` +
-        "`bun install --frozen-lockfile` in that checkout first (without it Bun would auto-install " +
-        "the latest packages and the comparison would measure a different renderer)",
-    );
-  }
-}
-
-/** The JSONL request line both servers read (`crates/mdview/src/parity.rs`, `scripts/parity-ts-server.ts`). */
 export interface WireRequest {
   source: string;
   path?: string;
   width: number;
   tier: GlyphTierName;
   ambiguous: AmbiguousModeName;
-  policy: WirePolicy;
+  policy: WirePolicy | "env";
   emoji?: boolean | null;
   tokens?: unknown[];
 }
@@ -227,26 +200,7 @@ export function toWireRequest(req: RenderRequest): WireRequest {
 
 // --- Revision loading --------------------------------------------------------------
 
-type RenderFn = (
-  source: string,
-  targetWidth: number,
-  glyphs: unknown,
-  measure: unknown,
-  emojiOverride: boolean | undefined,
-  resolveFenceLanguageFor: unknown,
-  policy: WirePolicy,
-  resolveWikiLink: unknown,
-) => RenderOutput;
-type OverflowFn = (
-  text: string,
-  targetWidth: number,
-  codeRanges: Array<[number, number]>,
-  measure: unknown,
-) => unknown;
-type DetectFn = (rendered: string, ...rest: unknown[]) => unknown[];
-type ResolverFactory = (filePath: string) => unknown;
-
-export type RevisionKind = "ts" | "ts-server" | "rust";
+export type RevisionKind = "rust";
 
 export interface RevisionHandle {
   /** Human-readable, never a private path — a git ref name/sha or `dir:<code path>`. */
@@ -255,14 +209,6 @@ export interface RevisionHandle {
   /** Rejects on a render failure — for a server, on an `{error}` response or server death. */
   render(req: RenderRequest): Promise<RenderOutput>;
   close(): Promise<void>;
-}
-
-export interface MaterializedRoot {
-  root: string;
-  label: string;
-  /** The resolved commit sha for a ref, `null` for a directory. */
-  sha: string | null;
-  cleanup: () => Promise<void>;
 }
 
 function resolveRef(spec: string, repoRoot: string): string {
@@ -304,124 +250,6 @@ function exportTree(spec: string, repoRoot: string, paths: string[], destination
   if (tar.exitCode !== 0) {
     throw new Error(`render-diff: extracting ${spec}'s ${paths.join(" ")} failed: ${tar.stderr.toString().trim()}`);
   }
-}
-
-/**
- * `spec` is either an existing directory (used directly — no copy, no cleanup; this
- * is the path a WP takes to diff its own uncommitted working tree) or a git ref
- * (archived into a fresh temp directory outside the repo, with `node_modules`
- * symlinked in). Anything else is a loud error rather than a silent "renders
- * nothing" — see this WP's report on why a differ comparing nothing is the failure
- * mode this whole package exists to rule out.
- */
-export async function materializeRevisionRoot(spec: string, repoRoot: string): Promise<MaterializedRoot> {
-  const asPath = resolve(spec);
-  const info = await stat(asPath).catch(() => null);
-  if (info?.isDirectory()) {
-    return { root: asPath, label: `dir:${asPath}`, sha: null, cleanup: async () => {} };
-  }
-
-  const sha = resolveRef(spec, repoRoot);
-  await assertNodeModules(repoRoot);
-  const tmpRoot = await mkdtemp(join(tmpdir(), "render-diff-"));
-  try {
-    exportTree(spec, repoRoot, ["src"], tmpRoot);
-  } catch (error) {
-    await rm(tmpRoot, { recursive: true, force: true });
-    throw error;
-  }
-  await symlink(join(repoRoot, "node_modules"), join(tmpRoot, "node_modules"), "dir");
-
-  return {
-    root: tmpRoot,
-    label: `git:${spec}@${sha.slice(0, 12)}`,
-    sha,
-    cleanup: async () => {
-      await rm(tmpRoot, { recursive: true, force: true });
-    },
-  };
-}
-
-async function importFrom(root: string, relPath: string): Promise<Record<string, unknown>> {
-  const abs = resolve(root, relPath);
-  return (await import(pathToFileURL(abs).href)) as Record<string, unknown>;
-}
-
-/** How many per-file wiki-link resolvers a TS renderer keeps (each memoises its vault index). */
-const RESOLVER_CACHE_LIMIT = 64;
-
-/**
- * One revision's TypeScript renderer as a function of a wire request — the single loader
- * both the in-process `ts` kind and `scripts/parity-ts-server.ts` use, so the transport
- * self-check compares the transport and nothing else.
- *
- * Every call passes **all eight** positional parameters of `renderDocumentDetailed` (an object
- * renders every width identically — `scripts/AGENTS.md`), with an explicit policy (its default
- * reads the environment). The fence resolver is passed as `undefined`, which is exactly how a
- * JavaScript default parameter is selected: the revision's own `resolveFenceLanguage`, without
- * this module having to know which file of that revision exports it. Under hyperlinks the wiki
- * resolver is that revision's own `createWikiLinkResolver(absPath)` — read-only, built lazily
- * on its first resolving link, cached per file.
- */
-export async function loadTsRenderer(root: string): Promise<(req: WireRequest) => RenderOutput> {
-  const renderMod = await importFrom(root, "src/render.ts");
-  const glyphsMod = await importFrom(root, "src/glyphs.ts");
-  const widthMod = await importFrom(root, "src/width.ts");
-  const wikiMod = await importFrom(root, "src/wikiresolve.ts");
-  const frontmatterMod = await importFrom(root, "src/frontmatter.ts");
-  const splitFrontmatter = frontmatterMod.splitFrontmatter as (source: string) => { meta: string | null };
-  const formatMetaBlockDetailed = frontmatterMod.formatMetaBlockDetailed as (
-    meta: string,
-    width: number,
-    measure: unknown,
-    sgr: string,
-  ) => { verbatimRanges: Array<[number, number]> };
-
-  const renderDocumentDetailed = renderMod.renderDocumentDetailed as RenderFn;
-  const createWikiLinkResolver = wikiMod.createWikiLinkResolver as ResolverFactory;
-  if (typeof renderDocumentDetailed !== "function" || typeof createWikiLinkResolver !== "function") {
-    throw new Error(`render-diff: ${root} does not export renderDocumentDetailed/createWikiLinkResolver`);
-  }
-  const glyphs: Record<GlyphTierName, unknown> = { unicode: glyphsMod.UNICODE_GLYPHS, ascii: glyphsMod.ASCII_GLYPHS };
-  const measure: Record<AmbiguousModeName, unknown> = { narrow: widthMod.NARROW_MEASURE, wide: widthMod.WIDE_MEASURE };
-  const resolvers = new Map<string, unknown>();
-  const resolverFor = (path: string): unknown => {
-    const abs = resolve(path);
-    let resolver = resolvers.get(abs);
-    if (resolver === undefined) {
-      resolver = createWikiLinkResolver(abs);
-      resolvers.set(abs, resolver);
-      if (resolvers.size > RESOLVER_CACHE_LIMIT) {
-        const oldest = resolvers.keys().next().value;
-        if (oldest !== undefined) resolvers.delete(oldest);
-      }
-    }
-    return resolver;
-  };
-
-  return (req) => {
-    if (req.tier !== "unicode" && req.tier !== "ascii") throw new Error(`bad tier ${String(req.tier)}`);
-    if (req.ambiguous !== "narrow" && req.ambiguous !== "wide") throw new Error(`bad ambiguous ${String(req.ambiguous)}`);
-    const policy: WirePolicy = { sgr: req.policy.sgr, hyperlinks: req.policy.hyperlinks, tmux: req.policy.tmux };
-    const emojiOverride = req.emoji === true ? true : req.emoji === false ? false : undefined;
-    const resolveWikiLink = policy.hyperlinks && req.path !== undefined ? resolverFor(req.path) : undefined;
-    const { text, codeRanges } = renderDocumentDetailed(
-      req.source,
-      req.width,
-      glyphs[req.tier],
-      measure[req.ambiguous],
-      emojiOverride,
-      undefined,
-      policy,
-      resolveWikiLink,
-    );
-    // The same revision's own formatter, asked the same question its render asked
-    // (`renderDocumentDetailed` calls it with exactly these arguments), for D-A's facts.
-    const { meta } = splitFrontmatter(req.source);
-    if (meta === null) return { text, codeRanges };
-    const metaResult = formatMetaBlockDetailed(meta, req.width, measure[req.ambiguous], policy.sgr);
-    return { text, codeRanges, frontmatter: frontmatterFactsFrom(metaResult.verbatimRanges) };
-  };
 }
 
 // --- JSONL client ----------------------------------------------------------------------
@@ -557,7 +385,8 @@ export function parityCacheRoot(env: Record<string, string | undefined> = proces
 }
 
 /** The tree cargo needs from a revision to build `crates/mdview`. */
-const CARGO_TREE_PATHS = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates"];
+// `THIRD-PARTY-LICENSES.txt` too: `crates/mdview/src/cli.rs` embeds it with `include_str!`.
+const CARGO_TREE_PATHS = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates", "THIRD-PARTY-LICENSES.txt"];
 
 async function cargoBuild(root: string, targetDir: string): Promise<void> {
   const proc = Bun.spawn(
@@ -608,55 +437,27 @@ export async function buildRustRevision(
 
 // --- Handles -------------------------------------------------------------------------------
 
-const TS_SERVER_PREFIX = "ts-server:";
 const RUST_PREFIX = "rust:";
 
 /**
- * Load one revision as a `RevisionHandle`. `spec` is `<dir|ref>`, `ts-server:<dir|ref>` or
- * `rust:<dir|ref>`; a bad `<dir|ref>` is a loud error, never a handle that renders nothing.
+ * Load one revision as a `RevisionHandle`. `spec` is `rust:<dir|ref>`; anything else — including
+ * the bare `<dir|ref>` and `ts-server:` forms the TypeScript renderer had until `TS_BASELINE`
+ * (`c097c66`) — is a loud error, never a handle that renders nothing.
  */
 export async function loadRevision(spec: string, repoRoot: string): Promise<RevisionHandle> {
-  if (spec.startsWith(RUST_PREFIX)) {
-    const { binary, label } = await buildRustRevision(spec.slice(RUST_PREFIX.length), repoRoot);
-    const server = spawnJsonlServer([binary, "__parity", "serve"], { label });
-    return {
-      label,
-      kind: "rust",
-      render: (req) => server.request(toWireRequest(req)),
-      close: server.close,
-    };
-  }
-
-  if (spec.startsWith(TS_SERVER_PREFIX)) {
-    const materialized = await materializeRevisionRoot(spec.slice(TS_SERVER_PREFIX.length), repoRoot);
-    const label = `ts-server:${materialized.label}`;
-    const server = spawnJsonlServer(
-      [process.execPath, "run", join(repoRoot, "scripts", "parity-ts-server.ts"), materialized.root],
-      { cwd: repoRoot, label },
+  if (!spec.startsWith(RUST_PREFIX)) {
+    throw new Error(
+      `render-diff: "${spec}" is not a rust:<dir|ref> revision — the TypeScript renderer kinds were ` +
+        "removed at WP-9 of plans/mdview-rust-port.md (TS_BASELINE = c097c66)",
     );
-    return {
-      label,
-      kind: "ts-server",
-      render: (req) => {
-        // The TS renderer has no token input; the server ignores `tokens`, so do not ship them.
-        const wire = toWireRequest(req);
-        delete wire.tokens;
-        return server.request(wire);
-      },
-      async close() {
-        await server.close();
-        await materialized.cleanup();
-      },
-    };
   }
-
-  const materialized = await materializeRevisionRoot(spec, repoRoot);
-  const render = await loadTsRenderer(materialized.root);
+  const { binary, label } = await buildRustRevision(spec.slice(RUST_PREFIX.length), repoRoot);
+  const server = spawnJsonlServer([binary, "__parity", "serve"], { label });
   return {
-    label: materialized.label,
-    kind: "ts",
-    render: async (req) => render(toWireRequest(req)),
-    close: materialized.cleanup,
+    label,
+    kind: "rust",
+    render: (req) => server.request(toWireRequest(req)),
+    close: server.close,
   };
 }
 
@@ -675,80 +476,84 @@ export interface MeasuredSpan {
 export interface Measurer {
   detect(text: string, width: number, codeRanges: Array<[number, number]>, ambiguous: AmbiguousModeName): DetectorCounts;
   overflowed(text: string, width: number, codeRanges: Array<[number, number]>, ambiguous: AmbiguousModeName): boolean;
-  /** `src/ansi.ts`'s `scan`, reduced to kind + bytes. */
+  /** `scripts/measure/ansi.ts`'s `scan`, reduced to kind + bytes. */
   scan(text: string): MeasuredSpan[];
-  /** Every committed `STYLE_TABLE` open and close sequence. */
+  /** Every committed style-table open and close sequence (`mdview __parity style-table`). */
   styleCodes: ReadonlySet<string>;
-  /**
-   * How many of a render's leading `codeRanges` are frontmatter-echo ranges: 0 without
-   * frontmatter, else `formatMetaBlockDetailed(meta, width, measure, sgr).verbatimRanges.length`.
-   */
-  echoRangeCount(source: string, width: number, ambiguous: AmbiguousModeName, sgr: WirePolicy["sgr"]): number;
-  /** `lexBody(splitFrontmatter(source).body, glyphs)` — the raw marked tokens the walk reads. */
+  /** How many of a render's leading `codeRanges` are frontmatter-echo ranges (0 without frontmatter). */
+  echoRangeCount(output: RenderOutput): number;
+  /** The current checkout's lexer over the source's body (`mdview __parity lex`). */
   lexBody(source: string, tier: GlyphTierName): unknown[];
 }
 
 /**
- * Load the measurer from `repoRoot`'s own `src/` (the checkout running the harness), by the
- * same dynamic absolute-path import every revision is loaded by.
+ * The current checkout's built mdview: `MDVIEW_BIN` if set, else the static musl release
+ * binary `bun run build:rust` writes. A missing binary is a loud error naming the build.
  */
+export function mdviewBinary(repoRoot: string, env: Record<string, string | undefined> = process.env): string {
+  const binary = env.MDVIEW_BIN !== undefined && env.MDVIEW_BIN !== ""
+    ? resolve(env.MDVIEW_BIN)
+    : join(repoRoot, "target", "x86_64-unknown-linux-musl", "release", "mdview");
+  if (!Bun.file(binary).size) {
+    throw new Error(`mdview binary not found at ${binary} — run \`bun run build:rust\` first (or set MDVIEW_BIN)`);
+  }
+  return binary;
+}
+
+/** `{name: {open, close, formats}}` — the committed style table, as `binary` prints it. */
+export function readStyleTable(binary: string): Record<string, { open: string; close: string; formats: boolean }> {
+  const proc = Bun.spawnSync([binary, "__parity", "style-table"], { stdout: "pipe", stderr: "pipe" });
+  if (proc.exitCode !== 0) {
+    throw new Error(`${binary} __parity style-table failed (exit ${proc.exitCode}): ${proc.stderr.toString().trim()}`);
+  }
+  return JSON.parse(proc.stdout.toString()) as Record<string, { open: string; close: string; formats: boolean }>;
+}
+
+/** Load the measurer: `scripts/measure/` for the text, the current checkout's binary for the rest. */
 export async function loadMeasurer(repoRoot: string): Promise<Measurer> {
-  const detectorsMod = await importFrom(repoRoot, "src/detectors.ts");
-  const overflowMod = await importFrom(repoRoot, "src/overflow.ts");
-  const widthMod = await importFrom(repoRoot, "src/width.ts");
-  const glyphsMod = await importFrom(repoRoot, "src/glyphs.ts");
-  const styleMod = await importFrom(repoRoot, "src/style.ts");
-  const ansiMod = await importFrom(repoRoot, "src/ansi.ts");
-  const frontmatterMod = await importFrom(repoRoot, "src/frontmatter.ts");
-  const renderMod = await importFrom(repoRoot, "src/render.ts");
-
-  const findFirstOverflow = overflowMod.findFirstOverflow as OverflowFn;
-  const findListOrphans = detectorsMod.findListOrphans as DetectFn;
-  const findContinuationOverIndent = detectorsMod.findContinuationOverIndent as DetectFn;
-  const findColumnZeroMarkers = detectorsMod.findColumnZeroMarkers as DetectFn;
-  const scan = ansiMod.scan as (text: string) => { spans: MeasuredSpan[] };
-  const splitFrontmatter = frontmatterMod.splitFrontmatter as (source: string) => { meta: string | null; body: string };
-  const formatMetaBlockDetailed = frontmatterMod.formatMetaBlockDetailed as (
-    meta: string,
-    width: number,
-    measure: unknown,
-    sgr: string,
-  ) => { verbatimRanges: unknown[] };
-  const lexBody = renderMod.lexBody as ((body: string, glyphs: unknown) => unknown[]) | undefined;
-  const styleTable = styleMod.STYLE_TABLE as Record<string, { open: string; close: string }>;
-
-  const measure: Record<AmbiguousModeName, unknown> = { narrow: widthMod.NARROW_MEASURE, wide: widthMod.WIDE_MEASURE };
-  const glyphs: Record<GlyphTierName, unknown> = { unicode: glyphsMod.UNICODE_GLYPHS, ascii: glyphsMod.ASCII_GLYPHS };
+  const binary = mdviewBinary(repoRoot);
   const styleCodes = new Set<string>();
-  for (const code of Object.values(styleTable)) {
+  for (const code of Object.values(readStyleTable(binary))) {
     styleCodes.add(code.open);
     styleCodes.add(code.close);
   }
 
   return {
     detect(text, width, codeRanges, ambiguous) {
-      const m = measure[ambiguous];
+      const measure = measureFor(ambiguous);
       return {
-        orphans: findListOrphans(text, width, { codeRanges, measure: m }).length,
-        overIndent: findContinuationOverIndent(text, { codeRanges, measure: m }).length,
-        columnZero: findColumnZeroMarkers(text, { codeRanges, measure: m }).length,
+        orphans: findListOrphans(text, width, { codeRanges, measure }).length,
+        overIndent: findContinuationOverIndent(text, { codeRanges, measure }).length,
+        columnZero: findColumnZeroMarkers(text, { codeRanges, measure }).length,
       };
     },
     overflowed(text, width, codeRanges, ambiguous) {
-      return findFirstOverflow(text, width, codeRanges, measure[ambiguous]) !== null;
+      return findFirstOverflow(text, width, codeRanges, measureFor(ambiguous)) !== null;
     },
     scan(text) {
       return scan(text).spans.map((span) => ({ kind: span.kind, raw: span.raw }));
     },
     styleCodes,
-    echoRangeCount(source, width, ambiguous, sgr) {
-      const { meta } = splitFrontmatter(source);
-      if (meta === null) return 0;
-      return formatMetaBlockDetailed(meta, width, measure[ambiguous], sgr).verbatimRanges.length;
+    echoRangeCount(output) {
+      // A binary older than WP-9 reports no `echoRanges`; a failed parse is then the one echo range.
+      return output.frontmatter?.echoRanges ?? (output.frontmatter?.parsed === false ? 1 : 0);
     },
     lexBody(source, tier) {
-      if (typeof lexBody !== "function") throw new Error(`render-diff: ${repoRoot}/src/render.ts exports no lexBody`);
-      return lexBody(splitFrontmatter(source).body, glyphs[tier]);
+      const proc = Bun.spawnSync([binary, "__parity", "lex"], {
+        stdin: new TextEncoder().encode(`${JSON.stringify({ body: splitBody(source), tier })}\n`),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const response = JSON.parse(proc.stdout.toString() || "{}") as { tokens?: unknown[]; error?: string };
+      if (proc.exitCode !== 0 || !Array.isArray(response.tokens)) {
+        throw new Error(`render-diff: ${binary} __parity lex failed: ${response.error ?? proc.stderr.toString().trim()}`);
+      }
+      return response.tokens;
     },
   };
+}
+
+/** The body `mdview __parity lex` lexes: the source with its frontmatter split off. */
+function splitBody(source: string): string {
+  return splitFrontmatter(source).body;
 }

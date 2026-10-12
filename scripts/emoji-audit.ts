@@ -2,7 +2,7 @@
 /**
  * Emoji shortcode behavioural audit (WP-3, `plans/corpus-symlink-membership.md`).
  *
- * The record in `src/AGENTS.md` and `src/render.ts` describes a test that decided
+ * The record in `crates/mdview/AGENTS.md` and `TS_BASELINE` `src/render.ts` describes a test that decided
  * `emoji: false` for `markedTerminal()` — 392 prose shortcodes across 59 files,
  * all reachable only through symlink-following. That test was a throwaway
  * subagent invocation; nothing in the repo could re-run it. This script is that
@@ -15,7 +15,7 @@
  * bytes actually differ. This is a behavioural test, never a `node-emoji` table
  * lookup: consulting a substitution table would only prove the table exists, not
  * what the renderer does with it. Rendering both ways and diffing bytes exercises
- * `src/inline.ts`'s `emojify` itself, so the result cannot drift from what this
+ * `TS_BASELINE` `src/inline.ts`'s `emojify` itself, so the result cannot drift from what this
  * tool actually ships.
  *
  * **It rendered through bare `marked-terminal` until WP-6 of
@@ -26,10 +26,10 @@
  * The change makes the audit stricter rather than looser: it now measures the
  * renderer that ships instead of a library that no longer runs.
  *
- * **Fence-aware, and table-aware for the same reason.** `src/blocks.ts`'s `code`
+ * **Fence-aware, and table-aware for the same reason.** `TS_BASELINE` `src/blocks.ts`'s `code`
  * never runs the transform that substitutes shortcodes (a transcription of
  * `marked-terminal`'s own behaviour, kept), so a shortcode on a fenced source line
- * is inert. This repo's `renderTable` (`src/table.ts`) is a second exemption of
+ * is inert. This repo's `renderTable` (`TS_BASELINE` `src/table.ts`) is a second exemption of
  * the identical shape: it renders cell text directly rather than dispatching it
  * through the inline tokenizer substitution hooks into, so a shortcode inside a
  * table cell is *always* inert, independent of the `emoji` decision's value.
@@ -71,9 +71,8 @@
 import { readFile } from "node:fs/promises";
 import { loadManifest, resolveCorpusFiles, resolveManifestSource, selectCorpusFiles } from "./corpus";
 import { parseArgs } from "./sweep";
-import { UNICODE_GLYPHS } from "../src/glyphs";
-import { renderDocument } from "../src/render";
-import { NARROW_MEASURE } from "../src/width";
+import { resolve } from "node:path";
+import { mdviewBinary, POLICIES, spawnJsonlServer } from "./revision";
 
 /** Loose enough to catch every real node-emoji shortcode shape; false positives
  * (a timestamp like `:30:`, a Windows drive-adjacent path) are harmless because
@@ -100,24 +99,38 @@ const tableTokenCache = new Map<string, boolean>();
  * bytes, never consult a `node-emoji` table — but the renderer being exercised is now the
  * one that actually ships, which is strictly the better question: `emojiOverride` is the
  * same on/off decision the library's option carried, threaded through `LayoutContext` and
- * `src/inline.ts`'s `emojify`, and the fence exemption it is used to test is now this
+ * `TS_BASELINE` `src/inline.ts`'s `emojify`, and the fence exemption it is used to test is now this
  * repo's own `renderCode` rather than the library's. The table probe below already worked
  * this way and said so; the two probes now differ only in the snippet they build.
  *
  * Width is irrelevant to the emoji pass, so a fixed 80 is fine, and the glyph tier and
  * measure are pinned explicitly so no environment detection can reach either.
  */
-function renderSnippet(snippet: string, emoji: boolean): string {
-  return renderDocument(snippet, 80, UNICODE_GLYPHS, NARROW_MEASURE, emoji);
+let server: ReturnType<typeof spawnJsonlServer> | undefined;
+
+/** The built renderer (`mdview __parity serve`, WP-9 of `plans/mdview-rust-port.md`), started once. */
+async function renderSnippet(snippet: string, emoji: boolean): Promise<string> {
+  server ??= spawnJsonlServer([mdviewBinary(resolve(import.meta.dir, "..")), "__parity", "serve"], {
+    label: "mdview __parity serve",
+  });
+  const output = await server.request({
+    source: snippet,
+    width: 80,
+    tier: "unicode",
+    ambiguous: "narrow",
+    policy: { ...POLICIES.P0 },
+    emoji,
+  });
+  return output.text;
 }
 
-function tokenDiffers(token: string, fenced: boolean): boolean {
+async function tokenDiffers(token: string, fenced: boolean): Promise<boolean> {
   const key = `${fenced ? "f" : "p"}:${token}`;
   const cached = tokenCache.get(key);
   if (cached !== undefined) return cached;
   const snippet = fenced ? "```\n" + token + "\n```\n" : token;
-  const withEmoji = renderSnippet(snippet, true);
-  const withoutEmoji = renderSnippet(snippet, false);
+  const withEmoji = await renderSnippet(snippet, true);
+  const withoutEmoji = await renderSnippet(snippet, false);
   const differs = withEmoji !== withoutEmoji;
   tokenCache.set(key, differs);
   return differs;
@@ -128,11 +141,11 @@ function tokenDiffers(token: string, fenced: boolean): boolean {
  * regardless of the `emoji` option, so there is nothing to toggle; this checks
  * the claim directly against the real, current render pipeline instead of
  * assuming it. */
-function tokenSurvivesTable(token: string): boolean {
+async function tokenSurvivesTable(token: string): Promise<boolean> {
   const cached = tableTokenCache.get(token);
   if (cached !== undefined) return cached;
   const table = `| Col |\n| --- |\n| ${token} |\n`;
-  const rendered = renderSnippet(table, true);
+  const rendered = await renderSnippet(table, true);
   const survives = rendered.includes(token);
   tableTokenCache.set(token, survives);
   return survives;
@@ -175,19 +188,19 @@ export async function auditFile(path: string): Promise<FileAudit> {
     const inTable = !inFence && TABLE_ROW_RE.test(line);
     for (const token of matches) {
       if (inFence) {
-        const differs = tokenDiffers(token, true);
+        const differs = await tokenDiffers(token, true);
         result.fencedHits.push(token);
         // Expected: false. If a fenced token ever differs, the fence exemption
         // this whole decision leans on is not universal — surface it, don't hide it.
         if (differs) result.fencedAnomalies.push(token);
       } else if (inTable) {
-        const survives = tokenSurvivesTable(token);
+        const survives = await tokenSurvivesTable(token);
         result.tableHits.push(token);
         // Expected: true (token survives, unsubstituted). If it does not, this
         // repo's table renderer is not the exemption it is documented to be.
         if (!survives) result.tableAnomalies.push(token);
       } else {
-        const differs = tokenDiffers(token, false);
+        const differs = await tokenDiffers(token, false);
         if (differs) result.proseHits.push(token);
       }
     }
@@ -293,8 +306,10 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main().catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
+  main()
+    .then(() => server?.close())
+    .catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
 }

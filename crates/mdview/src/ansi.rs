@@ -1,4 +1,4 @@
-//! The terminal-sequence grammar (scan and OSC-8 link), ported from `src/ansi.ts`.
+//! The terminal-sequence grammar (scan and OSC-8 link), ported from `TS_BASELINE` `src/ansi.ts`.
 //!
 //! Three rules carried over unchanged: spans concatenate back to the input byte for byte;
 //! every non-`Text` span is width 0 by construction; a malformed sequence carries its raw

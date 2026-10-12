@@ -7,7 +7,6 @@
     "typecheck": "tsc -p tsconfig.json",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "test": "bun test tests",
-    "build": "bun build --compile --outfile dist/mdview src/cli.ts",
     "build:rust": "cargo auditable build --release --locked --target x86_64-unknown-linux-musl -p jsonedit -p mdview",
     "install:man": "mkdir -p \"$HOME/.local/share/man/man1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/mdview.1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/crucible-tui.1\" && ln -sf \"$PWD/man/jsonedit.1\" \"$HOME/.local/share/man/man1/jsonedit.1\"",
     "sweep": "bun run scripts/sweep.ts",
@@ -15,16 +14,14 @@
     "test:security": "trivy fs --scanners vuln --include-dev-deps --skip-db-update --exit-code 1 --severity CRITICAL,HIGH .",
     "verify": "bun run scripts/verify.ts"
   },
-  "dependencies": {
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "get-east-asian-width": "1.6.0",
     "highlight.js": "10.7.3",
     "marked": "14.1.4",
     "node-emoji": "2.2.0",
-    "string-width": "8.2.2",
-    "yaml": "2.9.0"
-  },
-  "devDependencies": {
-    "@types/bun": "^1.3.14",
     "oxlint": "1.87.0",
+    "string-width": "8.2.2",
     "typescript": "^5.6.0"
   }
 }

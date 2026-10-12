@@ -17,15 +17,15 @@
  * vacuous. The narrative below is this module's own contract.
  */
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 // The colour axis's own grammar reader (WP-5, `plans/colour-policy.md`): `scan` is what
-// classifies each render's terminal sequences into the wire record, and `STYLE_TABLE` is
-// what G3's SGR arm checks membership against. Neither is a second implementation — both
-// are the same objects `src/inline.ts`/`src/table.ts`/etc. read to decide what to emit.
-import { scan } from "../src/ansi";
-import { emitsUnder, STYLE_TABLE, type StyleName } from "../src/style";
-import { renderDocumentDetailed } from "../src/render";
-import { NARROW_MEASURE } from "../src/width";
+// classifies each render's terminal sequences into the wire record (`scripts/measure/ansi.ts`
+// since WP-9 of `plans/mdview-rust-port.md`), and the committed style table is what G3's SGR
+// arm checks membership against — read from the renderer itself, `mdview __parity
+// style-table`, so it is the same table `crates/mdview/src/style.rs` emits from.
+import { scan } from "./measure/ansi";
+import { NARROW_MEASURE } from "./measure/width";
+import { mdviewBinary, readStyleTable } from "./revision";
 // The one hash implementation this repo has (WP-1 of `plans/marked-terminal-replacement.md`),
 // imported rather than re-derived so this axis and the differential harness agree on what
 // "the same text" means. It was imported from `scripts/render-diff.ts` until WP-R1 moved it
@@ -37,6 +37,7 @@ import {
   type ColourAxisChildMode,
   type CorpusSpec,
   type SweepOptions,
+  startSweepRenderer,
 } from "./corpus";
 
 // ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ import {
 // decision an ordinary user gets from `mdview file.md | somewhere`, with nothing forced
 // either way. `on` and `off` each decide something (`FORCE_COLOR=3`/`FORCE_COLOR=0`);
 // `default` decides nothing - every colour-related variable is absent, so
-// `src/colour.ts`'s resolver falls all the way to its `isTTY` floor, which is `false` on a
+// `TS_BASELINE` `src/colour.ts`'s resolver falls all the way to its `isTTY` floor, which is `false` on a
 // pipe. G1 reads this child alone: the default child must emit zero terminal sequences of
 // any kind, because that piped default is what every consumer of this tool's stdout - a
 // file redirect, `less`, another program's argument - actually receives.
@@ -89,7 +90,7 @@ import {
 // `full`-only) so nothing on the formats path may change *which* characters render, only
 // which of them are styled. G3 extends to it too, against a narrower vocabulary than the
 // `on` child's: every `formats`-child sequence must be a committed **format-class or
-// control** pair (`src/style.ts`'s own `emitsUnder("formats")` rule, asked here as a
+// control** pair (`TS_BASELINE` `src/style.ts`'s own `emitsUnder("formats")` rule, asked here as a
 // membership test) or a well-formed OSC-8/tmux-DCS, exactly as the `on`-child arm already
 // allows for those two kinds. Scoped exactly as the landed G1/G3 are - a vocabulary check
 // over the fixed, ESC-free gate corpus, never a provenance audit (cycle-3 f3: an
@@ -116,7 +117,7 @@ import {
 // `tests/colour-axis.test.ts` asserts the children resolve from their observed output
 // rather than from the environment the parent intended to set.
 
-/** One recognised terminal sequence, exactly as `src/ansi.ts`'s scanner classifies it. */
+/** One recognised terminal sequence, exactly as `TS_BASELINE` `src/ansi.ts`'s scanner classifies it. */
 export interface WireSequence {
   readonly kind: "sgr" | "osc8" | "dcs";
   readonly raw: string;
@@ -132,7 +133,7 @@ export interface WireSequence {
  * `sequences` lists every span `scan()` classified as `sgr`, `osc8` or `dcs` - the three
  * kinds this renderer may legitimately emit - with its raw bytes, which is what lets a G1
  * or G3 failure name the offending sequence rather than only its count. A `malformed` span
- * (rule 3 of `src/ansi.ts`'s scanner: an introducer this renderer never emits, or one that
+ * (rule 3 of `TS_BASELINE` `src/ansi.ts`'s scanner: an introducer this renderer never emits, or one that
  * never terminated) is not one of the three kinds and is therefore not enumerated in
  * `sequences`; its presence is carried by the `malformed` flag instead, which every gate
  * that reads `sequences` also reads.
@@ -290,17 +291,19 @@ function splitComboKey(key: string): { width: number; file: string } {
  * The child body: render every `(file, width)` of every requested corpus and write one
  * JSON record per line to `write`.
  *
- * The render call is byte-identical to `sweepCorpus`'s - same positional argument order,
- * same ruler default. `renderDocumentDetailed(source, targetWidth, glyphs, measure)`
- * takes its width as a positional number; passing an options object instead renders every
- * width identically, which has invalidated four separate measurements of this exact
- * quantity across three authors. Do not "tidy" this call into an object.
+ * The render call is `sweepCorpus`'s own - the same `startSweepRenderer`, the same ruler
+ * default, `policy: "env"` so the server resolves the colour mode this child's environment
+ * pins. At `TS_BASELINE` (`c097c66`) this was `renderDocumentDetailed(source, targetWidth,
+ * glyphs, measure)`, whose positional width had invalidated four measurements when passed as
+ * an object; `tests/colour-axis.test.ts` still pins that the width axis is live.
  */
 export async function emitColourDigests(
   specs: CorpusSpec[],
   options: SweepOptions,
   write: (line: string) => void,
 ): Promise<void> {
+  const renderer = startSweepRenderer();
+  try {
   for (const spec of specs) {
     write(JSON.stringify({ corpus: spec.name, begin: true }));
     const files = await resolveCorpusFiles(spec, {});
@@ -323,7 +326,7 @@ export async function emitColourDigests(
       for (const width of options.widths) {
         try {
           const measure = options.measure ?? NARROW_MEASURE;
-          const { text } = renderDocumentDetailed(source, width, options.glyphs, measure);
+          const { text } = await renderer.render(source, width, options.glyphs, measure);
           const { visibleSha, sequences, malformed } = digestSequences(text);
           write(JSON.stringify({ corpus: spec.name, file: path, width, visibleSha, sequences, malformed }));
         } catch (error) {
@@ -338,6 +341,9 @@ export async function emitColourDigests(
         }
       }
     }
+  }
+  } finally {
+    await renderer.close();
   }
 }
 
@@ -389,7 +395,7 @@ const SWEEP_CLI_PATH = join(import.meta.dir, "sweep.ts");
  * whatever the developer or CI happens to export - because the whole axis is worthless if
  * two children can resolve the same mode, or if `default` resolves anything at all.
  * `FORCE_COLOR=3` is the level `tests/helpers/color.ts` already uses for the forced-colour
- * side; `FORCE_COLOR=0` is an explicit "no" under `src/colour.ts`'s ratified reading of the
+ * side; `FORCE_COLOR=0` is an explicit "no" under `TS_BASELINE` `src/colour.ts`'s ratified reading of the
  * variable; `default` deletes `FORCE_COLOR` too, so nothing overrides the `isTTY` floor.
  * **`formats` (WP-4, `plans/colour-modes.md`) pins `MDVIEW_COLOR=never` and deletes
  * `FORCE_COLOR`** — the same sanitization every child gets, with one explicit directive
@@ -397,7 +403,7 @@ const SWEEP_CLI_PATH = join(import.meta.dir, "sweep.ts");
  * onto the format-preserving `SgrMode` and `FORCE_COLOR` has no `formats`-shaped value to
  * set (the ratified precedence table has no `FORCE_COLOR` reading that resolves there).
  * `TMUX` and `TERM` are sanitized on every child for the same reason - both feed
- * `resolveTmux` (`src/colour.ts`), so a harness invoked from inside a real tmux session, or
+ * `resolveTmux` (`TS_BASELINE` `src/colour.ts`), so a harness invoked from inside a real tmux session, or
  * under an unusual `TERM`, must not leak into what G1/G3 measure. The child's stdout is a
  * pipe regardless of mode, so it is never a TTY - which is also why hyperlinks are off in
  * every child and G3's OSC-8/DCS arms are exercised by direct unit test rather than by this
@@ -464,39 +470,32 @@ export async function collectColourDigests(
 // --- G3: is one colour-on child's sequence one this renderer is authorized to emit? ---
 
 /**
- * Every SGR byte pair this renderer's committed style table (`src/style.ts`) is
+ * Every SGR byte pair this renderer's committed style table (`TS_BASELINE` `src/style.ts`) is
  * authorized to emit, `open` and `close` both - the `on` child's G3 arm is exact
  * membership in this set, never a pattern. `STYLE_TABLE` itself already bans `38`/`48`
  * introducers by an independent assertion (`tests/style.test.ts`), so nothing here
  * re-derives that ban.
  */
-const COMMITTED_SGR: ReadonlySet<string> = new Set(
-  Object.values(STYLE_TABLE).flatMap((code) => [code.open, code.close]),
-);
+let styleSets: { full: ReadonlySet<string>; formats: ReadonlySet<string> } | undefined;
 
-/**
- * Every SGR byte pair the `formats` child may legitimately emit (WP-4,
- * `plans/colour-modes.md`): the format and control classes only, never hue - `src/style.ts`'s
- * own `emitsUnder(name, "formats")` rule, asked here as a membership test rather than
- * re-derived as a second copy of `STYLE_CLASSES`. This is the vocabulary the authored
- * fixture's `31m`/`39m` fails by construction: `red` is hue-class, and an authored red
- * escape survives `formats` verbatim (Decision 1), so it is not membership this set can
- * vouch for - precisely as it is not membership `COMMITTED_SGR` can vouch for on the
- * `default` child (G1). Not a pattern either: `emitsUnder` is a per-name lookup, and this
- * set is the closure of every name it returns `true` for under `"formats"`.
- */
-const COMMITTED_FORMATS_SGR: ReadonlySet<string> = new Set(
-  (Object.keys(STYLE_TABLE) as StyleName[])
-    .filter((name) => emitsUnder(name, "formats"))
-    .flatMap((name) => [STYLE_TABLE[name].open, STYLE_TABLE[name].close]),
-);
+/** Both vocabularies, read once per process from the built renderer's own table. */
+function committedSets(): { full: ReadonlySet<string>; formats: ReadonlySet<string> } {
+  if (styleSets === undefined) {
+    const table = Object.values(readStyleTable(mdviewBinary(resolve(import.meta.dir, ".."))));
+    styleSets = {
+      full: new Set(table.flatMap((code) => [code.open, code.close])),
+      formats: new Set(table.filter((code) => code.formats).flatMap((code) => [code.open, code.close])),
+    };
+  }
+  return styleSets;
+}
 
 const DCS_ESC = String.fromCharCode(0x1b);
 const DCS_TMUX_PREFIX = `${DCS_ESC}Ptmux;`;
 const DCS_TERMINATOR = `${DCS_ESC}\\`;
 
 /**
- * Undouble a tmux DCS payload's ESC bytes, strictly. `wrapOsc` (`src/ansi.ts`) doubles
+ * Undouble a tmux DCS payload's ESC bytes, strictly. `wrapOsc` (`TS_BASELINE` `src/ansi.ts`) doubles
  * every ESC in the sequence it wraps before framing it, so a lone, undoubled ESC inside
  * the payload is not a byte this renderer's own `link()` can produce. Returns `null` for
  * that case rather than a best-effort decode, so a hostile or corrupted payload fails
@@ -523,7 +522,7 @@ function undoubleEsc(payload: string): string | null {
 /**
  * G3's DCS arm (cycle-3 f7): a tmux wrapper is valid only when its payload, once
  * undoubled, is exactly one OSC-8 open or close and nothing else - re-scanned rather than
- * pattern-matched, so it is held to the same grammar `src/ansi.ts` uses everywhere else.
+ * pattern-matched, so it is held to the same grammar `TS_BASELINE` `src/ansi.ts` uses everywhere else.
  * `scan`'s own `dcs` classification only checks the outer frame (`ESC P` ... `ESC \`);
  * this is the payload check that classification deliberately leaves to the caller,
  * because a generic scanner cannot know a payload is supposed to be an OSC-8 sequence
@@ -541,7 +540,7 @@ function isValidTmuxDcs(raw: string): boolean {
 /**
  * G3's per-sequence classifier, parameterised over which SGR vocabulary to check against.
  * OSC-8 is accepted on `scan`'s own grammar alone regardless of vocabulary - its `osc8`
- * kind is only ever assigned to a well-formed hyperlink (`src/ansi.ts`'s `readSequence`),
+ * kind is only ever assigned to a well-formed hyperlink (`TS_BASELINE` `src/ansi.ts`'s `readSequence`),
  * so there is nothing further to check; DCS against `isValidTmuxDcs`, likewise shared by
  * both children (WP-4, `plans/colour-modes.md`: hyperlinks are off on every child, so the
  * vocabulary split is an SGR-only distinction). Returns `undefined` for a valid sequence,
@@ -559,23 +558,23 @@ function classifySequenceAgainst(
   return isValidTmuxDcs(sequence.raw) ? undefined : "dcs payload is not a valid doubled-ESC OSC-8 open or close";
 }
 
-/** G3's `on`-child arm: exact membership in `src/style.ts`'s full committed SGR table. */
+/** G3's `on`-child arm: exact membership in `TS_BASELINE` `src/style.ts`'s full committed SGR table. */
 function classifySequence(sequence: WireSequence): string | undefined {
-  return classifySequenceAgainst(sequence, COMMITTED_SGR, "sgr not in the committed style table");
+  return classifySequenceAgainst(sequence, committedSets().full, "sgr not in the committed style table");
 }
 
 /**
  * G3's `formats`-child arm (WP-4, `plans/colour-modes.md`): exact membership in
  * `COMMITTED_FORMATS_SGR`, the format/control subset only. A hue-class SGR here is never
  * a producer leak by construction - Decision 3 keeps the syntax highlighter off this
- * branch entirely and every other producer is filtered at emission (`src/style.ts`'s
+ * branch entirely and every other producer is filtered at emission (`TS_BASELINE` `src/style.ts`'s
  * `applyStyle`/`styleSpan`) - so a failure here can only be an authored escape that
  * survived verbatim (Decision 1), exactly the shape the authored fixture pins.
  */
 function classifyFormatsSequence(sequence: WireSequence): string | undefined {
   return classifySequenceAgainst(
     sequence,
-    COMMITTED_FORMATS_SGR,
+    committedSets().formats,
     "sgr not in the committed format/control vocabulary",
   );
 }

@@ -7,7 +7,6 @@ import { parseArgs } from "../scripts/sweep";
 // (`plans/post-refactor-code-quality-remediation.md`); the parser itself is unchanged.
 import { parseWidths } from "../scripts/sweep-options";
 import { sweepCorpus, type CorpusSpec, type SweepOptions } from "../scripts/corpus";
-import { UNICODE_GLYPHS } from "../src/glyphs";
 
 // --- the sweep's argument parser and the invariants a refactor breaks silently ----
 //
@@ -35,7 +34,7 @@ describe("parseArgs — defaults and every flag (WP-4)", () => {
     expect(options.widths).toEqual([80, 100, 116, 160, 346]);
     expect(options.limit).toBeUndefined();
     expect(options.all).toBe(false);
-    expect(options.glyphs.tier).toBe("unicode");
+    expect(options.glyphs).toBe("unicode");
     expect(options.measure?.ambiguous).toBe("narrow");
     expect(options.manifestFlag).toBeUndefined();
     expect(options.detect).toBe(false);
@@ -91,8 +90,8 @@ describe("parseArgs — defaults and every flag (WP-4)", () => {
   });
 
   test("--glyphs selects the tier and rejects any other value", () => {
-    expect(parseArgs(["--glyphs", "ascii"]).options.glyphs.tier).toBe("ascii");
-    expect(parseArgs(["--glyphs", "unicode"]).options.glyphs.tier).toBe("unicode");
+    expect(parseArgs(["--glyphs", "ascii"]).options.glyphs).toBe("ascii");
+    expect(parseArgs(["--glyphs", "unicode"]).options.glyphs).toBe("unicode");
     expect(() => parseArgs(["--glyphs", "utf8"])).toThrow('--glyphs must be "unicode" or "ascii", got: utf8');
     expect(() => parseArgs(["--glyphs"])).toThrow('--glyphs must be "unicode" or "ascii", got: undefined');
   });
@@ -113,16 +112,16 @@ describe("parseArgs — defaults and every flag (WP-4)", () => {
   });
 
   test("the last occurrence of a flag wins", () => {
-    expect(parseArgs(["--glyphs", "ascii", "--glyphs", "unicode"]).options.glyphs.tier).toBe("unicode");
+    expect(parseArgs(["--glyphs", "ascii", "--glyphs", "unicode"]).options.glyphs).toBe("unicode");
     expect(parseArgs(["--widths", "80", "--widths", "116"]).options.widths).toEqual([116]);
     expect(parseArgs(["--corpus", "a", "--corpus", "b"]).corpus).toBe("b");
   });
 
   test("the two bundled gate invocations parse to what those gates measure", () => {
     // `package.json`'s `sweep` script, called bare and with `-- --glyphs ascii`.
-    expect(parseArgs([]).options.glyphs.tier).toBe("unicode");
+    expect(parseArgs([]).options.glyphs).toBe("unicode");
     const ascii = parseArgs(["--glyphs", "ascii"]).options;
-    expect(ascii.glyphs.tier).toBe("ascii");
+    expect(ascii.glyphs).toBe("ascii");
     expect(ascii.widths).toEqual([80, 100, 116, 160, 346]);
     expect(ascii.detect).toBe(false);
   });
@@ -189,7 +188,7 @@ describe("first-seen width order survives parse and sweep (WP-4 invariant 4)", (
     const dir = await mkdtemp(join(tmpdir(), "mdview-width-order-"));
     try {
       // A nineteen-column table: below its minimum feasible width the allocator has
-      // nowhere left to shrink and it overflows **by design** (src/AGENTS.md's
+      // nowhere left to shrink and it overflows **by design** (crates/mdview/AGENTS.md's
       // "many-column tables exceed the target width"), so every width swept below
       // overflows and the recorded order is the only variable. A long unbreakable
       // token would not do — those are hard-split losslessly and never overflow.
@@ -199,7 +198,7 @@ describe("first-seen width order survives parse and sweep (WP-4 invariant 4)", (
       const row = `| ${Array.from({ length: columns }, (_, i) => `value${i}`).join(" | ")} |`;
       await writeFile(join(dir, "table.md"), `# t\n\n${header}\n${rule}\n${row}\n`);
       const spec: CorpusSpec = { name: "order", root: dir, walkAll: true };
-      const base: SweepOptions = { widths: [], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+      const base: SweepOptions = { widths: [], all: false, glyphs: "unicode", detect: false };
 
       const ascending = await sweepCorpus(spec, { ...base, widths: [40, 60, 80] });
       expect(ascending.overflow.map((entry) => entry.targetWidth)).toEqual([40, 60, 80]);
@@ -227,7 +226,7 @@ describe("the two error-string shapes are distinct (WP-4 invariant 5)", () => {
       await chmod(file, 0o000);
       const result = await sweepCorpus(
         { name: "unreadable", root: dir, walkAll: true },
-        { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false },
+        { widths: [80], all: false, glyphs: "unicode", detect: false },
       );
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0]?.message).not.toMatch(/^width /);
@@ -247,7 +246,7 @@ describe("the two error-string shapes are distinct (WP-4 invariant 5)", () => {
         { name: "throwing", root: dir, walkAll: true },
         // An infinite width makes the frontmatter/`hr` rule's `String.prototype.repeat`
         // throw — a real render failure, reached through the ordinary path.
-        { widths: [Infinity], all: false, glyphs: UNICODE_GLYPHS, detect: false },
+        { widths: [Infinity], all: false, glyphs: "unicode", detect: false },
       );
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0]?.message.startsWith("width Infinity: ")).toBe(true);
@@ -277,7 +276,7 @@ describe("shearsUnmapped accumulates the orphan count (WP-4 invariant 6)", () =>
       await writeFile(join(dir, "unmapped.md"), `${[1, 2, 3].map(item).join("\n")}\n`);
       const result = await sweepCorpus(
         { name: "unmapped", root: dir, walkAll: true },
-        { widths: [52], all: false, glyphs: UNICODE_GLYPHS, detect: true },
+        { widths: [52], all: false, glyphs: "unicode", detect: true },
       );
       expect(result.orphans).toHaveLength(1);
       expect(result.orphans[0]?.count).toBe(3);
@@ -297,7 +296,7 @@ describe("the missing-root state reports a hardcoded elapsedSeconds of 0 (WP-4)"
   test("a corpus whose root does not exist skips with zero elapsed and zero symlink disclosure", async () => {
     const result = await sweepCorpus(
       { name: "absent", root: join(tmpdir(), "mdview-no-such-root-ever"), walkAll: true },
-      { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: true },
+      { widths: [80], all: false, glyphs: "unicode", detect: true },
     );
     expect(result.skipped).toBe(true);
     expect(result.skipReason).toMatch(/^corpus root not found: /);
@@ -314,7 +313,7 @@ describe("the missing-root state reports a hardcoded elapsedSeconds of 0 (WP-4)"
     try {
       await writeFile(join(walkDir, "not-markdown.txt"), "x\n");
       await writeFile(join(globDir, "note.md"), "# n\n");
-      const options: SweepOptions = { widths: [80], all: false, glyphs: UNICODE_GLYPHS, detect: false };
+      const options: SweepOptions = { widths: [80], all: false, glyphs: "unicode", detect: false };
       const walked = await sweepCorpus({ name: "no-md", root: walkDir, walkAll: true }, options);
       const globbed = await sweepCorpus(
         { name: "no-match", root: globDir, globs: ["*.nope"], walkAll: false },

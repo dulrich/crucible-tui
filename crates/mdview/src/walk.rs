@@ -1,4 +1,4 @@
-//! The owned token walk, ported from `src/walk.ts`'s `TokenWalker` (WP-3 of
+//! The owned token walk, ported from `TS_BASELINE` `src/walk.ts`'s `TokenWalker` (WP-3 of
 //! `plans/mdview-rust-port.md`).
 //!
 //! Dispatch is an **exhaustive `match`** over `token.rs`'s `Token` — the 19 types
