@@ -18,6 +18,11 @@
  * install` or `rustup` either — toolchain setup stays outside, like `bun
  * install`.
  *
+ * The Rust port (`plans/mdview-rust-port.md`) adds eight steps after the jsonedit
+ * smoke: three generated-table freshness checks, the T0 frontmatter census and
+ * table-allocator diff, the T0 render differential under P0/P1 and P2, and the CLI
+ * differential against the musl mdview binary `build (rust)` produced.
+ *
  * Runs fail-fast, in order, and prints which step failed. `verify` never
  * runs `bun install` — local floats (`bun install`), CI freezes (`bun
  * install --frozen-lockfile`), and that asymmetry is deliberate.
@@ -156,6 +161,32 @@ const steps: Step[] = [
         "crates/jsonedit/tests/fixtures/valid.json",
       ]),
   },
+  // --- The Rust port's gates (`plans/mdview-rust-port.md`; wired by the orchestrator per
+  // audit finding E2, after the WP-9 entry gate passed). Generated Rust tables must match
+  // their generators; the frontmatter census and the table allocator agree on T0; the T0
+  // render differential (TS working tree vs the Rust renderer fed marked's tokens) is
+  // class-A or registry-attributed, with non-vacuity counters required under P2; and the
+  // CLI differential runs against the musl binary `build (rust)` just produced. T1 and T2
+  // stay opt-in: their manifests are not in this repo.
+  { name: "emoji table freshness", run: () => sh(["bun", "run", "scripts/gen-emoji-table.ts", "--check"]) },
+  { name: "width table freshness", run: () => sh(["bun", "run", "scripts/gen-width-tables.ts", "--check"]) },
+  { name: "hljs map freshness", run: () => sh(["bun", "run", "scripts/gen-hljs-map.ts", "--check"]) },
+  { name: "frontmatter census (T0)", run: () => sh(["bun", "run", "scripts/frontmatter-census.ts", "--no-t1"]) },
+  { name: "table allocator diff (T0)", run: () => sh(["bun", "run", "scripts/table-alloc-diff.ts"]) },
+  {
+    name: "render diff (T0, P0/P1)",
+    run: () =>
+      sh(["bun", "run", "scripts/render-diff.ts", "--rev-a", ".", "--rev-b", "rust:.", "--input", "tokens", "--policy", "P0,P1"]),
+  },
+  {
+    name: "render diff (T0, P2)",
+    run: () =>
+      sh([
+        "bun", "run", "scripts/render-diff.ts", "--rev-a", ".", "--rev-b", "rust:.", "--input", "tokens",
+        "--policy", "P2", "--require-nonzero", "sgr,fences",
+      ]),
+  },
+  { name: "cli diff", run: () => sh(["bun", "run", "scripts/cli-diff.ts"]) },
   { name: "sweep (unicode)", run: () => sh(["bun", "run", "sweep"]) },
   { name: "sweep (ascii)", run: () => sh(["bun", "run", "sweep", "--", "--glyphs", "ascii"]) },
   {
