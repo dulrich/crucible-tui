@@ -66,10 +66,25 @@ function spec(entry: Divergence, ts: Node[], source: string): Node[] {
     const inline = [t("Remove the old block (~"), c(":10-20"), t("), keep "), c("other"), t(" ("), c(":5"), t(").")];
     return ts.map((n) => (n.type === "paragraph" ? { ...n, tokens: inline } : n));
   }
-  if (entry.id === "leading-bom") {
-    // comrak strips the BOM's role: the html line is an html block that eats its blank line.
-    const [, , ...rest] = ts;
-    return [{ type: "html", text: `${source.split("\n")[0]}\n\n` }, ...rest];
+  if (entry.id === "nested-bracket-label") {
+    // CommonMark §6.3 ex. 512: balanced brackets nest at any depth, so both are a link/image.
+    const t = (raw: string): Node => ({ type: "text", raw, text: raw });
+    const link: Node = { type: "link", href: "https://example.com", text: "label [[note]]", tokens: [t("label [[note]]")] };
+    const image: Node = { type: "image", href: "logo.png", title: null, text: "alt [[note]]" };
+    return ts.map((n) => (n.type === "paragraph" ? { ...n, tokens: [t("See "), link, t(" and "), image, t(".")] } : n));
+  }
+  if (entry.id === "html-close-tag-interrupt") {
+    // CommonMark §4.6 type 6: `</details>` interrupts, so the list ends and an html block follows.
+    return ts.flatMap((n, k): Node[] => {
+      if (n.type === "space" && ts[k - 1]?.type === "list") return [];
+      if (n.type !== "list") return [n];
+      const items = [...(n.items as Node[])];
+      const last = items[items.length - 1]!;
+      const tokens = [...(last.tokens as Node[])];
+      const html = tokens.pop()!;
+      items[items.length - 1] = { ...last, tokens };
+      return [{ ...n, items }, { type: "html", text: `${String(html.text)}\n\n` }];
+    });
   }
   throw new Error(`no synthetic Rust side for ${entry.id}`);
 }

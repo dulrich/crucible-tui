@@ -154,7 +154,36 @@ function singleTildeDel(site: Site): boolean {
   const ts = asArray(site.ts);
   const rust = asArray(site.rust);
   if (!containsSingleTildeDel(ts)) return false;
-  return JSON.stringify(dissolveSingleTildeDel(ts)) === JSON.stringify(dissolveSingleTildeDel(rust));
+  if (JSON.stringify(dissolveSingleTildeDel(ts)) === JSON.stringify(dissolveSingleTildeDel(rust))) return true;
+  return crossMarkupTildeDel(ts, rust);
+}
+
+function countSingleTildeDel(nodes: Node[]): number {
+  return nodes.reduce(
+    (n, x) => n + (isSingleTildeDel(x) ? 1 : 0) + (Array.isArray(x.tokens) ? countSingleTildeDel(x.tokens as Node[]) : 0),
+    0,
+  );
+}
+
+/** The characters a node list spells, delimiter runs (`*_~` and backticks) and whitespace removed. */
+function leafLetters(nodes: Node[]): string {
+  return nodes
+    .map((n) => (Array.isArray(n.tokens) ? leafLetters(n.tokens as Node[]) : s(n.text)))
+    .join("")
+    .replace(/[*_~`\s]/g, "");
+}
+
+/**
+ * The cross-markup form (WP-7 attempt 3): marked's single-tilde `del` spans an emphasis or
+ * code-span delimiter (`~5.5k … (**−84%**) … **~`), and because marked lexes the `del`'s
+ * interior on its own, the delimiters it swallowed pair differently on the two sides — so
+ * dissolving the `del` cannot make the trees equal. The site still matches when the Rust side
+ * holds fewer single-tilde `del`s than the TS side and both sides spell the same characters
+ * once delimiter runs are removed: the only difference is which delimiters paired.
+ */
+function crossMarkupTildeDel(ts: Node[], rust: Node[]): boolean {
+  if (countSingleTildeDel(rust) >= countSingleTildeDel(ts)) return false;
+  return leafLetters(ts) === leafLetters(rust);
 }
 
 // ---------------------------------------------------------------------------
@@ -445,29 +474,75 @@ function tildeBacktickRun(site: Site): boolean {
   if (!hasMixedRunText(ts) || hasMixedRunText(rust)) return false;
   // A code span's content drops one space at each end (§6.3), so the side that sees a span
   // where the other sees text spells different spaces: compare with whitespace removed.
-  const bare = (nodes: Node[]): string => flattenInline(nodes).replace(/\s+/g, "");
-  return bare(ts) === bare(rust);
+  // A codespan's `text` is entity-escaped where a `text` node's `raw` is not: decode both.
+  const bare = (nodes: Node[]): string =>
+    flattenInline(nodes)
+      .replace(/\s+/g, "")
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&");
+  if (bare(ts) === bare(rust)) return true;
+  // The span boundary moved, so later delimiter runs (`*`, `_`, backticks) can pair
+  // differently too: the sides still spell the same characters once those runs are removed.
+  return leafLetters(ts) === leafLetters(rust);
 }
 
 // ---------------------------------------------------------------------------
-// D-D leading-bom (unratified)
+// nested-bracket-label
 // ---------------------------------------------------------------------------
 
-const BOM = "﻿";
+/** Deepest balanced-bracket nesting inside a label (`a [b [c]]` -> 2); escaped brackets skip. */
+function bracketDepth(label: string): number {
+  let depth = 0;
+  let max = 0;
+  for (let i = 0; i < label.length; i++) {
+    const c = label[i];
+    if (c === "\\") i++;
+    else if (c === "[") max = Math.max(max, ++depth);
+    else if (c === "]") depth = Math.max(0, depth - 1);
+  }
+  return max;
+}
 
 /**
- * D-D (`leading-bom`): a document starting with U+FEFF. TS keeps the BOM as body content, so
- * marked sees a paragraph opening with a BOM `text` (a following html line becomes inline
- * html); comrak strips it and reads the rest as written. Matches only the root array (`$`)
- * when the TS side's first token is a paragraph whose first inline is a `text` starting with
- * the BOM.
+ * `nested-bracket-label` matches an inline array where the Rust side holds a `link`/`image`
+ * whose label nests brackets two deep (`label [[note]]`, `link [foo [bar]]`) and the TS side
+ * holds no link/image with that label. marked 14's link `label` pattern admits one level of
+ * nested brackets only, so a deeper label (a wiki-link in it included) stays literal text.
  */
-function leadingBom(site: Site): boolean {
-  if (isRender(site) || site.path !== "$") return false;
-  const first = asArray(site.ts)[0];
-  if (first?.type !== "paragraph") return false;
-  const head = asArray(first.tokens as Node[] | undefined)[0];
-  return head?.type === "text" && s(head.raw).startsWith(BOM);
+function nestedBracketLabel(site: Site): boolean {
+  if (isRender(site)) return false;
+  const linkish = (n: Node): boolean => n.type === "link" || n.type === "image";
+  const tsLabels = new Set(asArray(site.ts).filter(linkish).map((n) => s(n.text)));
+  return asArray(site.rust).some((n) => linkish(n) && bracketDepth(s(n.text)) >= 2 && !tsLabels.has(s(n.text)));
+}
+
+// ---------------------------------------------------------------------------
+// html-close-tag-interrupt
+// ---------------------------------------------------------------------------
+
+/**
+ * `html-close-tag-interrupt` matches a block array holding, at the same index on both sides,
+ * a `list` whose TS last item ends in an `html` token opening with `</`, where the Rust side's
+ * next block is an `html` token with the same text (trailing newlines aside). marked 14's list
+ * item loop stops a lazy line only at `htmlBeginRegex` (`<(?:[a-z].*>|!--)`), which a closing
+ * tag (`</details>`) does not match, so the line joins the item; CommonMark's type-6 start
+ * condition includes `</`, and that block may interrupt a paragraph, so it ends the list.
+ */
+function htmlCloseTagInterrupt(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  return ts.some((list, k) => {
+    if (list.type !== "list" || rust[k]?.type !== "list") return false;
+    const items = asArray(list.items as Node[] | undefined);
+    const tail = asArray(items[items.length - 1]?.tokens as Node[] | undefined).at(-1);
+    const next = rust[k + 1];
+    if (tail?.type !== "html" || !s(tail.text).startsWith("</") || next?.type !== "html") return false;
+    return s(next.text).trimEnd() === s(tail.text).trimEnd();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -560,16 +635,34 @@ export const REGISTRY: readonly Divergence[] = [
     predicate: tildeBacktickRun,
   },
   {
-    id: "leading-bom",
+    id: "nested-bracket-label",
     kind: "lexer",
     spec:
-      "plans/mdview-rust-port.md D-D: TS keeps a leading U+FEFF as body content (src/cli.ts) " +
-      "and comrak strips it, so the first block can differ (a BOM-led html line is a paragraph " +
-      "with inline html in marked, an html block in comrak). Held for the user at WP-9.",
-    ratified: null,
-    witness: "tests/fixtures/divergences/leading-bom.md",
+      'CommonMark 0.31.2 §6.3 "Links": "Brackets are allowed in the link text only if (a) they ' +
+      'are backslash-escaped or (b) they appear as a matched pair of brackets", at any depth: ' +
+      "example 512 `[link [foo [bar]]](/uri)` and example 528 (its full-reference form) are links; " +
+      "§6.4: an image description follows the same rules. marked 14's link `label` pattern admits " +
+      "one nesting level, so a deeper label stays literal (e.g. `[label [[note]]](url)`, a " +
+      "wiki-link inside a link label or image alt).",
+    ratified: { by: "user", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/nested-bracket-label.md",
     status: "live",
-    predicate: leadingBom,
+    predicate: nestedBracketLabel,
+  },
+  {
+    id: "html-close-tag-interrupt",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §4.6 "HTML blocks": start condition 6 is a "line [that] begins with the ' +
+      'string < or </ followed by one of the strings" (block tag names), and "All types of HTML ' +
+      'blocks except type 7 may interrupt a paragraph"; §5.2 rule 5 allows a lazy line only for ' +
+      "paragraph continuation text. So `- item` followed by `</details>` at column 0 ends the " +
+      "list with an html block. marked 14's list loop breaks only on `<(?:[a-z].*>|!--)`, which " +
+      "misses the closing tag, and keeps the line inside the item.",
+    ratified: { by: "user", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/html-close-tag-interrupt.md",
+    status: "live",
+    predicate: htmlCloseTagInterrupt,
   },
 ];
 
