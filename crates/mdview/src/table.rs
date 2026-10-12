@@ -2,15 +2,19 @@
 //!
 //! WP-5a of `plans/mdview-rust-port.md` ports the first half: cell normalization (the
 //! span-cell contract), `tableGrid`, `naturalWidths`, the allocator and the two wraps. The
-//! emitter (`resolveBorderChars` … `renderGrid`, `chromeWidth`'s other consumer) is WP-5b's;
-//! until then a `table` token still renders as `RenderError::Unimplemented`.
+//! emitter (`resolveBorderChars` … `renderGrid`) is WP-5b's and sits at the bottom of this
+//! file; `render.rs`'s `table` visitor calls `render_table`.
 //!
 //! **Offsets.** A `CellSpan`'s `start`/`end` and a `CellFragment`'s `start`/`end` are UTF-16
-//! code-unit indices into the cell text, exactly as in TS (`table.ts:99-110`); WP-5b's
-//! emitter converts at its slicing seam with `text::utf16_to_byte`.
+//! code-unit indices into the cell text, exactly as in TS (`table.ts:99-110`); the emitter
+//! converts at its one slicing seam, `style_fragment`, with `text::utf16_to_byte`.
 
-use crate::style::StyleName;
-use crate::text::{Align, js_trim_end, js_trim_start, split_token, utf16_len, utf16_to_byte};
+use crate::glyphs::GlyphSet;
+use crate::render::Sgr as SgrMode;
+use crate::style::{StyleName, apply_style, apply_style_chain, create_styler};
+use crate::text::{
+    Align, js_trim_end, js_trim_start, pad_to_width, split_token, utf16_len, utf16_to_byte,
+};
 use crate::token::{TableCell, Token};
 use crate::width::Measure;
 use crate::wikilink::WIKI_LINK_STYLES;
@@ -576,6 +580,305 @@ pub fn wrap_fragments(text: &str, width: usize, measure: Measure) -> Vec<CellFra
         }
     }
     fragments
+}
+
+/// One border glyph per slot (`table.ts:639`), `cli-table3`'s slot names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BorderChars {
+    top_left: &'static str,
+    top_mid: &'static str,
+    top: &'static str,
+    top_right: &'static str,
+    left_mid: &'static str,
+    mid_mid: &'static str,
+    mid: &'static str,
+    right_mid: &'static str,
+    bottom_left: &'static str,
+    bottom_mid: &'static str,
+    bottom: &'static str,
+    bottom_right: &'static str,
+    left: &'static str,
+    middle: &'static str,
+    right: &'static str,
+}
+
+/// `UNICODE_BORDER` (`table.ts:666`): `cli-table3`'s default charset, byte for byte.
+const UNICODE_BORDER: BorderChars = BorderChars {
+    top_left: "┌",
+    top_mid: "┬",
+    top: "─",
+    top_right: "┐",
+    left_mid: "├",
+    mid_mid: "┼",
+    mid: "─",
+    right_mid: "┤",
+    bottom_left: "└",
+    bottom_mid: "┴",
+    bottom: "─",
+    bottom_right: "┘",
+    left: "│",
+    middle: "│",
+    right: "│",
+};
+
+/// `resolveBorderChars` (`table.ts:692`): per-slot fallback to the Unicode set.
+fn resolve_border_chars(glyphs: &GlyphSet) -> BorderChars {
+    if glyphs.table_chars.is_none() {
+        return UNICODE_BORDER;
+    }
+    let u = UNICODE_BORDER;
+    let pick = |key: &str, fallback: &'static str| glyphs.table_char(key).unwrap_or(fallback);
+    BorderChars {
+        top_left: pick("top-left", u.top_left),
+        top_mid: pick("top-mid", u.top_mid),
+        top: pick("top", u.top),
+        top_right: pick("top-right", u.top_right),
+        left_mid: pick("left-mid", u.left_mid),
+        mid_mid: pick("mid-mid", u.mid_mid),
+        mid: pick("mid", u.mid),
+        right_mid: pick("right-mid", u.right_mid),
+        bottom_left: pick("bottom-left", u.bottom_left),
+        bottom_mid: pick("bottom-mid", u.bottom_mid),
+        bottom: pick("bottom", u.bottom),
+        bottom_right: pick("bottom-right", u.bottom_right),
+        left: pick("left", u.left),
+        middle: pick("middle", u.middle),
+        right: pick("right", u.right),
+    }
+}
+
+/// `styleBorder` (`table.ts:745`): grey, hue-class, so dropped under `formats`.
+fn style_border(sgr: SgrMode, text: &str) -> String {
+    apply_style(sgr, &create_styler(StyleName::Gray, None), text)
+}
+
+/// `styleHead` (`table.ts:746`): bold, format-class, so kept under `formats`.
+fn style_head(sgr: SgrMode, text: &str) -> String {
+    apply_style(sgr, &create_styler(StyleName::Bold, None), text)
+}
+
+/// `styleFragment` (`table.ts:761`), per fragment, nothing crossing.
+///
+/// **The UTF-16 → byte seam.** Span and fragment offsets are UTF-16 code units (as in TS);
+/// every `fragment.text.slice(a, b)` here becomes a byte slice through `utf16_to_byte`
+/// over the fragment text. A span edge inside a surrogate pair rounds to a char boundary
+/// rather than splitting the pair as JS would; no producer emits such an edge.
+fn style_fragment(fragment: &CellFragment, spans: &[CellSpan], sgr: SgrMode) -> String {
+    let Some(f_start) = fragment.start else {
+        return fragment.text.clone();
+    };
+    if spans.is_empty() {
+        return fragment.text.clone();
+    }
+    let f_end = fragment.end.unwrap_or(f_start);
+    let text = fragment.text.as_str();
+    let slice = |a: usize, b: usize| -> &str {
+        let a = utf16_to_byte(text, a - f_start);
+        let b = utf16_to_byte(text, b - f_start).max(a);
+        &text[a..b]
+    };
+    let mut out = String::new();
+    let mut cursor = f_start;
+    for span in spans {
+        let start = span.start.max(f_start);
+        let end = span.end.min(f_end);
+        if start >= end {
+            continue;
+        }
+        if start > cursor {
+            out.push_str(slice(cursor, start));
+        }
+        out.push_str(&apply_style_chain(sgr, &span.styles, slice(start, end)));
+        cursor = end;
+    }
+    if cursor == f_start {
+        return fragment.text.clone();
+    }
+    out.push_str(&text[utf16_to_byte(text, cursor - f_start)..]);
+    out
+}
+
+/// One cell wrapped into its display lines, with its spans (`table.ts:783`).
+struct LaidOutCell<'a> {
+    fragments: Vec<CellFragment>,
+    spans: &'a [CellSpan],
+}
+
+#[derive(Clone, Copy)]
+enum RuleKind {
+    Top,
+    Mid,
+    Bottom,
+}
+
+/// `drawRule` (`table.ts:802`): one border-style wrap per column, as `cli-table3` emitted.
+fn draw_rule(widths: &[usize], chars: &BorderChars, kind: RuleKind, sgr: SgrMode) -> String {
+    let (first, inner, fill, last) = match kind {
+        RuleKind::Top => (chars.top_left, chars.top_mid, chars.top, chars.top_right),
+        RuleKind::Mid => (chars.left_mid, chars.mid_mid, chars.mid, chars.right_mid),
+        RuleKind::Bottom => (
+            chars.bottom_left,
+            chars.bottom_mid,
+            chars.bottom,
+            chars.bottom_right,
+        ),
+    };
+    let mut out = String::new();
+    for (column, &width) in widths.iter().enumerate() {
+        let left = if column == 0 { first } else { inner };
+        let right = if column == widths.len() - 1 { last } else { "" };
+        let piece = format!("{left}{}{right}", fill.repeat(cell_width(width)));
+        out.push_str(&style_border(sgr, &piece));
+    }
+    out
+}
+
+/// `drawLine` (`table.ts:839`): alignment applied here; short cells pad below.
+#[allow(clippy::too_many_arguments)]
+fn draw_line(
+    row: &[LaidOutCell<'_>],
+    line_index: usize,
+    widths: &[usize],
+    aligns: &[Align],
+    chars: &BorderChars,
+    is_head: bool,
+    measure: Measure,
+    sgr: SgrMode,
+) -> String {
+    let mut out = String::new();
+    for (column, &width) in widths.iter().enumerate() {
+        let left = style_border(
+            sgr,
+            if column == 0 {
+                chars.left
+            } else {
+                chars.middle
+            },
+        );
+        let right = if column == widths.len() - 1 {
+            style_border(sgr, chars.right)
+        } else {
+            String::new()
+        };
+        let cell = row.get(column);
+        let fragment = cell.and_then(|c| c.fragments.get(line_index));
+        let content = match (cell, fragment) {
+            (Some(cell), Some(fragment)) => format!(
+                "{}{}{}",
+                " ".repeat(PADDING_LEFT),
+                pad_to_width(
+                    &style_fragment(fragment, cell.spans, sgr),
+                    width,
+                    aligns.get(column).copied().unwrap_or(Align::Left),
+                    measure,
+                ),
+                " ".repeat(PADDING_RIGHT)
+            ),
+            _ => " ".repeat(cell_width(width)),
+        };
+        out.push_str(&left);
+        if is_head {
+            out.push_str(&style_head(sgr, &content));
+        } else {
+            out.push_str(&content);
+        }
+        out.push_str(&right);
+    }
+    out
+}
+
+/// `rowHeight` (`table.ts:876`): the tallest cell, at least 1.
+fn row_height(row: &[LaidOutCell<'_>]) -> usize {
+    row.iter().map(|c| c.fragments.len()).fold(1, usize::max)
+}
+
+/// `composeTable` (`table.ts:886`): top rule, header, a rule before every body row, bottom.
+fn compose_table(
+    header: &[LaidOutCell<'_>],
+    rows: &[Vec<LaidOutCell<'_>>],
+    widths: &[usize],
+    aligns: &[Align],
+    chars: &BorderChars,
+    measure: Measure,
+    sgr: SgrMode,
+) -> String {
+    let emit_row = |row: &[LaidOutCell<'_>], is_head: bool, out: &mut Vec<String>| {
+        for line_index in 0..row_height(row) {
+            out.push(draw_line(
+                row, line_index, widths, aligns, chars, is_head, measure, sgr,
+            ));
+        }
+    };
+    let mut out = vec![draw_rule(widths, chars, RuleKind::Top, sgr)];
+    emit_row(header, true, &mut out);
+    for row in rows {
+        out.push(draw_rule(widths, chars, RuleKind::Mid, sgr));
+        emit_row(row, false, &mut out);
+    }
+    out.push(draw_rule(widths, chars, RuleKind::Bottom, sgr));
+    format!("{}\n", out.join("\n"))
+}
+
+/// `renderTable` (`table.ts:935`) over a `table` token's three fields.
+pub fn render_table(
+    header: &[TableCell],
+    rows: &[Vec<TableCell>],
+    align: &[Option<String>],
+    target_width: usize,
+    glyphs: &GlyphSet,
+    measure: Measure,
+    sgr: SgrMode,
+) -> String {
+    render_grid(
+        &table_grid(header, rows, align),
+        target_width,
+        glyphs,
+        measure,
+        sgr,
+    )
+}
+
+/// `renderGrid`'s `layout` closure (`table.ts:969`).
+fn lay_out_row<'g>(
+    row: &'g [CellContent],
+    widths: &[usize],
+    measure: Measure,
+) -> Vec<LaidOutCell<'g>> {
+    row.iter()
+        .enumerate()
+        .map(|(index, cell)| LaidOutCell {
+            fragments: wrap_fragments(
+                &cell.text,
+                widths
+                    .get(index)
+                    .copied()
+                    .unwrap_or(ABSOLUTE_MIN_COLUMN_WIDTH),
+                measure,
+            ),
+            spans: &cell.spans,
+        })
+        .collect()
+}
+
+/// `renderGrid` (`table.ts:955`): allocate, wrap, emit.
+pub fn render_grid<'g>(
+    grid: &'g TableGrid,
+    target_width: usize,
+    glyphs: &GlyphSet,
+    measure: Measure,
+    sgr: SgrMode,
+) -> String {
+    if grid.column_count == 0 {
+        return String::new();
+    }
+    let natural = natural_widths(&grid.header, &grid.rows, measure);
+    let widths = allocate_widths(&natural, target_width).widths;
+    let chars = resolve_border_chars(glyphs);
+    let layout =
+        |row: &'g [CellContent]| -> Vec<LaidOutCell<'g>> { lay_out_row(row, &widths, measure) };
+    let header = layout(&grid.header);
+    let rows: Vec<Vec<LaidOutCell<'_>>> = grid.rows.iter().map(|r| layout(r)).collect();
+    compose_table(&header, &rows, &widths, &grid.aligns, &chars, measure, sgr)
 }
 
 #[cfg(test)]
