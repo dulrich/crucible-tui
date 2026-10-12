@@ -979,3 +979,43 @@ describe("assertNodeModules", () => {
     await expect(assertNodeModules(REPO_ROOT)).resolves.toBeUndefined();
   });
 });
+
+describe("code-content claims (2026-10-12)", () => {
+  test("a class C pair claimed by a CODE_CONTENT_CLAIMS entry is attributed, not class C", () => {
+    const pair: PairedCombo = {
+      before: makeRecord({ codeContentSha: "ts-code" }),
+      after: makeRecord({ codeContentSha: "rust-code", attributed: "hljs-prototype-key" }),
+    };
+    const summary = classifyDiffs([pair], "a");
+    expect({ ok: summary.ok, classC: summary.classC.length, attributed: summary.attributed.length }).toEqual({
+      ok: true,
+      classC: 0,
+      attributed: 1,
+    });
+  });
+
+  test("any other id still loses to class C", () => {
+    const pair: PairedCombo = {
+      before: makeRecord({ codeContentSha: "ts-code" }),
+      after: makeRecord({ codeContentSha: "rust-code", attributed: "yaml-diagnostic" }),
+    };
+    const summary = classifyDiffs([pair], "a");
+    expect({ ok: summary.ok, classC: summary.classC.length }).toEqual({ ok: false, classC: 1 });
+  });
+});
+
+describe("dedupeCorpora", () => {
+  test("a file a later corpus lists again is compared once, under the first", async () => {
+    const { dedupeCorpora } = await import("../scripts/render-diff");
+    const spec = (name: string) => ({ name }) as never;
+    const result = dedupeCorpora(
+      [
+        { spec: spec("a"), files: ["/x/one.md", "/x/two.md"] },
+        { spec: spec("b"), files: ["/y/link-to-one.md", "/x/three.md"] },
+      ],
+      (path) => (path === "/y/link-to-one.md" ? "/x/one.md" : path),
+    );
+    expect(result.dropped).toBe(1);
+    expect(result.corpora.map((c) => c.files)).toEqual([["/x/one.md", "/x/two.md"], ["/x/three.md"]]);
+  });
+});

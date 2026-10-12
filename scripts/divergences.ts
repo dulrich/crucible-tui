@@ -307,6 +307,14 @@ const stripSgr = (line: string): string => line.replace(SGR, "");
 const inRanges = (line1: number, ranges: Array<[number, number]>): boolean =>
   ranges.some(([start, end]) => line1 >= start && line1 <= end);
 
+/**
+ * Whether a render site's policy has colour on — the only case D-C relaxes. Callers spell the
+ * policy two ways: the SgrMode names (`none`/`formats`/`full`, the witness tests) and the
+ * instrument's policy names (`P0`–`P4`, `render-diff`); colour is off for `none`, `formats`,
+ * `P0` and `P1`, and on for everything else.
+ */
+const colourOn = (policy: string): boolean => !["none", "formats", "P0", "P1"].includes(policy);
+
 // ---------------------------------------------------------------------------
 // D-A yaml-diagnostic
 // ---------------------------------------------------------------------------
@@ -318,6 +326,10 @@ const inRanges = (line1: number, ranges: Array<[number, number]>): boolean =>
  * echo is byte-identical — (3) the diagnostic lines themselves differ, and (4) every
  * `codeRange` starting at or after the diagnostic is shifted by exactly the diagnostic's
  * line-count delta, every earlier one unchanged, and the range counts equal.
+ *
+ * **D-A composes with D-C** (2026-10-12, user-ruled): under a colour-on policy, a line after
+ * the diagnostic that lies inside a TS `codeRange` is compared with SGR stripped — the
+ * highlighter's bytes are D-C's to relax, not D-A's to forbid. Every other line stays exact.
  */
 function yamlDiagnostic(site: Site): boolean {
   if (!isRender(site)) return false;
@@ -333,7 +345,17 @@ function yamlDiagnostic(site: Site): boolean {
   const bLines = b.text.split("\n");
   const before = (lines: string[]) => lines.slice(0, aStart).join("\n");
   if (before(aLines) !== before(bLines)) return false;
-  if (aLines.slice(aEnd).join("\n") !== bLines.slice(bEnd).join("\n")) return false;
+  const aRest = aLines.slice(aEnd);
+  const bRest = bLines.slice(bEnd);
+  if (aRest.length !== bRest.length) return false;
+  const relax = colourOn(site.policy);
+  const restEqual = aRest.every((line, i) => {
+    const other = bRest[i] as string;
+    if (line === other) return true;
+    // 1-based TS line number of this trailing line.
+    return relax && inRanges(aEnd + i + 1, a.codeRanges) && stripSgr(line) === stripSgr(other);
+  });
+  if (!restEqual) return false;
   if (aLines.slice(aStart, aEnd).join("\n") === bLines.slice(bStart, bEnd).join("\n")) return false;
   const delta = bEnd - bStart - (aEnd - aStart);
   if (a.codeRanges.length !== b.codeRanges.length) return false;
@@ -394,7 +416,7 @@ const POINTED = /^(?: {4})*(?:\*|\d+\.)/;
  */
 function hlFenceClaim(site: Site): boolean {
   if (!isRender(site)) return false;
-  if (site.policy === "none" || site.policy === "formats") return false;
+  if (!colourOn(site.policy)) return false;
   const a = site.ts;
   const b = site.rust;
   if (JSON.stringify(a.codeRanges) !== JSON.stringify(b.codeRanges)) return false;
@@ -546,6 +568,56 @@ function htmlCloseTagInterrupt(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// hljs-prototype-key
+// ---------------------------------------------------------------------------
+
+const UNDEFINED = /undefined/g;
+
+/**
+ * `hljs-prototype-key` (2026-10-12, user-ratified): `src/highlight.ts:232` looks a span class
+ * up as `THEME[frame.token] ?? null` on a plain object literal, so the class `constructor`
+ * (emitted only by highlight.js 10.7.3's ReasonML grammar, `reasonml.js:186,213`, which
+ * `highlightAuto` also picks for untagged fences) finds the inherited `Object` function;
+ * `applyStyle` then concatenates its undefined open/close (`src/style.ts:388`) and the code
+ * reads `getundefinedByRole()undefined`. The port's theme lookup has no prototype.
+ *
+ * Matches a colour-on render site with identical `codeRanges` and line count where every
+ * differing line lies inside a `codeRange`, and the two lines are equal once SGR is stripped
+ * and every literal `undefined` removed, with TS carrying strictly more of them. This is the
+ * one entry allowed to claim a code-content (class C) diff — see `CODE_CONTENT_CLAIMS`.
+ */
+function hljsPrototypeKey(site: Site): boolean {
+  if (!isRender(site) || !colourOn(site.policy)) return false;
+  const a = site.ts;
+  const b = site.rust;
+  if (JSON.stringify(a.codeRanges) !== JSON.stringify(b.codeRanges)) return false;
+  const aLines = a.text.split("\n");
+  const bLines = b.text.split("\n");
+  if (aLines.length !== bLines.length) return false;
+  let differing = 0;
+  for (let i = 0; i < aLines.length; i++) {
+    const x = aLines[i] as string;
+    const y = bLines[i] as string;
+    if (x === y) continue;
+    if (!inRanges(i + 1, a.codeRanges)) return false;
+    const sx = stripSgr(x);
+    const sy = stripSgr(y);
+    if (sx === sy) continue; // an SGR-only fence difference: D-C's channel, not this entry's
+    const extra = (sx.match(UNDEFINED)?.length ?? 0) - (sy.match(UNDEFINED)?.length ?? 0);
+    if (extra <= 0 || sx.replace(UNDEFINED, "") !== sy.replace(UNDEFINED, "")) return false;
+    differing += 1;
+  }
+  return differing > 0;
+}
+
+/**
+ * Registry ids allowed to claim a pair whose **code content** differs (the class C
+ * `diff-classify.ts` otherwise decides before any attribution). Only an entry whose spec is a
+ * TS defect *inside* code output belongs here.
+ */
+export const CODE_CONTENT_CLAIMS: ReadonlySet<string> = new Set(["hljs-prototype-key"]);
+
+// ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
@@ -663,6 +735,20 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/html-close-tag-interrupt.md",
     status: "live",
     predicate: htmlCloseTagInterrupt,
+  },
+  {
+    id: "hljs-prototype-key",
+    kind: "highlight",
+    spec:
+      "TS defect, fixed by the port: src/highlight.ts:232 `THEME[frame.token] ?? null` reads the " +
+      "inherited Object.prototype `constructor` for highlight.js 10.7.3's ReasonML `hljs-constructor` " +
+      "class (node_modules/highlight.js/lib/languages/reasonml.js:186,213; also reached by " +
+      "highlightAuto on untagged fences), so applyStyle (src/style.ts:388) writes literal `undefined` " +
+      "around the span: `getundefinedByRole()undefined`. Colour-off output is unaffected.",
+    ratified: { by: "user", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/hljs-prototype-key.md",
+    status: "live",
+    predicate: hljsPrototypeKey,
   },
 ];
 

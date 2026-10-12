@@ -20,6 +20,7 @@
  * `./revision`; neither imports it back.
  */
 import { sha256Hex } from "./hash";
+import { CODE_CONTENT_CLAIMS } from "./divergences";
 import {
   POLICIES,
   emojiOf,
@@ -497,6 +498,13 @@ export function classifyDiffs(
       emoji: emojiOf(before),
     };
     const diff: ComboDiff = { key, channels, before, after };
+    if (after.attributed !== undefined && CODE_CONTENT_CLAIMS.has(after.attributed)) {
+      // The one exception to "class C is decided first": a ratified entry whose spec is a TS
+      // defect *inside* code output (`CODE_CONTENT_CLAIMS`, `scripts/divergences.ts`) — today
+      // `hljs-prototype-key`, whose predicate itself requires every other line to agree.
+      attributed.push(diff);
+      continue;
+    }
     if (isDcPolicy(policyOf(before))) {
       // D-C: the code-content analogue is the echo/fence-stripped/prefix/vocabulary channels;
       // a diff in textSha/codeContentSha alone is highlighter SGR and is allowed.
