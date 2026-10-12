@@ -212,11 +212,10 @@ fn cli_usage_errors_exit_two() {
         &["--check", "--dialect"][..],
         &["--check", v, v][..],
         &["--check", "--bogus", v][..],
-        &[v][..],
+        &["--indent", "x", v][..],
     ] {
         let (code, out, err) = call(args);
         assert_eq!((code, out.as_str()), (2, ""), "{args:?}");
         assert!(err.contains("usage:"), "{args:?}");
     }
-    assert!(call(&[v]).2.contains("not implemented"));
 }

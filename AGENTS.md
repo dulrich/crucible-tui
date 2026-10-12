@@ -177,7 +177,8 @@ dist/mdview         compiled binary (gitignored; see PATH install below)
 Cargo.toml          the Rust workspace root (members crates/*, shared lints, release profile)
 Cargo.lock          committed; every graph-consuming cargo call runs --locked
 rust-toolchain.toml the pinned Rust toolchain (1.98.1, clippy, rustfmt, musl target)
-crates/jsonedit/    the jsonedit bin crate — logic in src/lib.rs, thin src/main.rs
+crates/jsonedit/    the jsonedit bin crate — logic in src/lib.rs, thin src/main.rs; its
+                    invariants are crates/jsonedit/AGENTS.md
 target/             Cargo build output (gitignored)
 ```
 
@@ -193,6 +194,7 @@ it describes, each with its own `CLAUDE.md` symlink. Read the root, then the nea
 | `src/AGENTS.md` | what the owned renderer must do and the measured defect behind each requirement, what owning the walk moved off `marked.use()`, the parity classes, the sentinels, the task-state pre-pass, the colour-only-defect class, the glyph tier, the command-line surface, the rendering policy, the `emoji` re-decision — and the index to the reference files below |
 | `scripts/AGENTS.md` | the corpus sweep and its manifests, the corpus growth findings, the defect detectors, the fast and durable measurement tiers |
 | `tests/AGENTS.md` | the publication containment guard's rules and internals, and the width-sensitive fixture trap |
+| `crates/jsonedit/AGENTS.md` | jsonedit's ten safe-edit invariants, the dialect and structural-check rules, the indent-dominance threshold, and the test approach |
 
 **The deep records live under `docs/agents/`, and are read on demand rather than loaded on
 every turn** — they deliberately have **no `CLAUDE.md` symlink**, which is the whole point
