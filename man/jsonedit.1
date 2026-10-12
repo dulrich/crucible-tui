@@ -1,0 +1,144 @@
+.TH JSONEDIT 1 "2026-10-11" "crucible-tui" "User Commands"
+.SH NAME
+jsonedit \- validate and safely edit JSON, JSONC and JSON5 files
+.SH SYNOPSIS
+.B jsonedit
+[\fB\-\-dialect\fR \fBjson\fR|\fBjsonc\fR|\fBjson5\fR]
+[\fB\-\-indent\fR \fBtab\fR|\fIN\fR]
+.I file
+.br
+.B jsonedit \-\-check
+[\fB\-\-dialect\fR \fBjson\fR|\fBjsonc\fR|\fBjson5\fR]
+.I file
+.br
+.B jsonedit
+\fB\-\-version\fR | \fB\-\-help\fR
+.SH DESCRIPTION
+.B jsonedit
+is a visudo\-style editor for configuration files.
+It copies
+.I file
+into a private temporary buffer, opens your editor on the buffer, and
+validates the result when the editor exits.
+The file is replaced only when the buffer is valid, and then with exactly
+the bytes the editor left: nothing is re\-formatted or re\-serialised.
+.PP
+With
+.BR \-\-check ,
+it validates
+.I file
+in place, prints any errors as
+.IR FILE : LINE : COL ": message"
+on standard error, and never opens an editor or writes anything.
+.SH OPTIONS
+.TP
+.BR \-\-dialect " " \fIjson\fR | \fIjsonc\fR | \fIjson5\fR
+Override the dialect chosen from the file extension.
+.TP
+.BR \-\-indent " " \fBtab\fR | \fIN\fR
+Use tabs, or
+.I N
+spaces, as the reference indent style instead of detecting it.
+Edit mode only; with
+.B \-\-check
+it is a usage error.
+.TP
+.B \-\-check
+Validate only.
+.TP
+.BR \-\-version ", " \-\-help
+Print the version or a usage summary.
+.SH THE PROMPT
+When the edited buffer is invalid, its errors are printed and, if standard
+input is a terminal,
+.B jsonedit
+asks:
+.PP
+.RS
+(e)dit again, e(x)it without saving, (a)bort keeping the buffer
+.RE
+.PP
+Answer with one letter and Enter.
+.B e
+reopens the same buffer;
+.B x
+discards the buffer and leaves the file untouched;
+.B a
+keeps the buffer and prints its path.
+End of input counts as
+.BR a .
+There is no way to write an invalid buffer.
+.PP
+The indent unit of the original file (tabs or
+.I N
+spaces) is detected when one style covers at least 80% of its indented
+lines; a file with fewer than three indented lines is not judged.
+When the style is ambiguous and standard input is a terminal, it is asked
+for once, before the editor starts.
+New or changed lines that do not match it produce a warning, and the prompt
+gains
+.BR (w)rite\ anyway ,
+because the bytes are still valid.
+Nothing is ever re\-indented.
+.PP
+If the file changed on disk while it was being edited, it is not
+overwritten: the change is reported and the prompt offers
+.B (e)dit again
+or
+.BR (a)bort .
+.PP
+When standard input is not a terminal,
+.B jsonedit
+never prompts: an invalid buffer or a concurrent change is reported, the
+buffer is kept, its path is printed, and the exit status is 1; a style
+warning is printed and the valid buffer is written.
+.SH DIALECTS
+A
+.I .jsonc
+extension selects JSONC (comments and trailing commas),
+.I .json5
+selects JSON5, and anything else is strict JSON.
+In every dialect, duplicate keys and empty input are errors; a leading
+UTF\-8 BOM is accepted and does not shift reported columns.
+A JSONC file with a
+.I .json
+name has its comments rejected; the error names
+.BR \-\-dialect .
+.SH EXIT STATUS
+.TP
+.B 0
+Written, unchanged, an empty new file not created, or valid under
+.BR \-\-check .
+.TP
+.B 1
+Invalid, aborted, exited without saving, or the editor failed.
+.TP
+.B 2
+Usage error.
+.SH ENVIRONMENT
+.TP
+.BR VISUAL ", " EDITOR
+The editor command, tried in that order, then
+.BR vi .
+The value is split like a shell word list (quotes and backslashes are
+honoured, nothing is expanded), so
+.B code \-\-wait
+works.
+A non\-zero editor exit is treated as abort.
+.SH FILES AND SAFETY
+The buffer is created mode 0600 in the temporary directory
+.RB ( $TMPDIR ,
+else
+.IR /tmp ),
+and keeps the file's extension so editor syntax modes apply.
+It is removed after a write or an exit without saving, and kept on abort.
+.PP
+Writes are atomic: a temporary file in the target's directory is written,
+fsynced, given the original's permission bits (and owner, where permitted),
+then renamed over the target.
+A symbolic link is followed and its target replaced; the link itself is
+left intact.
+A missing file is created only when the buffer is valid and non\-empty.
+.SH SEE ALSO
+.BR visudo (8),
+.BR mdview (1)

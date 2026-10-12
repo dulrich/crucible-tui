@@ -1,12 +1,16 @@
 //! jsonedit — validate (and, from WP-3 of `plans/jsonedit.md`, edit) JSON,
 //! JSONC and JSON5 files without re-printing them. This module is the CLI:
 //! `--check` runs the pure validator in `validate.rs` and reports
-//! `FILE:LINE:COL: message`; the editor loop is not implemented yet.
+//! `FILE:LINE:COL: message`; edit mode runs the safe-edit loop in `edit.rs`.
 
 use std::io::Write;
 use std::path::Path;
 
+pub mod edit;
+pub mod indent;
 pub mod validate;
+pub use edit::EditEnv;
+pub use indent::Indent;
 pub use validate::{Diagnostic, Dialect, validate};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -22,8 +26,11 @@ pub enum Command {
         file: String,
         dialect: Option<Dialect>,
     },
-    /// Edit mode — WP-3; for now a usage error.
-    Edit,
+    Edit {
+        file: String,
+        dialect: Option<Dialect>,
+        indent: Option<Indent>,
+    },
     Usage(String),
 }
 
@@ -33,7 +40,7 @@ pub fn parse_args(args: &[String]) -> Command {
         [a] if a == "--help" || a == "-h" => return Command::Help,
         _ => {}
     }
-    let (mut check, mut dialect, mut file) = (false, None, None);
+    let (mut check, mut dialect, mut file, mut indent) = (false, None, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -47,6 +54,15 @@ pub fn parse_args(args: &[String]) -> Command {
                     None => return Command::Usage(format!("unknown dialect '{v}'")),
                 }
             }
+            "--indent" if indent.is_none() => {
+                let Some(v) = it.next() else {
+                    return Command::Usage("--indent needs a value".into());
+                };
+                match Indent::from_name(v) {
+                    Some(i) => indent = Some(i),
+                    None => return Command::Usage(format!("bad --indent '{v}' (tab or N)")),
+                }
+            }
             s if s.starts_with('-') && s != "-" => {
                 return Command::Usage(format!("unexpected option '{s}'"));
             }
@@ -56,8 +72,15 @@ pub fn parse_args(args: &[String]) -> Command {
     }
     match (check, file) {
         (_, None) => Command::Usage("missing FILE".into()),
+        (true, Some(_)) if indent.is_some() => {
+            Command::Usage("--indent applies to edit mode only".into())
+        }
         (true, Some(file)) => Command::Check { file, dialect },
-        (false, Some(_)) => Command::Edit,
+        (false, Some(file)) => Command::Edit {
+            file,
+            dialect,
+            indent,
+        },
     }
 }
 
@@ -66,7 +89,18 @@ pub fn run(args: &[String]) -> i32 {
     run_with(args, &mut std::io::stdout(), &mut std::io::stderr())
 }
 
+/// Like [`run`], with the edit environment taken from the process.
 pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    run_env(args, out, err, &mut EditEnv::from_process)
+}
+
+/// Runs the CLI with an injected edit environment (built only in edit mode).
+pub fn run_env(
+    args: &[String],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    env: &mut dyn FnMut() -> Result<EditEnv, String>,
+) -> i32 {
     match parse_args(args) {
         Command::Version => {
             let _ = writeln!(out, "jsonedit {VERSION}");
@@ -80,13 +114,17 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i3
             let _ = writeln!(err, "jsonedit: {why}\n{USAGE}");
             2
         }
-        Command::Edit => {
-            let _ = writeln!(
-                err,
-                "jsonedit: editing is not implemented yet; use --check\n{USAGE}"
-            );
-            2
-        }
+        Command::Edit {
+            file,
+            dialect,
+            indent,
+        } => match env() {
+            Ok(mut env) => edit::edit(&file, dialect, indent, &mut env, err),
+            Err(why) => {
+                let _ = writeln!(err, "jsonedit: {why}");
+                1
+            }
+        },
         Command::Check { file, dialect } => check(&file, dialect, err),
     }
 }
@@ -139,7 +177,12 @@ mod tests {
 
     #[test]
     fn anything_else_is_usage_exit_two() {
-        for args in [&[][..], &["x"][..], &["--version", "x"][..]] {
+        for args in [
+            &[][..],
+            &["--version", "x"][..],
+            &["--check", "--indent", "2", "x"][..],
+            &["--indent", "3x", "x"][..],
+        ] {
             let (code, out, err) = call(args);
             assert_eq!((code, out.as_str()), (2, ""));
             assert!(err.contains("usage:"));

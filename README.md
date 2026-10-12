@@ -281,6 +281,23 @@ back if you would rather have it and accept the overflow.
 
 Out of scope by design: images, callouts, block LaTeX, raw HTML.
 
+## jsonedit
+
+A second command ships from this repo: `jsonedit`, a visudo-style safe editor for JSON, JSONC and JSON5 configuration files (Rust, `crates/jsonedit/`).
+
+```bash
+jsonedit settings.json                 # edit in $VISUAL / $EDITOR / vi; written only if valid
+jsonedit --check config.jsonc          # validate only; FILE:LINE:COL: message, exit 1 on error
+jsonedit --dialect jsonc --indent 2 tsconfig.json
+```
+
+- **Dialects:** `.jsonc` is JSONC, `.json5` is JSON5, anything else is strict JSON; `--dialect` overrides. Duplicate keys and empty input are errors in every dialect.
+- **Safety:** the editor works on a private 0600 buffer that keeps the file's extension. The file is replaced atomically (same-directory temp, fsync, rename), with the editor's bytes verbatim — never re-serialised — and keeps its permissions. Symlinks are followed and left intact. A change made on disk during the edit is detected and never silently overwritten.
+- **Invalid buffer:** the errors are printed and you choose `(e)dit again`, `e(x)it without saving` or `(a)bort keeping the buffer`. Without a terminal it never prompts: it keeps the buffer, prints its path and exits 1.
+- **Indent style:** the file's indent unit is detected (or given with `--indent tab|N`); new or changed lines that do not match it produce a warning and a `(w)rite anyway` choice. Nothing is ever re-indented.
+
+Exit codes: 0 written or unchanged, 1 invalid or aborted, 2 usage. `man jsonedit` has the full reference; building and installing it (`bun run build:rust`, the `~/.local/bin` symlink) is in `AGENTS.md`'s "Rust host prerequisites and jsonedit install".
+
 ## Two names, on purpose
 
 The project and repository are **`crucible-tui`**; the command, the package, the

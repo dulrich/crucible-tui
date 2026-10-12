@@ -9,7 +9,7 @@
     "test": "bun test tests",
     "build": "bun build --compile --outfile dist/mdview src/cli.ts",
     "build:rust": "cargo auditable build --release --locked --target x86_64-unknown-linux-musl -p jsonedit",
-    "install:man": "mkdir -p \"$HOME/.local/share/man/man1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/mdview.1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/crucible-tui.1\"",
+    "install:man": "mkdir -p \"$HOME/.local/share/man/man1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/mdview.1\" && ln -sf \"$PWD/man/crucible-tui.1\" \"$HOME/.local/share/man/man1/crucible-tui.1\" && ln -sf \"$PWD/man/jsonedit.1\" \"$HOME/.local/share/man/man1/jsonedit.1\"",
     "sweep": "bun run scripts/sweep.ts",
     "gen-licenses": "bun run scripts/gen-licenses.ts",
     "test:security": "trivy fs --scanners vuln --include-dev-deps --skip-db-update --exit-code 1 --severity CRITICAL,HIGH .",
