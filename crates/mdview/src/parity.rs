@@ -7,7 +7,7 @@
 //!   tokens?}`; response `{text, codeRanges}` or `{error}`.
 //! - `lex`: request `{body, tier}`; response `{tokens}` or `{error}` (the adapter is WP-7's,
 //!   so today every request errors).
-//! - `style-table`: dump the committed SGR table (WP-2 commits the table; until then it fails).
+//! - `style-table`: dump the committed SGR table (`style.rs`), one JSON line.
 //!
 //! **A request never yields a response that could read as a match unless `render` returned
 //! output.** Every failure — malformed request, missing feature, unimplemented renderer — is an
@@ -29,7 +29,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             serve(stdin.lock(), stdout.lock(), handle_render).map_err(|e| e.to_string())?
         }
         Some("lex") => serve(stdin.lock(), stdout.lock(), handle_lex).map_err(|e| e.to_string())?,
-        Some("style-table") => return Err("__parity style-table: unimplemented".into()),
+        Some("style-table") => {
+            let mut out = stdout.lock();
+            writeln!(out, "{}", crate::style::style_table_json()).map_err(|e| e.to_string())?;
+        }
         Some(other) => return Err(format!("__parity: unknown subcommand '{other}'")),
         None => return Err("__parity: missing subcommand".into()),
     }
