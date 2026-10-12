@@ -197,7 +197,7 @@ describe("transports", () => {
     await complaining.close();
   }, 15_000);
 
-  test("rust: the stub server errors on every combo, so the run can never pass", async () => {
+  test("rust: the real server renders and pairs every combo (it was a stub that errored until WP-4b/5b/6a)", async () => {
     const measurer = await loadMeasurer(REPO_ROOT);
     const ts = await loadRevision(REPO_ROOT, REPO_ROOT);
     const rust = await loadRevision(`rust:${REPO_ROOT}`, REPO_ROOT);
@@ -218,13 +218,16 @@ describe("transports", () => {
           emoji: "default",
         };
         const [a, b] = await Promise.all([computeComboRecord(ts, measurer, request), computeComboRecord(rust, measurer, request)]);
-        expect(b.record).toBeNull();
-        expect(b.error?.message).toMatch(/unimplemented/);
-        errors += 1;
+        expect(b.error ?? null).toBeNull();
+        expect(b.record).not.toBeNull();
+        if (b.error) errors += 1;
         if (a.record && b.record) pairs.push({ before: a.record, after: b.record });
       }
-      expect(errors).toBe(POLICY_NAMES.length);
-      expect(classifyDiffs(pairs, "a").ok).toBe(false);
+      // Every policy pairs: the transport carries a real render on both sides. Whether the
+      // pair agrees is the R-gate's question (and D-A/D-C attribution), not this test's.
+      expect(errors).toBe(0);
+      expect(pairs.length).toBe(POLICY_NAMES.length);
+      expect(classifyDiffs(pairs, "a").diffedCombos).toBeGreaterThanOrEqual(0);
     } finally {
       await Promise.all([ts.close(), rust.close()]);
     }
