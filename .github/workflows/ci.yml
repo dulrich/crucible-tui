@@ -32,9 +32,22 @@ jobs:
             | sh -s -- -b /usr/local/bin v0.73.0
           trivy fs --scanners vuln --include-dev-deps --exit-code 0 --severity CRITICAL,HIGH .
 
+      # The Rust workspace (plans/jsonedit.md WP-1): rustup is preinstalled
+      # on ubuntu-latest. The install is explicit (minimal profile, matching
+      # rust-toolchain.toml) because rustup >= 1.28 `rustup show` no longer
+      # auto-installs, and the default-profile auto-install failed locally.
+      # cargo-auditable builds
+      # the shipped binary with its embedded dependency manifest. Host setup
+      # stays outside verify, like `bun install`.
+      - name: Install Rust toolchain and cargo-auditable
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal -c clippy,rustfmt -t x86_64-unknown-linux-musl
+          cargo install cargo-auditable --locked --version 0.7.7
+
       # One canonical gate chain (WP-1 of plans/tn-review-remediation.md):
       # typecheck, lint, tests, the compiled build plus a smoke of the built
-      # artifact, license freshness, the --check self-smoke, the three
+      # artifact, license freshness, the --check self-smoke, the Rust
+      # fmt/clippy/test/build/smoke steps, the three
       # bundled sweeps (unicode, ascii, colour axis), and the security scan
       # above — see AGENTS.md's Run section for the full step list `bun run
       # verify` (scripts/verify.ts) runs, in order. Installation stays
