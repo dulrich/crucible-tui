@@ -551,7 +551,9 @@ impl<'s> Lexer<'s> {
                                 }
                             })
                             .collect();
-                        let blank = cur.iter().all(|(c, _)| js_space(*c));
+                        // §2.1: only spaces and tabs make a line blank; a U+00A0 line is
+                        // content (lazy), which is how comrak placed it.
+                        let blank = cur.iter().all(|(c, _)| matches!(c, ' ' | '\t' | '\n'));
                         let lead = exp.iter().take_while(|(c, _)| *c == ' ').count();
                         if blank || lead >= indent {
                             cur = exp;
@@ -1054,7 +1056,10 @@ impl<'s> Lexer<'s> {
             let mut k = 0;
             for (idx, line) in v.s.split('\n').enumerate() {
                 if idx > 0 {
-                    nv.push_str_at("\n", v.offs[k - 1] + 1);
+                    // The newline keeps its own doc offset: mapped one byte on, it would
+                    // share the next line's first offset, and a node starting the line
+                    // (`![](…)`) would take the newline into its range.
+                    nv.push_str_at("\n", v.offs[k - 1]);
                 }
                 let skip = if idx > 0 && line.len() - line.trim_start_matches(' ').len() >= 4 {
                     line.len() - strip_code_indent(line).len()
@@ -1099,10 +1104,10 @@ impl<'s> Lexer<'s> {
             if next_line.is_some() {
                 raw.push('\n');
             } else {
-                raw = raw.trim_end_matches(js_space).to_string();
+                raw.truncate(content_end(&raw));
                 // The list ends at the last non-whitespace character of its last item.
                 let v = self.view_lines(l0, item_end_line, p0, chain, true);
-                let trimmed = v.s.trim_end_matches(js_space).len();
+                let trimmed = content_end(&v.s);
                 list_end = if trimmed == 0 {
                     p0
                 } else {
@@ -2125,6 +2130,16 @@ fn task_state_line(line: &str) -> Option<(usize, char)> {
 }
 
 /// `/\n[ \t]*\n[ \t]*$/`.
+/// Where a last item's content ends: marked's `trimEnd`, over ASCII whitespace only. A
+/// non-ASCII JS-whitespace character (U+00A0, U+3000, …) is content to CommonMark (§2.1
+/// counts only spaces and tabs as blank, and §4.8 strips only those from a paragraph), and
+/// comrak keeps it in the item's paragraph; trimming it as marked does would drop it from
+/// the token stream entirely, since marked re-lexes what it trimmed and Rust does not.
+fn content_end(s: &str) -> usize {
+    s.trim_end_matches(|c: char| c.is_ascii() && js_space(c))
+        .len()
+}
+
 fn raw_ends_blank(raw: &str) -> bool {
     let t = raw.trim_end_matches([' ', '\t']);
     let Some(t) = t.strip_suffix('\n') else {
@@ -2891,5 +2906,25 @@ mod tests {
     fn definition_on_an_unterminated_last_line_is_a_definition() {
         let j = json("p\n\n[a]: <https://a.io/b+c=>");
         assert!(!j.contains("\"link\""), "{j}");
+    }
+
+    #[test]
+    fn nbsp_line_after_a_nested_item_is_kept_as_content() {
+        let j = json("- a.\n\n  - b.\n\u{a0}\n\nc\n");
+        assert!(j.contains("\"text\":\"b.\\n\u{a0}\""), "{j}");
+        let j = json("- a.\n\n  - b.\n\u{a0}\n");
+        assert!(j.contains("\"text\":\"b.\\n\u{a0}\""), "{j}");
+        // A trailing U+00A0 on the last item's last line stays in its text (comrak's reading).
+        let j = json("- a.\u{a0}\n   \n    - b.\u{a0}\n       \n- d\n");
+        assert!(j.contains("\"text\":\"b.\u{a0}\""), "{j}");
+        assert!(json("- a\u{a0}\n").contains("\"text\":\"a\u{a0}\""));
+    }
+
+    #[test]
+    fn lazy_image_line_after_an_indented_continuation_is_an_image() {
+        let j = json("- a\n\t\t- b\n![](p.png)\n\nc\n");
+        assert!(j.contains("\"type\":\"image\""), "{j}");
+        let j = json("- a\n      - b\n[x](p.png)\n");
+        assert!(j.contains("\"href\":\"p.png\""), "{j}");
     }
 }

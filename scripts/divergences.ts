@@ -1570,6 +1570,434 @@ function paragraphTrailingBlankLine(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// WP-9 T2 lexer entries, final group (standing ruling 2026-10-12): empty-item-paragraph-run,
+// image-alt-hard-break, item-trailing-nbsp, item-html-lazy-line, item-lazy-after-indented-line
+// ---------------------------------------------------------------------------
+
+const json = (n: unknown): string => JSON.stringify(n);
+
+/** A `text` leaf: no child tokens. */
+const isLeafText = (n: Node | undefined): boolean => n?.type === "text" && !("tokens" in n);
+
+/**
+ * A list's last-item chain: the last item, and while that item's last block is a list, that
+ * list's last item, down to the deepest last block — which must be a block `text` (an item's
+ * paragraph). `null` for any other shape.
+ */
+function lastTextChain(list: Node): { items: Node[]; deep: Node } | null {
+  const items: Node[] = [];
+  let cur: Node = list;
+  for (let depth = 0; depth < 32; depth++) {
+    const item = asArray(cur.items as Node[] | undefined).at(-1);
+    if (item === undefined) return null;
+    items.push(item);
+    const last = asArray(item.tokens as Node[] | undefined).at(-1);
+    if (last?.type === "list") {
+      cur = last;
+      continue;
+    }
+    return last?.type === "text" && Array.isArray(last.tokens) ? { items, deep: last } : null;
+  }
+  return null;
+}
+
+/** The list with every chain item's `raw` and the deep text's `raw`/`text`/`tokens` removed. */
+function blankChain(list: Node): string | null {
+  const clone = structuredClone(list) as Node;
+  const chain = lastTextChain(clone);
+  if (chain === null) return null;
+  for (const item of chain.items) delete item.raw;
+  delete chain.deep.raw;
+  delete chain.deep.text;
+  delete chain.deep.tokens;
+  return json(clone);
+}
+
+/** Leaf texts merged as marked's and the adapter's inline lexers both merge adjacent text. */
+function pushLeaf(out: Node[], n: Node): void {
+  const last = out.at(-1);
+  if (last !== undefined && isLeafText(n) && isLeafText(last)) out[out.length - 1] = { ...last, raw: s(last.raw) + s(n.raw), text: s(last.text) + s(n.text) };
+  else out.push(n);
+}
+
+/**
+ * Whether `rustList` is `tsList` with paragraph `p` folded into its deepest last item's text as
+ * a lazy continuation line: the same lists everywhere off the last-item chain, and the deep
+ * text's inline tokens followed by a newline and then `p`'s inline tokens.
+ */
+function lazyFold(tsList: Node, p: Node, rustList: Node, norm: (nodes: Node[]) => Node[] = (n) => n): boolean {
+  if (tsList.type !== "list" || rustList.type !== "list" || p.type !== "paragraph") return false;
+  const a = lastTextChain(tsList);
+  const b = lastTextChain(rustList);
+  if (a === null || b === null) return false;
+  const blank = blankChain(tsList);
+  if (blank === null || blank !== blankChain(rustList)) return false;
+  const want: Node[] = [];
+  for (const n of asArray(a.deep.tokens as Node[] | undefined)) pushLeaf(want, n);
+  pushLeaf(want, { type: "text", raw: "\n", text: "\n" });
+  for (const n of asArray(p.tokens as Node[] | undefined)) pushLeaf(want, n);
+  return json(norm(want)) === json(norm(asArray(b.deep.tokens as Node[] | undefined)));
+}
+
+type Fold = (ts: Node[], i: number, rust: Node[], j: number) => [number, number] | null;
+
+/**
+ * Walk two block arrays in step: equal blocks advance both sides, and every other position
+ * must be one `fold` instance, which reports how many blocks it consumed on each side.
+ * True when the whole of both arrays is accounted for and at least one fold fired.
+ */
+function walkFolds(ts: Node[], rust: Node[], fold: Fold): boolean {
+  let i = 0;
+  let j = 0;
+  let hits = 0;
+  while (i < ts.length || j < rust.length) {
+    if (i < ts.length && j < rust.length && json(ts[i]) === json(rust[j])) {
+      i++;
+      j++;
+      continue;
+    }
+    const step = fold(ts, i, rust, j);
+    if (step === null) return false;
+    i += step[0];
+    j += step[1];
+    hits++;
+  }
+  return hits > 0;
+}
+
+/**
+ * `empty-item-paragraph-run` matches a block array where, at some position, TS holds a run of
+ * two or more `paragraph`s whose every line is a list marker followed only by spaces, and Rust
+ * holds one `list` of that many items, every one empty — the second form of
+ * `empty-item-trailing-space`'s cause (that entry claims the single-paragraph form, and this
+ * one defers to it). Each instance may also be the single-paragraph form, so a site holding
+ * both forms is claimed whole, but at least one instance must be a run. marked 14's `list`
+ * rule needs content after the marker's space (node_modules/marked/lib/marked.esm.js:997), so
+ * `- ` starts no list; its GFM `paragraph` stops before a line its `list` interrupt pattern
+ * matches (` {0,3}(?:[*+-]|1[.)]) `, :1064 into `_paragraph`, :990), so consecutive `- ` lines
+ * become one paragraph each. CommonMark §5.2: an empty item is an item.
+ */
+function emptyItemParagraphRun(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (emptyItemTrailingSpace(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  let runs = 0;
+  const fold: Fold = (t, i, r, j) => {
+    const list = r[j];
+    if (list?.type !== "list") return null;
+    let k = i;
+    let lines = 0;
+    while (t[k]?.type === "paragraph") {
+      const ls = flattenInline(asArray(t[k]?.tokens as Node[] | undefined)).split("\n");
+      if (!ls.every((l) => EMPTY_MARKER_SPACE.test(l))) break;
+      lines += ls.length;
+      k++;
+    }
+    if (k === i) return null;
+    const items = asArray(list.items as Node[] | undefined);
+    const empty = items.slice(0, lines);
+    if (empty.length !== lines || empty.some((e) => asArray(e.tokens as Node[] | undefined).length > 0)) return null;
+    const rest = items.slice(lines);
+    let used = k - i;
+    if (rest.length > 0) {
+      if (t[k]?.type !== "list" || json(t[k]?.items) !== json(rest)) return null;
+      used++;
+    }
+    if (k - i > 1) runs++;
+    return [used, 1];
+  };
+  return walkFolds(ts, rust, fold) && runs > 0;
+}
+
+/**
+ * The source an inline array spells for `image-alt-hard-break`: leaf text by its `text`, a
+ * `br` as the backslash break `\` + newline, a bare autolink (`text === href`) by its text, and
+ * an image as `![alt](href)`. `null` for anything else.
+ */
+function spellImageRun(nodes: Node[]): string | null {
+  let out = "";
+  for (const n of nodes) {
+    if (isLeafText(n)) out += s(n.text);
+    else if (n.type === "br") out += "\\\n";
+    else if (n.type === "link" && s(n.href) === s(n.text)) out += s(n.text);
+    else if (n.type === "image" && n.title === null) out += `![${s(n.text)}](${s(n.href)})`;
+    else return null;
+  }
+  return out;
+}
+
+/**
+ * `image-alt-hard-break` matches an inline array whose Rust side holds exactly one image whose
+ * description carries a backslash hard break (`\` + newline), where TS holds the same source as
+ * text, `br`, text and a bare autolink of the destination — no image — and both sides spell
+ * the same source from the image on. CommonMark §6.4: an image description is link text, which
+ * holds inline content, a §6.7 hard break included. marked 14's `_inlineLabel`
+ * (node_modules/marked/lib/marked.esm.js:1166) admits a backslash only as `\\.`, and `.` does
+ * not match a newline, so the label fails and no image is made. Defers to
+ * `link-label-hard-break` (links, a different shape).
+ */
+function imageAltHardBreak(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (linkLabelHardBreak(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const images = rust.filter((n) => n.type === "image" && s(n.text).includes("\\\n"));
+  if (images.length !== 1 || ts.some((n) => n.type === "image") || !ts.some((n) => n.type === "br")) return false;
+  const k = rust.indexOf(images[0] as Node);
+  if (json(ts.slice(0, k)) !== json(rust.slice(0, k))) return false;
+  const a = spellImageRun(ts.slice(k));
+  return a !== null && a === spellImageRun(rust.slice(k));
+}
+
+/** A leading run of non-ASCII characters JavaScript's `trim` removes (U+00A0, U+3000, …). */
+const NON_ASCII_JS_SPACE = /^[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/;
+
+/**
+ * `item-trailing-nbsp` matches a block array where, at each differing position, TS holds a
+ * `list` and then a `paragraph` of one text that is a run of non-ASCII JS whitespace
+ * (U+00A0, …) optionally followed by blank lines, while Rust holds the same list with that run
+ * at the end of its deepest last item's text (and of each chain item's `raw`) — plus, when
+ * the TS paragraph carried a blank-line tail, a `space` TS does not have. marked 14 trims the
+ * last item and the list with JS `trimEnd` (node_modules/marked/lib/marked.esm.js:540-542),
+ * which strips U+00A0, and re-lexes the trimmed tail as a paragraph. CommonMark §4.8 strips
+ * only spaces and tabs from a paragraph's content (§2.1: U+00A0 is not whitespace there), so
+ * the character stays in the item's text.
+ */
+function itemTrailingNbsp(site: Site): boolean {
+  if (isRender(site)) return false;
+  const fold: Fold = (t, i, r, j) => {
+    const list = t[i];
+    const p = t[i + 1];
+    const rl = r[j];
+    if (list?.type !== "list" || p?.type !== "paragraph" || rl?.type !== "list") return null;
+    const kids = asArray(p.tokens as Node[] | undefined);
+    const only = kids[0];
+    if (kids.length !== 1 || only === undefined || !isLeafText(only)) return null;
+    const run = NON_ASCII_JS_SPACE.exec(s(only.raw))?.[0];
+    if (run === undefined) return null;
+    const tail = s(only.raw).slice(run.length);
+    if (!/^(?:\n[ \t]*)*$/.test(tail)) return null;
+    const clone = structuredClone(rl) as Node;
+    const chain = lastTextChain(clone);
+    if (chain === null) return null;
+    const cut = (n: Node, k: string): boolean => {
+      if (!s(n[k]).endsWith(run)) return false;
+      n[k] = s(n[k]).slice(0, -run.length);
+      return true;
+    };
+    for (const item of chain.items) if (!cut(item, "raw")) return null;
+    const leaf = asArray(chain.deep.tokens as Node[] | undefined).at(-1);
+    if (!cut(chain.deep, "raw") || !cut(chain.deep, "text") || leaf === undefined || !isLeafText(leaf) || !cut(leaf, "raw") || !cut(leaf, "text")) return null;
+    if (json(clone) !== json(list)) return null;
+    // The blank-line tail TS kept in the paragraph is Rust's `space`.
+    if (tail !== "" && r[j + 1]?.type === "space" && t[i + 2]?.type !== "space") return [2, 2];
+    return [2, 1];
+  };
+  return walkFolds(asArray(site.ts), asArray(site.rust), fold);
+}
+
+/** marked's `htmlBeginRegex` at indent 0 (node_modules/marked/lib/marked.esm.js:444). */
+const HTML_BEGIN = /^<(?:[a-z].*>|!--)/i;
+
+/**
+ * `item-html-lazy-line` matches a block array where, at each differing position, TS holds a
+ * `list` and then a `paragraph` whose first inline token is an `html` tag opening the line,
+ * while Rust holds the same list with that paragraph's inline tokens folded into its deepest
+ * last item's text after a newline — a lazy continuation line. marked 14 ends a list item at
+ * any line its `htmlBeginRegex` matches (node_modules/marked/lib/marked.esm.js:444, :467),
+ * whatever the line holds. CommonMark §5.2 / §4.8: a line that is not a block start continues
+ * the item's paragraph lazily, and a type-7 HTML block cannot interrupt a paragraph (§4.6), so
+ * an `<svg …>` line stays in the item as inline HTML (§6.6). Defers to `item-html-line`.
+ */
+function itemHtmlLazyLine(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (itemHtmlLine(site)) return false;
+  const fold: Fold = (t, i, r, j) => {
+    const p = t[i + 1];
+    const head = asArray(p?.tokens as Node[] | undefined)[0];
+    if (head?.type !== "html" || !HTML_BEGIN.test(s(head.text))) return null;
+    return lazyFold(t[i] as Node, p as Node, r[j] as Node) ? [2, 1] : null;
+  };
+  return walkFolds(asArray(site.ts), asArray(site.rust), fold);
+}
+
+/**
+ * `item-html-lazy-line-single-tilde` is the composition of `item-html-lazy-line` and
+ * `single-tilde-del` on one site: an `item-html-lazy-line` fold whose folded paragraph also
+ * holds a single-tilde `del` marked made and GFM would not. Each fold is compared with every
+ * single-tilde `del` dissolved into literal text on both sides (`single-tilde-del`'s own
+ * `dissolveSingleTildeDel`), and at least one fold must have held such a `del`. Neither
+ * component entry is widened: this one defers to both, so it claims only sites neither can.
+ */
+function itemHtmlLazyLineSingleTilde(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (itemHtmlLazyLine(site) || singleTildeDel(site) || itemHtmlLine(site)) return false;
+  let tildes = 0;
+  const fold: Fold = (t, i, r, j) => {
+    const p = t[i + 1];
+    const kids = asArray(p?.tokens as Node[] | undefined);
+    const head = kids[0];
+    if (head?.type !== "html" || !HTML_BEGIN.test(s(head.text))) return null;
+    if (!lazyFold(t[i] as Node, p as Node, r[j] as Node, dissolveSingleTildeDel)) return null;
+    if (containsSingleTildeDel(kids)) tildes++;
+    return [2, 1];
+  };
+  return walkFolds(asArray(site.ts), asArray(site.rust), fold) && tildes > 0;
+}
+
+/** A paragraph's last line holding only spaces and tabs, at least one of them a tab. */
+const TAB_BLANK_TAIL = /\n[ \t]*\t[ \t]*$/;
+
+/**
+ * `paragraph-tab-blank-line` matches an inline array (a paragraph's) whose TS side ends in a
+ * leaf text with a last line of only spaces and tabs (at least one tab), where Rust's side is
+ * that array without the line — or where, without it, `html-tag-underscore` claims the array
+ * (the composition seen in the corpus; that entry is not widened, and this one defers to it
+ * and to `paragraph-trailing-blank-line`). CommonMark 0.31.2 §2.1/§4.8: a line of only spaces
+ * or tabs is blank and ends a paragraph. marked 14's `_paragraph` continuation lookahead
+ * excludes a whitespace-only line only as ` +\n` (node_modules/marked/lib/marked.esm.js:990),
+ * spaces alone, so a line of tabs joins the paragraph's text.
+ */
+function paragraphTabBlankLine(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (htmlTagUnderscore(site) || paragraphTrailingBlankLine(site)) return false;
+  const ts = asArray(site.ts);
+  const last = ts.at(-1);
+  if (last === undefined || !isLeafText(last) || !TAB_BLANK_TAIL.test(s(last.raw))) return false;
+  const raw = s(last.raw).replace(TAB_BLANK_TAIL, "");
+  const text = s(last.text).replace(TAB_BLANK_TAIL, "");
+  const stripped = raw === "" ? ts.slice(0, -1) : [...ts.slice(0, -1), { ...last, raw, text }];
+  if (json(stripped) === json(asArray(site.rust))) return true;
+  return htmlTagUnderscore({ ...site, ts: stripped } as Site);
+}
+
+/**
+ * The source an inline array spells with code-span backticks put back: text by `raw`, a code
+ * span as `` `text` `` (entities decoded), an escape as `\c`, html by its text, a `br` as a
+ * newline, any container by its children (its own delimiters dropped).
+ */
+function spellWithTicks(nodes: Node[]): string {
+  return nodes
+    .map((n) => {
+      if (n.type === "text" && !Array.isArray(n.tokens)) return s(n.raw);
+      if (n.type === "codespan") return `\`${decodeEntities(s(n.text))}\``;
+      if (n.type === "escape") return `\\${s(n.text)}`;
+      if (n.type === "html") return s(n.text);
+      if (n.type === "br") return "\n";
+      return Array.isArray(n.tokens) ? spellWithTicks(n.tokens as Node[]) : "";
+    })
+    .join("");
+}
+
+/** A `<` that opens no tag, then a `>` with no `<`/`>` between — marked's masked range. */
+const ANGLE_RANGE = /<(?![A-Za-z/!?])[^<>]*>/g;
+
+/**
+ * `codespan-mask-angle-span` matches an inline array where the two sides recognise different
+ * code spans but spell the same characters once delimiter runs are removed, and the Rust
+ * (spec) side's source holds a `<` opening no tag followed by a `>`, with an odd number of
+ * code-span backticks between them. marked 14 masks every `<[^<>]*?>` range before pairing
+ * emphasis (`blockSkip`, node_modules/marked/lib/marked.esm.js:1125, applied at :1537-1539),
+ * ahead of the code-span ranges, so an odd count of backticks inside the range shifts every
+ * later code-span mask by one backtick: emphasis then pairs across a real code span, and the
+ * spans after it re-pair. CommonMark 0.31.2 §6.6: `< b` is not raw HTML; §6.1: code spans
+ * bind first. The emphasis-only form is `emphasis-mask-angle-span`; this one defers to it and
+ * to the other code-span mask entries.
+ */
+function codespanMaskAngleSpan(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (emphasisMaskAngleSpan(site) || codespanMaskSkew(site) || codespanMaskEscapedBacktick(site) || singleTildeDel(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (json(codespanTexts(ts)) === json(codespanTexts(rust))) return false;
+  if (countSingleTildeDel(ts) !== countSingleTildeDel(rust) || hasMixedRunText(ts)) return false;
+  if (leafLetters(ts) !== leafLetters(rust)) return false;
+  const src = spellWithTicks(rust);
+  return [...src.matchAll(ANGLE_RANGE)].some((m) => count(m[0], "`") % 2 === 1);
+}
+
+/**
+ * `codespan-mask-escaped-backtick-span` is `codespan-mask-escaped-backtick`'s cause with the
+ * code spans themselves re-paired: both sides hold an escaped backtick (`` \` ``), the two
+ * sides recognise different code spans, and they spell the same characters once delimiter
+ * runs are removed. marked 14 masks code spans for the emphasis pass with `blockSkip`'s
+ * `` `[^`]*?` `` (node_modules/marked/lib/marked.esm.js:1125) before it masks escapes
+ * (:1537-1542), so `` \` `` opens a masked range and shifts every later mask by one backtick;
+ * emphasis then pairs across a real code span (marked's `*` closer inside it), and the spans
+ * after it re-pair. CommonMark 0.31.2 §6.1 (a backslash-escaped backtick is literal) and
+ * §6.3 (code spans bind first). That entry requires the same code spans on both sides; this
+ * one defers to it and to the other code-span mask entries.
+ */
+function codespanMaskEscapedBacktickSpan(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (codespanMaskEscapedBacktick(site) || codespanMaskSkew(site) || codespanMaskAngleSpan(site) || singleTildeDel(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (!hasEscapedBacktick(ts) || !hasEscapedBacktick(rust)) return false;
+  if (json(codespanTexts(ts)) === json(codespanTexts(rust))) return false;
+  if (countSingleTildeDel(ts) !== countSingleTildeDel(rust) || hasMixedRunText(ts)) return false;
+  return leafLetters(ts) === leafLetters(rust);
+}
+
+/**
+ * `single-tilde-del-repair` is `single-tilde-del`'s cross-markup form with the Rust side
+ * holding as many single-tilde `del`s as TS, each pairing different tildes: both sides hold
+ * the same non-zero count, no TS `del` appears on the Rust side unchanged, and both spell the
+ * same characters once delimiter runs are removed. GFM 0.29 §6.5 with the §6.2 delimiter
+ * algorithm: a closer pairs with the nearest opener still on the stack, and a `**…**` that
+ * closes first removes the tildes inside it from the stack, so `~a \| ~b **~c** **~d` pairs
+ * the second tilde with the last. marked 14's `del` regex
+ * (node_modules/marked/lib/marked.esm.js:1229, `^(~~?)(?=[^\s~])…\1(?=[^~]|$)`) pairs the
+ * first opener with the first tilde preceded by a non-space. `single-tilde-del` requires
+ * fewer Rust `del`s for this form; this one defers to it.
+ */
+function singleTildeDelRepair(site: Site): boolean {
+  if (isRender(site)) return false;
+  if (singleTildeDel(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const n = countSingleTildeDel(ts);
+  if (n === 0 || countSingleTildeDel(rust) !== n) return false;
+  const dels = (nodes: Node[]): string[] =>
+    nodes.flatMap((x) => (isSingleTildeDel(x) ? [s(x.raw)] : Array.isArray(x.tokens) ? dels(x.tokens as Node[]) : []));
+  const rustDels = new Set(dels(rust));
+  if (dels(ts).some((d) => rustDels.has(d))) return false;
+  return leafLetters(ts) === leafLetters(rust);
+}
+
+/** marked's item indent: the marker with up to 3 spaces before it and 1–4 after. */
+const ITEM_HEAD = /^( {0,3}(?:[*+-]|\d{1,9}[.)]))( {1,4}(?! )|[ \t])/;
+
+/**
+ * `item-lazy-after-indented-line` matches a block array where, at each differing position, TS
+ * holds a `list` and then a `paragraph` (not opening with an html tag), while Rust holds the
+ * same list with that paragraph folded into its deepest last item's text as a lazy line; and
+ * the TS list's last item's last line, tabs expanded and the item's indent removed, is
+ * indented 4 or more columns. marked 14 refuses a lazy line after such a line ("indented
+ * code block", node_modules/marked/lib/marked.esm.js:487). CommonMark §4.4: indented code
+ * cannot interrupt a paragraph, so that line was paragraph continuation, and §5.2's laziness
+ * applies to the next one.
+ */
+function itemLazyAfterIndentedLine(site: Site): boolean {
+  if (isRender(site)) return false;
+  const fold: Fold = (t, i, r, j) => {
+    const list = t[i];
+    const p = t[i + 1];
+    const head = asArray(p?.tokens as Node[] | undefined)[0];
+    if (list?.type !== "list" || (head?.type === "html" && HTML_BEGIN.test(s(head.text)))) return null;
+    const raw = s(asArray(list.items as Node[] | undefined).at(-1)?.raw);
+    const m = ITEM_HEAD.exec(raw);
+    if (m === null) return null;
+    const indent = (m[0] ?? "").length;
+    const lastLine = (raw.split("\n").at(-1) ?? "").replace(/\t/g, "    ").slice(indent);
+    if (!raw.includes("\n") || lastLine.search(/[^ ]/) < 4) return null;
+    return lazyFold(list, p as Node, r[j] as Node) ? [2, 1] : null;
+  };
+  return walkFolds(asArray(site.ts), asArray(site.rust), fold);
+}
+
+// ---------------------------------------------------------------------------
 // hljs-prototype-key
 // ---------------------------------------------------------------------------
 
@@ -2239,6 +2667,149 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/paragraph-trailing-blank-line.md",
     status: "live",
     predicate: paragraphTrailingBlankLine,
+  },
+  {
+    id: "empty-item-paragraph-run",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §5.2 "List items": an empty item is an item (example 280), so consecutive ' +
+      "`- ` lines (a marker and a trailing space) form one list of empty items. marked 14's `list` " +
+      "rule needs content after the marker's space (node_modules/marked/lib/marked.esm.js:997), and " +
+      "its GFM `paragraph` stops before any line its list interrupt pattern ` {0,3}(?:[*+-]|1[.)]) ` " +
+      "matches (:1064 into `_paragraph`, :990), so each `- ` line becomes its own paragraph — the " +
+      "second form of `empty-item-trailing-space`'s cause, which claims the single-paragraph form.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/empty-item-paragraph-run.md",
+    status: "live",
+    predicate: emptyItemParagraphRun,
+  },
+  {
+    id: "image-alt-hard-break",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.4 "Images": an image description is link text, which holds inline ' +
+      "content, and a backslash before a line ending is a §6.7 hard break, so `![a\\\\\\nb](u)` is " +
+      "an image. marked 14's `_inlineLabel` (node_modules/marked/lib/marked.esm.js:1166) admits a " +
+      "backslash only as `\\\\.`, and `.` does not match a newline, so the label fails: no image, and " +
+      "the destination becomes a bare autolink.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/image-alt-hard-break.md",
+    status: "live",
+    predicate: imageAltHardBreak,
+  },
+  {
+    id: "item-trailing-nbsp",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §4.8 "Paragraphs": only initial and final spaces or tabs are stripped ' +
+      "from a paragraph's content, and §2.1 does not count U+00A0 as either, so a list's last " +
+      "line ending in U+00A0 keeps it in the item's text. marked 14 trims the last item and the " +
+      "list with JS `trimEnd` (node_modules/marked/lib/marked.esm.js:540-542), which strips U+00A0, " +
+      "and lexes the trimmed tail as a paragraph after the list.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/item-trailing-nbsp.md",
+    status: "live",
+    predicate: itemTrailingNbsp,
+  },
+  {
+    id: "item-html-lazy-line",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §5.2 "List items" (laziness) with §4.6: a type-7 HTML block cannot ' +
+      "interrupt a paragraph, so an unindented `<svg …>…` line directly after an item's text is a " +
+      "lazy continuation of that paragraph, as inline HTML (§6.6). marked 14 ends the item at any " +
+      "line its `htmlBeginRegex` matches (node_modules/marked/lib/marked.esm.js:444, :467), and " +
+      "the line becomes a paragraph after the list.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/item-html-lazy-line.md",
+    status: "live",
+    predicate: itemHtmlLazyLine,
+  },
+  {
+    id: "item-html-lazy-line-single-tilde",
+    kind: "lexer",
+    spec:
+      "The two causes of `item-html-lazy-line` and `single-tilde-del` on one site, each cited " +
+      'there: CommonMark 0.31.2 §5.2 laziness with §4.6 (a type-7 HTML block cannot interrupt a ' +
+      "paragraph) keeps an `<svg …>` line in the item, where marked 14 ends the item at its " +
+      "`htmlBeginRegex` (node_modules/marked/lib/marked.esm.js:444, :467); and GFM 0.29 §6.5's " +
+      "flanking rules leave a `~` pair literal where marked's `del` regex pairs it.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/item-html-lazy-line-single-tilde.md",
+    status: "live",
+    predicate: itemHtmlLazyLineSingleTilde,
+  },
+  {
+    id: "item-lazy-after-indented-line",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §4.4 "Indented code blocks": indented code cannot interrupt a paragraph, ' +
+      "so a deeply indented line under an item's text is paragraph continuation, and §5.2's " +
+      "laziness lets the next unindented line continue it too. marked 14 refuses a lazy line " +
+      "whenever the previous line, dedented, is indented 4 or more columns " +
+      "(node_modules/marked/lib/marked.esm.js:487, \"indented code block\"), ending the list.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/item-lazy-after-indented-line.md",
+    status: "live",
+    predicate: itemLazyAfterIndentedLine,
+  },
+  {
+    id: "paragraph-tab-blank-line",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §2.1 "blank line" / §4.8 "Paragraphs": a line of only spaces or tabs is ' +
+      "blank and ends a paragraph. marked 14's `_paragraph` continuation lookahead excludes a " +
+      "whitespace-only line only as ` +\\n` (node_modules/marked/lib/marked.esm.js:990), spaces " +
+      "alone, so a line of tabs joins the paragraph's text. Also claims the same array when, " +
+      "without that line, `html-tag-underscore` (§6.6, marked :1157-1159) claims it.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/paragraph-tab-blank-line.md",
+    status: "live",
+    predicate: paragraphTabBlankLine,
+  },
+  {
+    id: "codespan-mask-angle-span",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.6 "Raw HTML": `< b` opens no tag, and §6.1 "Code spans": code spans ' +
+      "bind first, so every backtick pair stands. marked 14 masks each `<[^<>]*?>` range before " +
+      "pairing emphasis (`blockSkip`, node_modules/marked/lib/marked.esm.js:1125, applied at " +
+      ":1537-1539) ahead of the code-span ranges; an odd count of backticks inside such a range " +
+      "shifts every later code-span mask by one, so emphasis pairs across a real code span and " +
+      "the spans after it re-pair.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/codespan-mask-angle-span.md",
+    status: "live",
+    predicate: codespanMaskAngleSpan,
+  },
+  {
+    id: "codespan-mask-escaped-backtick-span",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.1 "Backslash escapes": `` \\` `` is a literal backtick, and §6.3 ' +
+      '"Code spans": spans bind first, so every later backtick pair stands. marked 14 masks code ' +
+      "spans for the emphasis pass with `blockSkip`'s `` `[^`]*?` `` " +
+      "(node_modules/marked/lib/marked.esm.js:1125) before it masks escapes (:1537-1542), so the " +
+      "escaped backtick opens a masked range, every later mask shifts by one backtick, emphasis " +
+      "pairs across a real code span, and the spans after it re-pair.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/codespan-mask-escaped-backtick-span.md",
+    status: "live",
+    predicate: codespanMaskEscapedBacktickSpan,
+  },
+  {
+    id: "single-tilde-del-repair",
+    kind: "lexer",
+    spec:
+      "GFM 0.29 §6.5 \"Strikethrough\" under the §6.2 delimiter algorithm: a closer pairs with the " +
+      "nearest opener still on the stack, and a `**…**` that closes first removes the tildes inside " +
+      "it, so the same count of single-tilde `del`s pairs different tildes. marked 14's `del` regex " +
+      "(node_modules/marked/lib/marked.esm.js:1229) pairs the first opener with the first tilde " +
+      "preceded by a non-space. The equal-count cross-markup form of `single-tilde-del`.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/single-tilde-del-repair.md",
+    status: "live",
+    predicate: singleTildeDelRepair,
   },
 ];
 
