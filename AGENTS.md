@@ -241,6 +241,7 @@ bun run scripts/gen-width-tables.ts --check
 bun run scripts/gen-hljs-map.ts --check
 bun run scripts/frontmatter-census.ts --no-t1
 bun run scripts/table-alloc-diff.ts
+bun run scripts/lexer-diff.ts
 bun run scripts/render-diff.ts --rev-a . --rev-b rust:. --input tokens --policy P0,P1
 bun run scripts/render-diff.ts --rev-a . --rev-b rust:. --input tokens --policy P2 --require-nonzero sgr,fences
 bun run scripts/cli-diff.ts

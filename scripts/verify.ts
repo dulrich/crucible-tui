@@ -18,9 +18,9 @@
  * install` or `rustup` either — toolchain setup stays outside, like `bun
  * install`.
  *
- * The Rust port (`plans/mdview-rust-port.md`) adds eight steps after the jsonedit
- * smoke: three generated-table freshness checks, the T0 frontmatter census and
- * table-allocator diff, the T0 render differential under P0/P1 and P2, and the CLI
+ * The Rust port (`plans/mdview-rust-port.md`) adds nine steps after the jsonedit
+ * smoke: three generated-table freshness checks, the T0 frontmatter census,
+ * table-allocator diff and lexer diff, the T0 render differential under P0/P1 and P2, and the CLI
  * differential against the musl mdview binary `build (rust)` produced.
  *
  * Runs fail-fast, in order, and prints which step failed. `verify` never
@@ -173,6 +173,7 @@ const steps: Step[] = [
   { name: "hljs map freshness", run: () => sh(["bun", "run", "scripts/gen-hljs-map.ts", "--check"]) },
   { name: "frontmatter census (T0)", run: () => sh(["bun", "run", "scripts/frontmatter-census.ts", "--no-t1"]) },
   { name: "table allocator diff (T0)", run: () => sh(["bun", "run", "scripts/table-alloc-diff.ts"]) },
+  { name: "lexer diff (T0)", run: () => sh(["bun", "run", "scripts/lexer-diff.ts"]) },
   {
     name: "render diff (T0, P0/P1)",
     run: () =>
