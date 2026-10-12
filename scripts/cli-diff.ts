@@ -25,6 +25,8 @@
  * Not in the matrix, deliberately: a malformed-JSON config in a render-independent case (the
  * parse message is JavaScriptCore's wording in TS and serde_json's in Rust), and stdout
  * `BrokenPipe` (TS crashes with exit 1; Rust exits 0 quietly — `tests/cli_binary.rs`).
+ * The render-dependent "config malformed" case does run. `runSide`'s `maskParse` masks only
+ * that parse message's tail, so the render beneath it is still compared byte for byte.
  *
  * A leaf: imports nothing from `scripts/`.
  */
@@ -165,9 +167,14 @@ function runSide(command: string[], c: Case): Result {
     ? spawnSync("script", ["-qec", full.map(shellQuote).join(" "), "/dev/null"], { env, cwd: ROOT, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], input: "" })
     : spawnSync(full[0] as string, full.slice(1), { env, cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const norm = (s: string): string => (c.pty ? s.replaceAll("\r\n", "\n") : s);
+  // The one engine-worded message: a malformed config's JSON parse error is JavaScriptCore's
+  // text in TS and serde_json's in Rust (see the header). Only the message tail after the
+  // config path is masked; the warning's prefix, path, exit code and the render stay exact.
+  const maskParse = (s: string): string =>
+    s.replace(/^(mdview: ignoring malformed config at [^\n]*?config\.json: )[^\n]*$/m, "$1<json parse message>");
   return {
     stdout: norm(result.stdout ?? ""),
-    stderr: norm(result.stderr ?? ""),
+    stderr: maskParse(norm(result.stderr ?? "")),
     code: result.status,
     config: c.readConfig && existsSync(configPath) ? readFileSync(configPath, "utf8") : undefined,
   };
