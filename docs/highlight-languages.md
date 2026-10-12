@@ -1,6 +1,6 @@
 # Fenced-code highlighting: language support
 
-The Rust `mdview` highlights fenced code with syntect over the [two-face](https://github.com/CosmicHorrorDev/two-face) syntax set (213 grammars). The TypeScript `mdview` used highlight.js 10.7.3. A fence's language word is resolved in this order:
+The Rust `mdview` highlights fenced code with syntect over the [two-face](https://github.com/CosmicHorrorDev/two-face) syntax set (213 grammars), plus one grammar vendored into the build: PowerShell (`crates/mdview/syntaxes/`, 214 in all). The TypeScript `mdview` used highlight.js 10.7.3. A fence's language word is resolved in this order:
 
 1. the user's `highlightAs` config entry (`mdview highlight-as <fence> <language>`);
 2. the built-ins `dataviewjs` → `javascript` and `dataview` → `sql`;
@@ -11,9 +11,9 @@ A fence with no language word gets the 13-grammar guess. A fence whose word reso
 
 ## highlight.js languages with no grammar
 
-Measured on 2026-10-12: **99 of highlight.js's 191 languages** (155 fence names, counting aliases) have no two-face grammar. Under the Rust renderer, fences with these names render unhighlighted. Covering one means adding a grammar file to the build, which is a dependency and binary-size decision.
+Measured on 2026-10-12, updated at WP-6c: **98 of highlight.js's 191 languages** (157 fence names, counting aliases) have no grammar in the build. Under the Rust renderer, fences with these names render unhighlighted. Covering one means adding a grammar file to the build, which is a dependency and binary-size decision.
 
-**Usage.** Only three of these languages appear in the T1 corpus: PowerShell (29 fences), STEP Part 21 (3) and Stata (2). A wider search across the maintainer's own repositories found 312 PowerShell fences and nothing else of note. **PowerShell is the one gap with real usage**; the other 98 are listed for completeness.
+**Usage.** Only three of these languages appear in the T1 corpus: PowerShell (29 fences), STEP Part 21 (3) and Stata (2). A wider search across the maintainer's own repositories found 312 PowerShell fences and nothing else of note. PowerShell was the one gap with real usage, and it is now covered: WP-6c of `plans/mdview-rust-port.md` vendored the SublimeText/PowerShell grammar (MIT), so `powershell`, `ps` and `ps1` highlight. The 98 that remain are listed for completeness.
 
 | Language | Fence names |
 |---|---|
@@ -84,7 +84,6 @@ Measured on 2026-10-12: **99 of highlight.js's 191 languages** (155 fence names,
 | Packet Filter config | `pf`, `pf.conf` |
 | Parser3 | `parser3` |
 | Pony | `pony` |
-| PowerShell | `powershell`, `ps`, `ps1` |
 | Processing | `processing` |
 | Prolog | `prolog` |
 | PureBASIC | `purebasic`, `pb`, `pbi` |

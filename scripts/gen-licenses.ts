@@ -219,10 +219,33 @@ function cargoClosure(): CargoInfo[] {
       queue.push(dep.pkg);
     }
   }
+  // `cargo metadata` unifies features across build and normal edges, so a crate that is also a
+  // build-dependency (syntect, for crates/mdview/build.rs) lists its build-only features' deps
+  // (yaml-rust) as normal edges. `cargo tree -e normal` resolves the target graph separately;
+  // a crate it does not name never ships, and is dropped here.
+  const tree = Bun.spawnSync(
+    [
+      "cargo", "tree", "--locked", "--workspace", "-e", "normal",
+      "--target", "x86_64-unknown-linux-musl", "--prefix", "none", "--format", "{p}",
+    ],
+    { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
+  );
+  if (tree.exitCode !== 0) {
+    throw new Error(`gen-licenses: cargo tree failed:\n${new TextDecoder().decode(tree.stderr)}`);
+  }
+  const shipped = new Set(
+    new TextDecoder()
+      .decode(tree.stdout)
+      .split("\n")
+      .map((l) => /^(\S+) v(\S+)/.exec(l))
+      .filter((m) => m !== null)
+      .map((m) => `${m[1]}@${m[2]}`),
+  );
   const infos = new Map<string, CargoInfo>();
   for (const id of seen) {
     const pkg = byId.get(id);
     if (!pkg) throw new Error(`gen-licenses: cargo metadata names an unknown package id ${id}`);
+    if (!shipped.has(`${pkg.name}@${pkg.version}`)) continue;
     const dir = dirname(pkg.manifest_path);
     const files = pkg.license_file
       ? [pkg.license_file]
@@ -306,7 +329,44 @@ for (const krate of crates) {
   lines.push("-".repeat(48));
 }
 
-const counts = `${packages.length} npm packages + ${crates.length} crates`;
+// --- Vendored grammars (crates/mdview/syntaxes/) ------------------------------
+// Each `<Name>.sublime-syntax` is compiled into the mdview binary by its build.rs; its
+// notice is the `<Name>.LICENSE.txt` beside it. A grammar without one fails the generator.
+const SYNTAX_DIR = join(ROOT, "crates", "mdview", "syntaxes");
+const grammars = readdirSync(SYNTAX_DIR)
+  .filter((f) => f.endsWith(".sublime-syntax"))
+  .sort()
+  .map((f) => {
+    const name = f.slice(0, -".sublime-syntax".length);
+    const notice = join(SYNTAX_DIR, `${name}.LICENSE.txt`);
+    if (!existsSync(notice)) throw new Error(`gen-licenses: vendored grammar ${f} has no ${name}.LICENSE.txt`);
+    return { name, text: readFileSync(notice, "utf8").trimEnd() };
+  });
+
+lines.push("");
+lines.push("=".repeat(48));
+lines.push("Vendored grammars — mdview");
+lines.push("=".repeat(48));
+lines.push("");
+lines.push(
+  "Sublime syntax definitions vendored under crates/mdview/syntaxes/ and compiled into the " +
+    "mdview binary; upstream source and commit are recorded in that directory's README.md.",
+);
+lines.push("");
+lines.push(`${grammars.length} vendored grammars.`);
+lines.push("");
+lines.push("-".repeat(48));
+
+for (const grammar of grammars) {
+  lines.push("");
+  lines.push(`${grammar.name}.sublime-syntax`);
+  lines.push("");
+  lines.push(grammar.text);
+  lines.push("");
+  lines.push("-".repeat(48));
+}
+
+const counts = `${packages.length} npm packages + ${crates.length} crates + ${grammars.length} vendored grammars`;
 const output = `${lines.join("\n")}\n`;
 const targetPath = join(ROOT, "THIRD-PARTY-LICENSES.txt");
 
