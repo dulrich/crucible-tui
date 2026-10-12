@@ -935,7 +935,7 @@ describe("R-gate attribution through the divergence registry", () => {
     expect(formatAttributed(summary.attributed)).toBe("render-diff: attributed none");
   });
 
-  test("an unratified match (flow-key-mapping) is not attributed and still fails", () => {
+  test("a ratified parse-verdict split (flow-key-mapping) is attributed and passes", () => {
     const ts: RenderOutput = {
       text: "just a scalar: line\nnot : a, b\n    : c\n---\n\nbody",
       codeRanges: [],
@@ -949,12 +949,12 @@ describe("R-gate attribution through the divergence registry", () => {
       frontmatter: { parsed: false, diagnostic: [0, 6] },
     };
     const entry = REGISTRY.find((e) => e.id === "flow-key-mapping");
-    expect(entry?.ratified).toBeNull();
+    expect(entry?.ratified).not.toBeNull();
     const site: RenderSite = { kind: "render", path: "x", tier: "unicode", policy: "P0", ts, rust };
     expect(entry?.predicate(site)).toBe(true);
     const id = attributeOutputs(ts, rust, context);
-    expect(id).toBeNull();
-    expect(classifyDiffs([pairOf(id)], "a").ok).toBe(false);
+    expect(id).toBe("flow-key-mapping");
+    expect(classifyDiffs([pairOf(id)], "a").ok).toBe(true);
   });
 
   test("identical outputs are never attributed", async () => {

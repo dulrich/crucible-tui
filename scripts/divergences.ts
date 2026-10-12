@@ -369,7 +369,7 @@ function yamlDiagnostic(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// flow-key-mapping (unratified)
+// flow-key-mapping (user-ratified 2026-10-12)
 // ---------------------------------------------------------------------------
 
 /** The `yaml` package's invented empty-string key, as `formatMapping` lays it out: `   : c`. */
@@ -661,8 +661,9 @@ export const REGISTRY: readonly Divergence[] = [
       "it at the parent block map's indent, :646-647 then opens a new block-map item with " +
       "`key: null`, and node_modules/yaml/dist/nodes/addPairToJSMap.js:40-41 (stringifyKey) " +
       "turns the null key into \"\" — `{\"not\":[\"a\",\"b\"],\"\":\"c\"}`, rendered as `not : a, b` / " +
-      "`    : c`. Synthetic only (census); no corpus file reaches it. Held for the user.",
-    ratified: null,
+      "`    : c`. Synthetic only (census); no corpus file reaches it. Ratified 2026-10-12: invalid " +
+      "YAML gets a parse error, not an invented key.",
+    ratified: { by: "user", date: "2026-10-12" },
     witness: "tests/fixtures/divergences/flow-key-mapping.md",
     status: "pending-witness",
     predicate: flowKeyMapping,
