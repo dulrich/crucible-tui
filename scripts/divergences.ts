@@ -1082,6 +1082,253 @@ function listCloseTagLazyLine(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// WP-9 T2 lexer entries, block group (standing ruling 2026-10-12): item-ordered-interrupt,
+// setext-indented-bullet
+// ---------------------------------------------------------------------------
+
+/** An ordered list marker whose start number is not 1, at the head of a line. */
+const ORDERED_NOT_ONE = /^ *0*(?:[02-9]|1\d)\d{0,8}[.)][ \t]/;
+
+/**
+ * `item-ordered-interrupt` matches a block array whose TS side ends `[text, list]`, the list
+ * ordered with a first marker numbered other than 1, and whose Rust side is the same array
+ * with those two folded into one `text` that starts with the TS text, a newline and that
+ * marker line. In a list item marked 14 lexes with `top` false: no paragraph rule
+ * (node_modules/marked/lib/marked.esm.js:1468), `blockText` takes one line (:991), and the
+ * `list` rule (bullet `\d{1,9}[.)]`, :981) takes the next. CommonMark §5.3: "In order for a
+ * sequence of lines to constitute a list item … when the first list item in a list interrupts
+ * a paragraph … an ordered list [must] start with 1", so the line is paragraph continuation.
+ */
+function itemOrderedInterrupt(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (ts.length < 2 || rust.length !== ts.length - 1) return false;
+  const list = ts.at(-1);
+  const text = ts.at(-2);
+  const merged = rust.at(-1);
+  if (list?.type !== "list" || list.ordered !== true || text?.type !== "text" || merged?.type !== "text") return false;
+  const first = s(asArray(list.items as Node[] | undefined)[0]?.raw).split("\n")[0] ?? "";
+  if (!ORDERED_NOT_ONE.test(first)) return false;
+  const head = `${s(text.text)}\n`;
+  if (!s(merged.text).startsWith(head) || !s(merged.text).slice(head.length).trimStart().startsWith(first.trimStart())) return false;
+  return JSON.stringify(ts.slice(0, -2)) === JSON.stringify(rust.slice(0, -1));
+}
+
+/** A bullet or ordered marker indented one to three spaces, starting a line inside a heading. */
+const INDENTED_MARKER_LINE = /\n {1,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]|$)/;
+
+/**
+ * `setext-indented-bullet` matches a block array holding, at index k, a TS depth-2 `heading`
+ * whose text has a line opening with a list marker indented one to three spaces, where the
+ * Rust side holds at k a `text` or `paragraph` spelling the heading text before that line and
+ * at k + 1 a `list`, and the blocks after agree. marked 14's `lheading` excludes a list line
+ * from the heading content only at column 0 (`\n(?!…bull …)`, bull `[*+-]|\d{1,9}[.)]`,
+ * node_modules/marked/lib/marked.esm.js:982-983), so `x` / `  - a` / `-` is one heading with
+ * `-` as its underline. CommonMark §5.2: a list item may interrupt a paragraph at indent 0-3,
+ * so the paragraph is `x` and §4.3's underline has no paragraph left to close; `-` is an item.
+ */
+function setextIndentedBullet(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  return ts.some((h, k) => {
+    if (h.type !== "heading" || h.depth !== 2) return false;
+    const text = asArray(h.tokens as Node[] | undefined)
+      .map((n) => s(n.raw))
+      .join("");
+    const cut = text.search(INDENTED_MARKER_LINE);
+    if (cut < 0) return false;
+    const para = rust[k];
+    if ((para?.type !== "text" && para?.type !== "paragraph") || rust[k + 1]?.type !== "list") return false;
+    const spelled = para.type === "text" ? s(para.text) : flattenInline(asArray(para.tokens as Node[] | undefined));
+    if (spelled.trim() !== text.slice(0, cut).trim()) return false;
+    // comrak closes the list before a blank line the heading's underline consumed: allow one
+    // extra `space` right after the Rust list, and nothing else.
+    // The rest of the TS list (items after the underline) joins the Rust list.
+    let rest = ts.slice(k + 1);
+    const absorbed = rest[0];
+    if (absorbed?.type === "list") {
+      const theirs = asArray(absorbed.items as Node[] | undefined);
+      const ours = asArray(rust[k + 1]?.items as Node[] | undefined);
+      if (theirs.length > 0 && JSON.stringify(ours.slice(-theirs.length)) === JSON.stringify(theirs)) rest = rest.slice(1);
+    }
+    const after = JSON.stringify(rest);
+    const tail = rust[k + 2]?.type === "space" && rest[0]?.type !== "space" ? rust.slice(k + 3) : rust.slice(k + 2);
+    return JSON.stringify(ts.slice(0, k)) === JSON.stringify(rust.slice(0, k)) && after === JSON.stringify(tail);
+  });
+}
+
+/** A list marker line with nothing after the marker but spaces or tabs, and at least one. */
+const EMPTY_MARKER_SPACE = /^ {0,3}(?:[*+-]|\d{1,9}[.)])[ \t]+$/;
+
+/**
+ * `empty-item-trailing-space` matches a block array holding, at index k, a TS `paragraph`
+ * whose every line is a list marker followed only by spaces, where the Rust side holds at k a
+ * `list` with that many items, every one empty, and the blocks around agree. marked 14's
+ * `list` rule needs content after the marker's space (`([ \t][^\n]+?)?(?:\n|$)`,
+ * node_modules/marked/lib/marked.esm.js:997), so `1. ` with a trailing space starts no list.
+ * CommonMark §5.2: a list item may begin with a blank line, and an empty item is an item.
+ */
+function emptyItemTrailingSpace(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const json = (n: unknown): string => JSON.stringify(n);
+  let i = 0;
+  let j = 0;
+  let hits = 0;
+  while (i < ts.length && j < rust.length) {
+    const p = ts[i] as Node;
+    const list = rust[j] as Node;
+    if (json(p) === json(list)) {
+      i++;
+      j++;
+      continue;
+    }
+    if (p.type !== "paragraph" || list.type !== "list") return false;
+    const lines = flattenInline(asArray(p.tokens as Node[] | undefined)).split("\n");
+    if (!lines.every((l) => EMPTY_MARKER_SPACE.test(l))) return false;
+    const items = asArray(list.items as Node[] | undefined);
+    const empty = items.slice(0, lines.length);
+    if (empty.length !== lines.length || empty.some((e) => asArray(e.tokens as Node[] | undefined).length > 0)) return false;
+    // The list right after the paragraph, when there is one, is the rest of the Rust list.
+    const next = ts[i + 1];
+    const rest = items.slice(lines.length);
+    if (rest.length === 0) i += 1;
+    else if (next?.type === "list" && json(next.items) === json(rest)) i += 2;
+    else return false;
+    j += 1;
+    hits++;
+  }
+  return hits > 0 && i === ts.length && j === rust.length;
+}
+
+/** A line opening with a bullet or a `1.`/`1)` marker followed by a tab. */
+const TAB_MARKER_LINE = /\n {0,3}(?:[*+-]|0{0,8}1[.)])\t/;
+
+/**
+ * `paragraph-tab-marker-interrupt` matches a block array holding, at index k, a TS
+ * `paragraph` with a line opening `-`/`*`/`+`/`1.`/`1)` and a tab, where the Rust side holds at
+ * k a `paragraph` spelling the text before that line and at k + 1 a `list`, and the blocks
+ * around agree. marked 14's paragraph interruption admits a list only as
+ * `' {0,3}(?:[*+-]|1[.)]) '` — a space, never a tab (node_modules/marked/lib/marked.esm.js:1028).
+ * CommonMark §5.2: a list marker is followed by 1-4 spaces *or a tab*, and §5.3 lets a bullet
+ * or a list starting at 1 interrupt a paragraph.
+ */
+function paragraphTabMarkerInterrupt(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  return ts.some((p, k) => {
+    if (p.type !== "paragraph" || rust[k]?.type !== "paragraph" || rust[k + 1]?.type !== "list") return false;
+    const text = flattenInline(asArray(p.tokens as Node[] | undefined));
+    const cut = text.search(TAB_MARKER_LINE);
+    if (cut < 0) return false;
+    if (flattenInline(asArray(rust[k]?.tokens as Node[] | undefined)) !== text.slice(0, cut)) return false;
+    return (
+      JSON.stringify(ts.slice(0, k)) === JSON.stringify(rust.slice(0, k)) &&
+      JSON.stringify(ts.slice(k + 1)) === JSON.stringify(rust.slice(k + 2))
+    );
+  });
+}
+
+/** An html node whose tag name holds `_` or `:` — a name CommonMark §6.6 does not admit. */
+const isBadNameHtml = (n: Node): boolean => n.type === "html" && /^<\/?[A-Za-z][A-Za-z0-9-]*[_:]/.test(s(n.text));
+
+/** Inline source with html spelled by its text and plain text by its raw; anything else by JSON. */
+const spellHtml = (nodes: Node[]): string =>
+  nodes.map((n) => (n.type === "html" ? s(n.text) : n.type === "text" && !Array.isArray(n.tokens) ? s(n.raw) : JSON.stringify(n))).join("");
+
+/**
+ * `html-tag-name-invalid` matches a site where the TS side holds `html` whose tag name has `_`
+ * or `:` (`<my_tag>`, `</ns:tag>`), and the Rust side reads the same source as text: inline,
+ * the two sides spell the same source and keep the same other html; as blocks, each such TS
+ * html block lines up with a Rust `paragraph` spelling it plus a `space`, and every other
+ * block agrees. marked 14's tag names are `[a-zA-Z][\w-]*` / `[\w:-]*` (inline open and close,
+ * node_modules/marked/lib/marked.esm.js:1158-1159; block type 7, :1014-1015), and `\w` admits
+ * `_`. CommonMark §6.6: "A tag name consists of an ASCII letter followed by zero or more ASCII
+ * letters, digits, or hyphens", so neither is a tag and §4.6's type 7 does not start.
+ */
+function htmlTagNameInvalid(site: Site): boolean {
+  if (isRender(site)) return false;
+  // `<name_with_underscore>` inline is `html-tag-underscore`'s (landed first, same section of
+  // the spec); this entry owns the rest — `:` names and block-level type-7 starts.
+  if (htmlTagUnderscore(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (!ts.some(isBadNameHtml) || rust.some(isBadNameHtml)) return false;
+  const htmls = (nodes: Node[]): string => JSON.stringify(nodes.filter((n) => n.type === "html" && !isBadNameHtml(n)));
+  if (spellHtml(ts) === spellHtml(rust) && htmls(ts) === htmls(rust)) return true;
+  let i = 0;
+  let j = 0;
+  let swaps = 0;
+  while (i < ts.length && j < rust.length) {
+    const t = ts[i] as Node;
+    if (JSON.stringify(t) === JSON.stringify(rust[j])) {
+      i++;
+      j++;
+    } else if (
+      isBadNameHtml(t) &&
+      rust[j]?.type === "paragraph" &&
+      rust[j + 1]?.type === "space" &&
+      spellHtml(asArray(rust[j]?.tokens as Node[] | undefined)) === s(t.text).trimEnd()
+    ) {
+      i++;
+      j += 2;
+      swaps++;
+    } else return false;
+  }
+  return swaps > 0 && i === ts.length && j === rust.length;
+}
+
+/**
+ * `autolink-unclosed-paren` matches an inline array where the TS side holds a bare autolink
+ * (`href === text`, not ending `\`) followed by a `text` that opens with the rest of a Rust
+ * bare autolink's href, and that href holds an unbalanced `(`. marked 14's GFM `_backpedal`
+ * (node_modules/marked/lib/marked.esm.js:1228, applied at :929) admits `(` only in a closed
+ * `\([^)]*\)`, so `https://example.org/wiki/A_B_(C` ends before `_(`. The GFM autolink
+ * extension runs the URL to whitespace or `<` and trims only trailing punctuation and an
+ * unbalanced trailing `)`.
+ */
+function autolinkUnclosedParen(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  return asArray(site.rust).some((r) => {
+    const href = s(r.href);
+    if (r.type !== "link" || href !== s(r.text) || parenBalance(href) <= 0) return false;
+    return ts.some((t, i) => {
+      const h = s(t.href);
+      if (t.type !== "link" || h !== s(t.text) || h.endsWith("\\") || h.length >= href.length || !href.startsWith(h)) return false;
+      const rest = href.slice(h.length);
+      return rest.includes("(") && ts[i + 1]?.type === "text" && s(ts[i + 1]?.raw).startsWith(rest);
+    });
+  });
+}
+
+/** Text and escape leaves, joined, with backslashes dropped. */
+const plainLeaves = (nodes: Node[]): string =>
+  nodes.map((n) => (n.type === "text" ? s(n.raw) : n.type === "escape" ? s(n.text) : "\u0000")).join("").replace(/\\/g, "");
+
+/**
+ * `link-label-escaped-bracket` matches an inline array (a link's label) where the TS side
+ * holds one `link` and the Rust side holds no link and only text and escapes that spell
+ * `[text](href)` of it. marked 14's `outputLink` unescapes `\[` and `\]` in a label before
+ * lexing it (node_modules/marked/lib/marked.esm.js:185, `tokens: lexer.inlineTokens(text)` at
+ * :194), so `[\[a\](b)](c)` holds a link `a`. CommonMark §2.4: a backslash-escaped bracket is
+ * a literal character, so the label is the text `[a](b)`.
+ */
+function linkLabelEscapedBracket(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const links = ts.filter((n) => n.type === "link");
+  if (links.length !== 1 || rust.some((n) => n.type !== "text" && n.type !== "escape")) return false;
+  const l = links[0] as Node;
+  return plainLeaves(rust).includes(`[${s(l.text)}](${s(l.href)})`);
+}
+
+// ---------------------------------------------------------------------------
 // hljs-prototype-key
 // ---------------------------------------------------------------------------
 
@@ -1531,6 +1778,107 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/list-close-tag-lazy-line.md",
     status: "live",
     predicate: listCloseTagLazyLine,
+  },
+  {
+    id: "item-ordered-interrupt",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §5.3 "Lists": "In order for a sequence of lines to constitute a list ' +
+      "item, … when the first list item in a list interrupts a paragraph … an ordered list " +
+      'must start with 1", so in `- a (b` / `  2) c` the second line is paragraph continuation. ' +
+      "In a list item marked 14 lexes with `top` false: no paragraph rule " +
+      "(node_modules/marked/lib/marked.esm.js:1468), `blockText` takes one line (:991), and the " +
+      "`list` rule, whose bullet is `\\d{1,9}[.)]` (:981), starts an ordered list at `2)`.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/item-ordered-interrupt.md",
+    status: "live",
+    predicate: itemOrderedInterrupt,
+  },
+  {
+    id: "setext-indented-bullet",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §5.2 "List items": a list item may interrupt a paragraph, at an ' +
+      "indent of 0-3 spaces, so in `x` / `  - a` / `-` the paragraph is `x`, and §4.3's setext " +
+      "underline has no paragraph to close: `-` is an empty item of the same list. marked 14's " +
+      "`lheading` stops its content at a list line only at column 0 (`\\n(?!…bull …)`, bull " +
+      "`[*+-]|\\d{1,9}[.)]`, node_modules/marked/lib/marked.esm.js:982-983), so the indented " +
+      "item joins the heading text and `-` becomes a level-2 underline.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/setext-indented-bullet.md",
+    status: "live",
+    predicate: setextIndentedBullet,
+  },
+  {
+    id: "empty-item-trailing-space",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §5.2 "List items": "A list item can begin with at most one blank line", ' +
+      "and an empty item is an item (example 280: `-` / `  foo`), so `1. ` with a trailing space " +
+      "opens an ordered list. marked 14's `list` rule needs content after the marker's space " +
+      "(`^( {0,3}bull)([ \\t][^\\n]+?)?(?:\\n|$)`, node_modules/marked/lib/marked.esm.js:997), so the " +
+      "line `1. ` matches nothing and becomes paragraph text.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/empty-item-trailing-space.md",
+    status: "live",
+    predicate: emptyItemTrailingSpace,
+  },
+  {
+    id: "paragraph-tab-marker-interrupt",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §5.2 "List items": a list marker is followed by 1-4 spaces or a tab; ' +
+      "§5.3: a bullet list, or an ordered list starting at 1, may interrupt a paragraph, so " +
+      "`a:` / `1.<TAB>b` is a paragraph and a list. marked 14's paragraph rule admits a list " +
+      "interruption only as `' {0,3}(?:[*+-]|1[.)]) '` — a space after the marker, never a tab " +
+      "(node_modules/marked/lib/marked.esm.js:1028) — so the marker line joins the paragraph.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/paragraph-tab-marker-interrupt.md",
+    status: "live",
+    predicate: paragraphTabMarkerInterrupt,
+  },
+  {
+    id: "html-tag-name-invalid",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.6 "Raw HTML": "A tag name consists of an ASCII letter followed by ' +
+      'zero or more ASCII letters, digits, or hyphens", so `<my_tag>` and `</ns:tag>` are text, ' +
+      "inline or as a block (§4.6 type 7 needs a complete tag). marked 14's tag names are " +
+      "`[a-zA-Z][\\w-]*` and `[a-zA-Z][\\w:-]*` (inline open and close, " +
+      "node_modules/marked/lib/marked.esm.js:1158-1159; block type 7, :1014-1015), and `\\w` " +
+      "admits `_`.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/html-tag-name-invalid.md",
+    status: "live",
+    predicate: htmlTagNameInvalid,
+  },
+  {
+    id: "autolink-unclosed-paren",
+    kind: "lexer",
+    spec:
+      'GFM spec 0.29-gfm "Autolinks (extension)": an extended autolink runs to the next ' +
+      "whitespace or `<`; only trailing punctuation and an unbalanced trailing `)` are trimmed, " +
+      "so `https://example.org/wiki/A_B_(C` is one link. marked 14's GFM `_backpedal` " +
+      "(node_modules/marked/lib/marked.esm.js:1228, applied at :929) admits `(` only in a closed " +
+      "`\\([^)]*\\)`, so the URL ends before `_(`.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/autolink-unclosed-paren.md",
+    status: "live",
+    predicate: autolinkUnclosedParen,
+  },
+  {
+    id: "link-label-escaped-bracket",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §2.4 "Backslash escapes": an escaped `[` or `]` is a literal ' +
+      "character, so the label of `[\\[a\\](https://example.com/b)](https://example.com/c)` is " +
+      "the text `[a](https://example.com/b)`. marked 14's `outputLink` unescapes `\\[`/`\\]` in " +
+      "the label (node_modules/marked/lib/marked.esm.js:185) and then lexes it (:194), so a link " +
+      "appears inside the link.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/link-label-escaped-bracket.md",
+    status: "live",
+    predicate: linkLabelEscapedBracket,
   },
 ];
 
