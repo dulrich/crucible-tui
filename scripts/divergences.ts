@@ -640,6 +640,10 @@ function imageAltBacktick(site: Site): boolean {
   );
 }
 
+/** Decode the entities `escape()` writes into a token's `text` (node_modules/marked/lib/marked.esm.js:41-47). */
+const unentity = (v: string): string =>
+  v.replace(/&(amp|lt|gt|quot|#39);/g, (_m, e: string) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[e] ?? _m);
+
 /**
  * `autolink-backslash-paren` matches an inline array where the Rust side holds a bare
  * autolink (`href === text`) containing `\(`, and the TS side holds a bare autolink whose
@@ -647,18 +651,20 @@ function imageAltBacktick(site: Site): boolean {
  * marked 14's GFM `_backpedal` admits `(` only inside a closed `\([^)]*\)`, so an unclosed `(`
  * ends the URL; the GFM autolink extension ends an extended autolink only at whitespace or `<`
  * and trims trailing punctuation and an unbalanced trailing `)`, never at an interior `(`.
+ * `href === text` is compared after decoding the HTML entities the token's `text` carries
+ * (`&amp;` and friends; user ruling 2026-10-12), so a URL holding `&` still reads as bare.
  */
 function autolinkBackslashParen(site: Site): boolean {
   if (isRender(site)) return false;
   const ts = asArray(site.ts);
   return asArray(site.rust).some((r) => {
     const href = s(r.href);
-    if (r.type !== "link" || href !== s(r.text) || !href.includes("\\(")) return false;
+    if (r.type !== "link" || unentity(href) !== unentity(s(r.text)) || !href.includes("\\(")) return false;
     return ts.some((t, i) => {
       const h = s(t.href);
       return (
         t.type === "link" &&
-        h === s(t.text) &&
+        unentity(h) === unentity(s(t.text)) &&
         h.endsWith("\\") &&
         h.length < href.length &&
         href.startsWith(h) &&
@@ -1329,6 +1335,241 @@ function linkLabelEscapedBracket(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// WP-9 T2 lexer entries, remainder group (standing ruling 2026-10-12, spec over marked):
+// autolink-no-delimiter, autolink-underscore-host, setext-hash-content,
+// emphasis-underscore-after-asterisk, emphasis-long-opener-em, emphasis-rule-of-three-mid,
+// emphasis-mask-angle-span, emphasis-count-pairing, paragraph-trailing-blank-line
+// ---------------------------------------------------------------------------
+
+/** Inline source with plain text by its raw, links matching `fold` by their text, anything else by JSON. */
+const spellFolding = (nodes: Node[], fold: (n: Node) => boolean): string =>
+  nodes.map((n) => (n.type === "text" && !Array.isArray(n.tokens) ? s(n.raw) : fold(n) ? s(n.text) : JSON.stringify(n))).join("");
+
+/** A bare `www.` autolink as marked builds it (href `http://` + its text), or a URL autolink. */
+const isBareAutolink = (n: Node): boolean =>
+  (n.type === "link" && s(n.text).startsWith("www.") && s(n.href) === `http://${s(n.text)}`) || isUrlAutolink(n);
+
+/**
+ * `autolink-no-delimiter` matches an inline array where the TS side holds a bare `www.` or URL
+ * autolink whose preceding `text` ends in a character other than whitespace, `*`, `_`, `~` or
+ * `(`, and the Rust side spells the same source as text, with no link, once the nodes both
+ * sides share at either end are set aside. GFM 0.29 §6.9
+ * "Autolinks (extension)": "All such recognized autolinks can only come at the beginning of a
+ * line, after whitespace, or any of the delimiting characters `*`, `_`, `~`, and `(`", so
+ * `example/www.example.com` and `Onlinehttps://example.com` are text. marked 14's GFM `text` rule
+ * stops before `https?:\/\/`, `ftp:\/\/` and `www\.` anywhere
+ * (node_modules/marked/lib/marked.esm.js:1230), and the `url` rule (:1225) then links them.
+ */
+function autolinkNoDelimiter(site: Site): boolean {
+  if (isRender(site)) return false;
+  const [ts, rust] = differingMiddle(asArray(site.ts), asArray(site.rust));
+  const hit = ts.some((t, i) => {
+    const prev = ts[i - 1];
+    return isBareAutolink(t) && prev?.type === "text" && /[^\s*_~(]$/u.test(s(prev.raw));
+  });
+  return hit && !rust.some((n) => n.type === "link") && spellFolding(ts, isBareAutolink) === spellFolding(rust, () => false);
+}
+
+/** A URL autolink (`isUrlAutolink`) whose host's last two labels hold `_`. */
+const isUnderscoreHostAutolink = (n: Node): boolean => {
+  if (!isUrlAutolink(n)) return false;
+  const host = /^[a-z]+:\/\/([^/?#]*)/i.exec(s(n.href))?.[1] ?? "";
+  return host.split(".").slice(-2).some((label) => label.includes("_"));
+};
+
+/**
+ * `autolink-underscore-host` matches an inline array where the TS side holds a URL autolink
+ * whose host has `_` in one of its last two labels, and the Rust side spells the same source
+ * as text (the nodes both sides share at either end set aside). GFM 0.29 §6.9: a valid domain "must not have underscores in the last two
+ * segments", so `https://a_b/` is not an autolink. marked 14's `url` rule
+ * (node_modules/marked/lib/marked.esm.js:1225) takes any `[^\s<]*` after the scheme.
+ */
+function autolinkUnderscoreHost(site: Site): boolean {
+  if (isRender(site)) return false;
+  const [ts, rust] = differingMiddle(asArray(site.ts), asArray(site.rust));
+  return ts.some(isUnderscoreHostAutolink) && !rust.some((n) => n.type === "link") && spellFolding(ts, isUnderscoreHostAutolink) === spellFolding(rust, () => false);
+}
+
+/** Inline content spelled as source: text by raw, `br` as a newline. */
+const spellLines = (nodes: Node[]): string => nodes.map((n) => (n.type === "br" ? "\n" : n.type === "text" ? s(n.raw) : JSON.stringify(n))).join("");
+
+/**
+ * `setext-hash-content` matches a block array where, at the first differing index, the TS side
+ * holds a `paragraph` and the Rust side a level-1/2 `heading` whose content starts with `#`
+ * (not an ATX opener: no space after the run), and the TS paragraph spells that content, then
+ * a newline, then the matching `=`/`-` underline line. CommonMark 0.31.2 §4.3 "Setext
+ * headings": any paragraph line that is not otherwise interpretable can be the content, and
+ * `#a` is not an ATX heading (§4.2 needs a space after the `#` run). marked 14's `lheading`
+ * refuses content opening with ` {0,3}#{1,6}` regardless of what follows
+ * (node_modules/marked/lib/marked.esm.js:982, :987), so the lines stay a paragraph.
+ */
+function setextHashContent(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  let k = 0;
+  while (k < ts.length && k < rust.length && JSON.stringify(ts[k]) === JSON.stringify(rust[k])) k++;
+  const p = ts[k];
+  const h = rust[k];
+  if (p?.type !== "paragraph" || h?.type !== "heading" || (h.depth !== 1 && h.depth !== 2)) return false;
+  const content = spellLines(asArray(h.tokens as Node[] | undefined)).trimEnd();
+  if (!/^#+[^\s#]/.test(content)) return false;
+  const para = spellLines(asArray(p.tokens as Node[] | undefined));
+  const under = h.depth === 1 ? "=+" : "-+";
+  return para.startsWith(`${content}\n`) && new RegExp(`^ {0,3}${under}[ \\t]*(?:\\n|$)`).test(para.slice(content.length + 1));
+}
+
+/** The two sides with their common leading and trailing nodes removed. */
+function differingMiddle(ts: Node[], rust: Node[]): [Node[], Node[]] {
+  const eq = (x: Node | undefined, y: Node | undefined): boolean => JSON.stringify(x) === JSON.stringify(y);
+  let a = 0;
+  while (a < ts.length && a < rust.length && eq(ts[a], rust[a])) a++;
+  let b = 0;
+  while (b < ts.length - a && b < rust.length - a && eq(ts[ts.length - 1 - b], rust[rust.length - 1 - b])) b++;
+  return [ts.slice(a, ts.length - b), rust.slice(a, rust.length - b)];
+}
+
+/** The inline source a node list spells with `em` put back as `_…_`. */
+function underscoreSource(nodes: Node[]): string {
+  return nodes
+    .map((n) =>
+      n.type === "text" && !Array.isArray(n.tokens)
+        ? s(n.raw)
+        : n.type === "em"
+          ? `_${underscoreSource(asArray(n.tokens as Node[] | undefined))}_`
+          : JSON.stringify(n),
+    )
+    .join("");
+}
+
+/**
+ * `emphasis-underscore-after-asterisk` matches an inline array where, once the nodes both sides
+ * share at either end are set aside, the TS side holds no `em`, and the Rust side holds an `em` right after a `text` ending in `*`, whose content opens
+ * with punctuation, and both sides spell the same source with that `em` put back as `_…_`
+ * (`x *_“c”_ — d`). CommonMark 0.31.2 §6.2: `*` is ASCII punctuation, so `_` between `*` and
+ * `“` is left-flanking and, preceded by punctuation, can open. marked 14's `punctuation` class
+ * excludes `*` and `_` (node_modules/marked/lib/marked.esm.js:1122), so the left-delimiter
+ * check (:800) refuses an opener whose previous character is `*`.
+ */
+function emphasisUnderscoreAfterAsterisk(site: Site): boolean {
+  if (isRender(site)) return false;
+  const [ts, rust] = differingMiddle(asArray(site.ts), asArray(site.rust));
+  if (ts.some((n) => n.type === "em" || n.type === "strong")) return false;
+  const hit = rust.some((r, i) => {
+    const prev = rust[i - 1];
+    return r.type === "em" && prev?.type === "text" && s(prev.raw).endsWith("*") && /^[\p{P}\p{S}]/u.test(s(r.text));
+  });
+  return hit && underscoreSource(ts) === underscoreSource(rust);
+}
+
+/**
+ * `emphasis-long-opener-em` matches an inline array where the TS side holds no `em`/`strong`,
+ * and the Rust side holds an `em` right after a `text` ending in a run of three or more `*`
+ * after a non-`*` character, both sides spelling the same source with `*` delimiters put back
+ * (`'a'****: b*`). CommonMark 0.31.2 §6.2 process emphasis: the both-flanking `****` (4 + 1 is
+ * not a multiple of 3) lends one `*` to the closer and the rest stay literal. marked 14 needs
+ * closers adding up to the whole opener run (node_modules/marked/lib/marked.esm.js:823-825);
+ * when that fails it eats the run as text, and the remainder cannot open after `*` (:1122,
+ * :800) — the mechanism `emphasis-opener-remainder` names for the `strong` shape, which it
+ * keeps.
+ */
+function emphasisLongOpenerEm(site: Site): boolean {
+  if (isRender(site) || emphasisOpenerRemainder(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (ts.some((n) => n.type === "em" || n.type === "strong")) return false;
+  const hit = rust.some((r, i) => r.type === "em" && rust[i - 1]?.type === "text" && /[^*]\*{3,}$/.test(s(rust[i - 1]?.raw)));
+  return hit && emphasisSource(ts) === emphasisSource(rust);
+}
+
+/**
+ * `emphasis-rule-of-three-mid` matches an inline array where, once the nodes both sides share
+ * at either end are set aside, both sides spell the same source with `*` delimiters put back, the TS side holds no top-level `strong`, and the TS side holds
+ * a top-level `em` the Rust side does not, whose source carries a `**` run between two letters
+ * or digits (`*），y**a / b**，`, `*a、**b**c*。d*e*`). CommonMark 0.31.2 §6.2 process
+ * emphasis: closers pair with the nearest opener, and the rule of 3 forbids only the `*`/`**`
+ * pair, so the `**` pair stands and the lone `*` stays literal or closes its own run. marked
+ * 14 applies the rule of 3 against the outer opener while counting closers
+ * (node_modules/marked/lib/marked.esm.js:817-821): the both-flanking `**` is set aside as a
+ * mid delimiter, the count never balances where process emphasis would, and the `em` runs on.
+ * The shapes the other rule-of-3 entries name are left to them.
+ */
+function emphasisRuleOfThreeMid(site: Site): boolean {
+  if (isRender(site) || emphasisRuleOfThreeScope(site) || emphasisRuleOfThreeInnerEm(site) || emphasisCloserRemainder(site)) return false;
+  const [ts, rust] = differingMiddle(asArray(site.ts), asArray(site.rust));
+  if (ts.some((n) => n.type === "strong") || emphasisSource(ts) !== emphasisSource(rust)) return false;
+  const inRust = new Set(rust.map((n) => JSON.stringify(n)));
+  return ts.some((n) => n.type === "em" && !inRust.has(JSON.stringify(n)) && /[\p{L}\p{N}]\*\*[\p{L}\p{N}]/u.test(emphasisSource([n])));
+}
+
+/**
+ * `emphasis-mask-angle-span` matches an inline array where both sides spell the same source
+ * with `*` delimiters put back, and the TS side holds a top-level `strong`/`em` the Rust side
+ * does not, whose text holds `<` not opening a tag (not followed by a letter, `/`, `!` or `?`),
+ * then a `*`, then `>` (`**a (< b c):** d\n**e (> f g):** h`). CommonMark 0.31.2 §6.6: `< b`
+ * is not raw HTML, so the `**` inside are ordinary delimiters (§6.2). marked 14 masks every
+ * `<[^<>]*?>` range out of the emphasis scan (`blockSkip`, node_modules/marked/lib/marked.esm.js:1125,
+ * applied at :1537-1539) before it pairs delimiters, so the closers inside the range are hidden.
+ */
+function emphasisMaskAngleSpan(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (emphasisSource(ts) !== emphasisSource(rust)) return false;
+  const inRust = new Set(rust.map((n) => JSON.stringify(n)));
+  return ts.some((n) => (n.type === "strong" || n.type === "em") && !inRust.has(JSON.stringify(n)) && /<(?![A-Za-z/!?])[^<>]*\*[^<>]*>/.test(s(n.text)));
+}
+
+/**
+ * `emphasis-count-pairing` matches an inline array where both sides spell the same source with
+ * `*` delimiters put back, the TS side opens with an `em` holding exactly one `strong` whose
+ * text holds `*`, and the Rust side opens with a `strong` holding an `em`
+ * (`***a* *b****, c.*`). CommonMark 0.31.2 §6.2 process emphasis: each closer pairs with the
+ * nearest opener, so `a*` closes one `*` of `***`, `*b` and `b*` pair, and `**` closes the
+ * strong around both. marked 14 instead pairs the opener run with the first closer run that
+ * brings its delimiter count to zero (node_modules/marked/lib/marked.esm.js:808-827), so
+ * `***…****` becomes one `em`/`strong` around everything between them.
+ */
+function emphasisCountPairing(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const [t, r] = [ts[0], rust[0]];
+  if (t?.type !== "em" || r?.type !== "strong") return false;
+  const kids = asArray(t.tokens as Node[] | undefined);
+  if (kids.length !== 1 || kids[0]?.type !== "strong" || !s(kids[0]?.text).includes("*")) return false;
+  if (!asArray(r.tokens as Node[] | undefined).some((n) => n.type === "em")) return false;
+  return emphasisSource(ts) === emphasisSource(rust);
+}
+
+/**
+ * `paragraph-trailing-blank-line` matches a block array where the last TS block is a
+ * `paragraph` whose last `text` leaf ends in a newline and a run of spaces or tabs, and the
+ * Rust side holds the same blocks with that run (and its newline) removed from the leaf, then a
+ * final `space`. CommonMark 0.31.2 §4.9: a line holding only spaces or tabs is a blank line,
+ * which ends a paragraph, at the end of the document too. marked 14's `paragraph` rule excludes
+ * a whitespace-only line only when a newline follows it (`(?! +\n)`,
+ * node_modules/marked/lib/marked.esm.js:990), so a last line of spaces with no newline joins
+ * the paragraph.
+ */
+function paragraphTrailingBlankLine(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (rust.length !== ts.length + 1 || rust.at(-1)?.type !== "space") return false;
+  const strip = (p: Node | undefined): string | null => {
+    if (p?.type !== "paragraph") return null;
+    const kids = asArray(p.tokens as Node[] | undefined);
+    const last = kids.at(-1);
+    if (last?.type !== "text" || !/\n[ \t]+$/.test(s(last.raw))) return null;
+    const raw = s(last.raw).replace(/\n[ \t]+$/, "");
+    return JSON.stringify({ ...p, tokens: [...kids.slice(0, -1), { ...last, raw, text: s(last.text).replace(/\n[ \t]+$/, "") }] });
+  };
+  const fixed = strip(ts.at(-1));
+  return fixed !== null && fixed === JSON.stringify(rust.at(-2)) && JSON.stringify(ts.slice(0, -1)) === JSON.stringify(rust.slice(0, -2));
+}
+
+// ---------------------------------------------------------------------------
 // hljs-prototype-key
 // ---------------------------------------------------------------------------
 
@@ -1879,6 +2120,125 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/link-label-escaped-bracket.md",
     status: "live",
     predicate: linkLabelEscapedBracket,
+  },
+  {
+    id: "autolink-no-delimiter",
+    kind: "lexer",
+    spec:
+      'GFM spec 0.29-gfm §6.9 "Autolinks (extension)": extended autolinks "can only come at the ' +
+      'beginning of a line, after whitespace, or any of the delimiting characters `*`, `_`, `~`, ' +
+      "and `(`\", so `example/www.example.com` and `Onlinehttps://example.com` are text. marked 14's GFM " +
+      "`text` rule stops before `https?://`, `ftp://` and `www.` anywhere " +
+      "(node_modules/marked/lib/marked.esm.js:1230) and the `url` rule (:1225) links them.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/autolink-no-delimiter.md",
+    status: "live",
+    predicate: autolinkNoDelimiter,
+  },
+  {
+    id: "autolink-underscore-host",
+    kind: "lexer",
+    spec:
+      'GFM spec 0.29-gfm §6.9 "Autolinks (extension)": a valid domain must not have underscores ' +
+      "in its last two segments, so `https://a_b/` is text. marked 14's `url` rule " +
+      "(node_modules/marked/lib/marked.esm.js:1225) takes any `[^\\s<]*` after the scheme.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/autolink-underscore-host.md",
+    status: "live",
+    predicate: autolinkUnderscoreHost,
+  },
+  {
+    id: "setext-hash-content",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §4.3 "Setext headings": a paragraph line followed by a `=`/`-` underline ' +
+      "is a heading, and `#a #b` is a paragraph line (§4.2: an ATX opener needs a space after the " +
+      "`#` run). marked 14's `lheading` refuses content opening with ` {0,3}#{1,6}` whatever " +
+      "follows (node_modules/marked/lib/marked.esm.js:982, :987), so the lines stay a paragraph.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/setext-hash-content.md",
+    status: "live",
+    predicate: setextHashContent,
+  },
+  {
+    id: "emphasis-underscore-after-asterisk",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 "Emphasis and strong emphasis": `*` is ASCII punctuation, so in ' +
+      "`*_“c”_` the `_` is left-flanking and, preceded by punctuation, opens. marked 14's " +
+      "`punctuation` class excludes `*` and `_` (node_modules/marked/lib/marked.esm.js:1122), so " +
+      "the left-delimiter check (:800) refuses an opener after `*`.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-underscore-after-asterisk.md",
+    status: "live",
+    predicate: emphasisUnderscoreAfterAsterisk,
+  },
+  {
+    id: "emphasis-long-opener-em",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 process emphasis: in `\'a\'****: b*` the both-flanking `****` lends ' +
+      "one `*` to the closer (4 + 1 is not a multiple of 3) and `***` stays literal. marked 14 " +
+      "needs closers adding up to the whole opener run (node_modules/marked/lib/marked.esm.js:823-825), " +
+      "then eats the run as text, and the remainder cannot open after `*` (:1122, :800).",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-long-opener-em.md",
+    status: "live",
+    predicate: emphasisLongOpenerEm,
+  },
+  {
+    id: "emphasis-rule-of-three-mid",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 process emphasis: closers pair with the nearest opener and the ' +
+      "rule of 3 forbids only the `*`/`**` pair, so in `x+*），y**a / b**，` the `**` pair is strong " +
+      "and the `*` literal. marked 14 applies the rule of 3 against the outer opener while " +
+      "counting closers (node_modules/marked/lib/marked.esm.js:817-821), sets the both-flanking " +
+      "`**` aside, and the `em` runs on.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-rule-of-three-mid.md",
+    status: "live",
+    predicate: emphasisRuleOfThreeMid,
+  },
+  {
+    id: "emphasis-mask-angle-span",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.6 "Raw HTML": `< b c)` is not a tag, so the `**` runs after it are ' +
+      "ordinary delimiters (§6.2). marked 14 masks every `<[^<>]*?>` range out of the emphasis " +
+      "scan (`blockSkip`, node_modules/marked/lib/marked.esm.js:1125, applied at :1537-1539), " +
+      "hiding the closers inside `<…>`.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-mask-angle-span.md",
+    status: "live",
+    predicate: emphasisMaskAngleSpan,
+  },
+  {
+    id: "emphasis-count-pairing",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 process emphasis: each closer pairs with the nearest opener, so ' +
+      "`***a* *b****,` is strong around two `em`s with one `*` left literal. marked 14 pairs the " +
+      "opener run with the first closer run that brings its delimiter count to zero " +
+      "(node_modules/marked/lib/marked.esm.js:808-827), making one `em`/`strong` around everything " +
+      "between them.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-count-pairing.md",
+    status: "live",
+    predicate: emphasisCountPairing,
+  },
+  {
+    id: "paragraph-trailing-blank-line",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §4.9 "Paragraphs" / §2.1: a line holding only spaces or tabs is blank ' +
+      "and ends a paragraph, at the end of the document too. marked 14's `paragraph` rule excludes " +
+      "a whitespace-only line only when a newline follows it (`(?! +\\n)`, " +
+      "node_modules/marked/lib/marked.esm.js:990), so a last line of spaces joins the paragraph.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/paragraph-trailing-blank-line.md",
+    status: "live",
+    predicate: paragraphTrailingBlankLine,
   },
 ];
 

@@ -21,6 +21,7 @@
 //! - **`space` tokens** come from the gap between two blocks, after each block type consumes
 //!   what marked's regex for it consumes.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -245,6 +246,12 @@ struct Lexer<'s> {
     /// parsing a cell and reports its inline sourcepos in the unescaped string's coordinates,
     /// so a reported offset is `base + index`, and `offs[index]` is the real one.
     cell: Option<(usize, Vec<usize>)>,
+    /// Lazy lines whose container prefix ended inside a tab, by line: the tab's doc offset and
+    /// the virtual spaces left of it. comrak's lazy paragraph continuation (`add_line`, reached
+    /// without the non-lazy path's advance to the first non-space) pads those spaces into the
+    /// paragraph content but records the line offset *after* the tab, so every inline sourcepos
+    /// on the line reads that many bytes late.
+    tab_pad: RefCell<HashMap<usize, (usize, usize)>>,
 }
 
 /// Options per Decisions locked 2.
@@ -356,10 +363,16 @@ pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
     // character), while comrak strips it. Hand comrak a same-width ordinary letter in its
     // place, so it builds marked's tree; every token reads its text from `src`, never from
     // the parse string, so the BOM itself comes back out.
-    let parsed = match src.strip_prefix('\u{feff}') {
+    let mut parsed = match src.strip_prefix('\u{feff}') {
         Some(rest) => format!("{BOM_STAND_IN}{rest}"),
         None => src.clone(),
     };
+    // comrak leaves a link reference definition on a last line without a newline as paragraph
+    // text; CommonMark §4.7 (and marked's `def`, `(?:\n+|$)`, marked.esm.js:993) end one at
+    // the end of the document too. A trailing newline moves no byte comrak reports.
+    if !parsed.is_empty() && !parsed.ends_with('\n') {
+        parsed.push('\n');
+    }
     let arena = Arena::new();
     let mut root = parse_document(&arena, &parsed, &options());
     let refs = reference_definitions(root, &parsed);
@@ -394,6 +407,7 @@ pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
         clip: usize::MAX,
         cend: usize::MAX,
         cell: None,
+        tab_pad: RefCell::new(HashMap::new()),
     };
     lx.subs = lx.prepass();
     let end = src.len();
@@ -418,9 +432,6 @@ impl<'s> Lexer<'s> {
     }
     fn line_of(&self, off: usize) -> usize {
         self.line_starts.partition_point(|&s| s <= off)
-    }
-    fn pos(&self, line: usize, col: usize) -> usize {
-        (self.line_start(line) + col.saturating_sub(1)).min(self.src.len())
     }
 
     /// The retired `rewriteTaskState` pre-pass, as a per-line substitution table.
@@ -496,6 +507,16 @@ impl<'s> Lexer<'s> {
                         }
                         cur.drain(..q);
                     } else {
+                        // An item's indent that stopped inside an expanded tab leaves that
+                        // tab's remaining spaces at the front of a lazy line.
+                        if let Some(&(' ', o)) = cur.first()
+                            && self.src.as_bytes().get(o) == Some(&b'\t')
+                        {
+                            let pad = cur.iter().take_while(|&&(c, x)| c == ' ' && x == o).count();
+                            if pad < 4 {
+                                self.tab_pad.borrow_mut().insert(l, (o, pad));
+                            }
+                        }
                         return (build(&cur), true);
                     }
                 }
@@ -703,8 +724,19 @@ impl<'s> Lexer<'s> {
         if to_line <= fl {
             return Vec::new();
         }
-        let mut parts: Vec<String> =
-            vec![self.src[from.min(self.line_end(fl))..self.line_end(fl)].to_string()];
+        let head = self.src[from.min(self.line_end(fl))..self.line_end(fl)].to_string();
+        // A whole first line that is not a block's tail is a link reference definition: it
+        // consumes its `\n+` like any other (marked's `def`, marked.esm.js:993) and leaves no
+        // residual of its own — comrak gives a definition no node, so it lands in the gap.
+        let (head, consume) = if consume == Consume::EndOfLine
+            && from == self.line_start(fl)
+            && !head.trim().is_empty()
+        {
+            (String::new(), Consume::Newlines)
+        } else {
+            (head, consume)
+        };
+        let mut parts: Vec<String> = vec![head];
         for l in fl + 1..to_line {
             parts.push(self.line_text(l, chain, true));
         }
@@ -1343,11 +1375,23 @@ impl<'s> Lexer<'s> {
         }
     }
 
+    /// Undo comrak's lazy-line tab padding (see `tab_pad`) for a doc offset on line `l`.
+    fn pad_fix(&self, l: usize, d: usize) -> usize {
+        match self.tab_pad.borrow().get(&l) {
+            Some(&(tab, pad)) if d > tab => d.saturating_sub(pad).max(tab + 1),
+            _ => d,
+        }
+    }
+
     /// The doc byte range `[start, end)` of a node.
     fn node_range(&self, n: N) -> (usize, usize) {
         let sp = n.data().sourcepos;
-        let s = self.pos(sp.start.line, sp.start.column);
-        let e = self.pos(sp.end.line, sp.end.column);
+        let at = |line: usize, col: usize| {
+            let d = self.line_start(line) + col.saturating_sub(1);
+            self.pad_fix(line, d).min(self.src.len())
+        };
+        let s = at(sp.start.line, sp.start.column);
+        let e = at(sp.end.line, sp.end.column);
         let (s, e) = (self.uncell(s), self.uncell(e));
         let mut s = s;
         while s > 0 && !self.src.is_char_boundary(s) {
@@ -1428,6 +1472,8 @@ impl<'s> Lexer<'s> {
         let mut out = Vec::new();
         let mut pos = a;
         let mut i = 0;
+        // comrak's open-bracket count over this sequence's text (`Subject::brackets`).
+        let mut depth = 0usize;
         loop {
             while i < nodes.len() && nodes[i].1 < pos {
                 i += 1;
@@ -1440,7 +1486,7 @@ impl<'s> Lexer<'s> {
                 // comrak's closing-backtick cache (`scan_to_closing_backtick`) records the
                 // *latest* run of each length it scanned past, so a later search for a run it
                 // already passed fails and leaves a valid code span (§6.3) as text.
-                self.push_text(&mut out, &v.s[pos..cs]);
+                self.push_gap(&mut out, &v.s, pos, cs, &mut depth);
                 if let Some(t) = codespan_token(&v.s[cs..ce]) {
                     out.push(t);
                 }
@@ -1448,7 +1494,7 @@ impl<'s> Lexer<'s> {
                 continue;
             }
             if let Some((ws, we)) = wiki {
-                self.push_text(&mut out, &v.s[pos..ws]);
+                self.push_gap(&mut out, &v.s, pos, ws, &mut depth);
                 let raw = v.s[ws..we].to_string();
                 out.push(self.wiki_token(&raw));
                 pos = we;
@@ -1471,7 +1517,7 @@ impl<'s> Lexer<'s> {
                 } else {
                     line.trim_end_matches(' ').len()
                 };
-                self.push_text(&mut out, &v.s[pos..pos + cut]);
+                self.push_gap(&mut out, &v.s, pos, pos + cut, &mut depth);
                 out.push(Token::Br);
                 pos = nl + 1;
                 continue;
@@ -1488,7 +1534,7 @@ impl<'s> Lexer<'s> {
             } else {
                 e
             };
-            self.push_text(&mut out, &v.s[pos..s]);
+            self.push_gap(&mut out, &v.s, pos, s, &mut depth);
             let raw = v.s[s..e].to_string();
             match self.inline_node(k, &value, v, s, e, skip) {
                 Some(Inline::One(t)) => out.push(t),
@@ -1498,9 +1544,57 @@ impl<'s> Lexer<'s> {
             pos = e;
         }
         if pos < b {
-            self.push_text(&mut out, &v.s[pos..b]);
+            self.push_gap(&mut out, &v.s, pos, b, &mut depth);
         }
         out
+    }
+
+    /// Gap text `t[a..b]` — text comrak left unlinked — with the extended autolinks marked
+    /// finds there and comrak does not:
+    /// - a URL or `www.` autolink while a `[` is open: comrak refuses every autolink inside an
+    ///   open bracket (comrak 0.56's `handle_autolink_with`); neither marked's `url`
+    ///   rule (marked.esm.js:1225) nor GFM §6.9 knows about brackets;
+    /// - an email autolink whose domain ends in a digit: comrak's `email_match` demands an
+    ///   alphabetic last character; GFM §6.9 only forbids `-`
+    ///   and `_` there, and marked's email rule ends in `[a-zA-Z0-9]` (marked.esm.js:1225).
+    ///
+    /// Everything else is comrak's own matcher, transcribed.
+    fn push_gap(&self, out: &mut Vec<Token>, t: &str, a: usize, b: usize, depth: &mut usize) {
+        let bytes = t.as_bytes();
+        let (mut pos, mut i, mut run, mut run_brackets) = (a, a, a, 0i64);
+        while i < b {
+            let found = match bytes[i] {
+                b'\n' => {
+                    run = i + 1;
+                    run_brackets = 0;
+                    None
+                }
+                b'[' => {
+                    *depth += 1;
+                    run_brackets += 1;
+                    None
+                }
+                b']' => {
+                    *depth = depth.saturating_sub(1);
+                    run_brackets -= 1;
+                    None
+                }
+                b':' if *depth > 0 && !self.in_link => gfm_url(t, pos, i, b),
+                b'w' if *depth > 0 && !self.in_link => gfm_www(t, i, b),
+                b'@' if run_brackets <= 0 && !self.in_link => gfm_email(t, pos.max(run), i, b)
+                    .filter(|&(_, e)| !bytes[e - 1].is_ascii_alphabetic()),
+                _ => None,
+            };
+            if let Some((ls, le)) = found {
+                self.push_text(out, &t[pos..ls]);
+                out.push(autolink_token(&t[ls..le]));
+                pos = le;
+                i = le;
+                continue;
+            }
+            i += 1;
+        }
+        self.push_text(out, &t[pos..b]);
     }
 
     fn wiki_token(&mut self, raw: &str) -> Token {
@@ -1622,27 +1716,7 @@ impl<'s> Lexer<'s> {
                     if self.in_link {
                         return Some(Inline::Text(raw.to_string()));
                     }
-                    let text = escape_no_encode(raw);
-                    let href = if raw.starts_with("www.") {
-                        format!("http://{raw}")
-                    } else if raw.contains('@')
-                        && !raw.contains("://")
-                        && !raw.starts_with("mailto:")
-                        && !raw.starts_with("xmpp:")
-                    {
-                        format!("mailto:{text}")
-                    } else {
-                        raw.to_string()
-                    };
-                    return Some(Inline::One(Token::Link {
-                        href,
-                        text: text.clone(),
-                        tokens: vec![Token::Text {
-                            raw: text.clone(),
-                            text,
-                            tokens: None,
-                        }],
-                    }));
+                    return Some(Inline::One(autolink_token(raw)));
                 }
                 let (label_end, dest) = parse_link(raw)?;
                 let label = &raw[1..label_end];
@@ -1681,6 +1755,202 @@ impl<'s> Lexer<'s> {
             _ => None,
         }
     }
+}
+
+/// A GFM extended autolink token (url, `www.` or email), as marked's `url` tokenizer builds it.
+fn autolink_token(raw: &str) -> Token {
+    let text = escape_no_encode(raw);
+    let href = if raw.starts_with("www.") {
+        format!("http://{raw}")
+    } else if raw.contains('@')
+        && !raw.contains("://")
+        && !raw.starts_with("mailto:")
+        && !raw.starts_with("xmpp:")
+    {
+        format!("mailto:{text}")
+    } else {
+        raw.to_string()
+    };
+    Token::Link {
+        href,
+        text: text.clone(),
+        tokens: vec![Token::Text {
+            raw: text.clone(),
+            text,
+            tokens: None,
+        }],
+    }
+}
+
+/// comrak's `ctype::isspace`.
+fn c_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+/// comrak's `is_valid_hostchar` (not whitespace, punctuation or symbol). comrak asks
+/// `finl_unicode`'s general categories; this crate does not depend on it, so outside ASCII
+/// the punctuation/symbol blocks are listed instead (Latin-1, General Punctuation through
+/// the symbol blocks, CJK and fullwidth punctuation). Where it could differ is only where a
+/// domain ends, which decides nothing but the underscore check.
+fn host_char(c: char) -> bool {
+    if c.is_whitespace() {
+        return false;
+    }
+    if c.is_ascii() {
+        return !c.is_ascii_punctuation();
+    }
+    !matches!(c as u32, 0xA1..=0xBF | 0xD7 | 0xF7 | 0x2010..=0x2BFF | 0x3000..=0x303F
+        | 0xFF01..=0xFF0F | 0xFF1A..=0xFF20 | 0xFF3B..=0xFF40 | 0xFF5B..=0xFF65)
+}
+
+/// comrak 0.56's `check_domain` over `scan_domain`.
+fn gfm_domain(d: &str, allow_short: bool) -> Option<usize> {
+    let (mut end, mut dots, mut us, mut prev_us) = (0, 0, 0, 0);
+    for (i, c) in d.char_indices() {
+        match c {
+            '\\' if i + 1 < d.len() => {}
+            '_' => us += 1,
+            '.' => {
+                prev_us = us;
+                us = 0;
+                dots += 1;
+            }
+            c if host_char(c) || c == '-' => {}
+            _ => {
+                end = i;
+                break;
+            }
+        }
+        end = i + c.len_utf8();
+    }
+    if dots > 10 {
+        return Some(end);
+    }
+    if us > 0 || prev_us > 0 {
+        return None;
+    }
+    (allow_short || dots > 0).then_some(end)
+}
+
+/// comrak 0.56's non-relaxed `autolink_delim`, less its U+2069 trim
+/// (marked keeps that character; see `inline_seq`).
+fn gfm_delim(d: &[u8], mut end: usize) -> usize {
+    let (mut open, mut close) = (0, 0);
+    for (i, &c) in d.iter().enumerate().take(end) {
+        match c {
+            b'<' => {
+                end = i;
+                break;
+            }
+            b'(' => open += 1,
+            b')' => close += 1,
+            _ => {}
+        }
+    }
+    while end > 0 {
+        let c = d[end - 1];
+        if b"?!.,:*_~'\"".contains(&c) {
+            end -= 1;
+        } else if c == b';' {
+            let mut n = end.saturating_sub(2);
+            while n > 0 && d[n].is_ascii_alphabetic() {
+                n -= 1;
+            }
+            if n + 2 < end && d[n] == b'&' {
+                end = n;
+            } else {
+                end -= 1;
+            }
+        } else if c == b')' {
+            if close <= open {
+                break;
+            }
+            close -= 1;
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    end
+}
+
+/// comrak's `url_match` at the `:` at `i` of `t`, not rewinding before `lo` nor reading past
+/// `hi`: the range of the link in `t`.
+fn gfm_url(t: &str, lo: usize, i: usize, hi: usize) -> Option<(usize, usize)> {
+    let b = t.as_bytes();
+    if hi - i < 4 || b[i + 1] != b'/' || b[i + 2] != b'/' {
+        return None;
+    }
+    let mut r = 0;
+    while r < i - lo && b[i - r - 1].is_ascii_alphabetic() {
+        r += 1;
+    }
+    let scheme = &t[i - r..i];
+    if !["http", "https", "ftp"]
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+    {
+        return None;
+    }
+    if !t[i + 3..hi].chars().next().is_some_and(host_char) {
+        return None;
+    }
+    let mut end = gfm_domain(&t[i + 3..hi], true)? + 3;
+    while i + end < hi && !c_space(b[i + end]) {
+        end += 1;
+    }
+    let end = gfm_delim(&b[i..hi], end);
+    Some((i - r, i + end))
+}
+
+/// comrak's `www_match` at `i` of `t`, not reading past `hi`.
+fn gfm_www(t: &str, i: usize, hi: usize) -> Option<(usize, usize)> {
+    let b = t.as_bytes();
+    if i > 0 && !c_space(b[i - 1]) && !b"*_~([".contains(&b[i - 1]) {
+        return None;
+    }
+    if !t[i..hi].starts_with("www.") {
+        return None;
+    }
+    let mut end = gfm_domain(&t[i + 4..hi], false)? + 4;
+    while i + end < hi && !c_space(b[i + end]) {
+        end += 1;
+    }
+    let end = gfm_delim(&b[i..hi], end);
+    (end > 0).then_some((i, i + end))
+}
+
+/// comrak's `email_match` at the `@` at `i` of `t` (no `mailto:`/`xmpp:` prefix), not
+/// rewinding before `lo` nor reading past `hi`, with GFM's own last-character rule (not `-`
+/// or `_`) in place of comrak's alphabetic-only one.
+fn gfm_email(t: &str, lo: usize, i: usize, hi: usize) -> Option<(usize, usize)> {
+    let b = t.as_bytes();
+    let ok = |c: u8| c.is_ascii_alphanumeric() || b".+-_".contains(&c);
+    let mut r = 0;
+    while r < i - lo && ok(b[i - r - 1]) {
+        r += 1;
+    }
+    if r == 0 || (i - r > 0 && b[i - r - 1] == b':') {
+        return None;
+    }
+    let (mut end, mut np) = (1, 0);
+    while end < hi - i {
+        let c = b[i + end];
+        if c == b'@' {
+            return None;
+        } else if c == b'.' && end + 1 < hi - i && b[i + end + 1].is_ascii_alphanumeric() {
+            np += 1;
+        } else if !c.is_ascii_alphanumeric() && c != b'-' && c != b'_' {
+            break;
+        }
+        end += 1;
+    }
+    let last = b[i + end - 1];
+    if end < 2 || np == 0 || !(last.is_ascii_alphanumeric() || last == b'.') {
+        return None;
+    }
+    let end = gfm_delim(&b[i..hi], end);
+    (end > 0).then_some((i - r, i + end))
 }
 
 enum Inline {
@@ -1756,6 +2026,7 @@ fn lex_inline_string(s: &str, outer: &Lexer) -> Vec<Token> {
         clip: usize::MAX,
         cend: usize::MAX,
         cell: None,
+        tab_pad: RefCell::new(HashMap::new()),
     };
     let mut v = View::default();
     v.push_doc(s, 0, s.len());
@@ -2570,5 +2841,55 @@ mod tests {
         let j = json("[**x\\[y\\]**](https://a.io/)\n");
         assert!(j.contains("\"text\":\"x[y]\""), "{j}");
         assert!(!j.contains("\"escape\""), "{j}");
+    }
+
+    #[test]
+    fn url_autolink_inside_an_open_bracket_is_linked_like_marked() {
+        let j = json("See: [https://a.io/x]\n");
+        assert!(j.contains("\"href\":\"https://a.io/x]\""), "{j}");
+        assert!(j.contains("\"raw\":\"See: [\""), "{j}");
+        let j = json("Go [www.a.io/x]\n");
+        assert!(j.contains("\"href\":\"http://www.a.io/x]\""), "{j}");
+        // Outside a bracket nothing changes: comrak's own autolink stands.
+        let j = json("See: https://a.io/x.\n");
+        assert!(j.contains("\"href\":\"https://a.io/x\""), "{j}");
+        // An underscored host stays text (GFM §6.9), bracket or not.
+        let j = json("See [https://a_b/c]\n");
+        assert!(!j.contains("\"link\""), "{j}");
+    }
+
+    #[test]
+    fn email_autolink_ending_in_a_digit_is_linked_like_marked() {
+        let j = json("pkg: name@1.2.3's notes\n");
+        assert!(j.contains("\"href\":\"mailto:name@1.2.3\""), "{j}");
+        assert!(j.contains("\"raw\":\"'s notes\""), "{j}");
+        // A trailing `-`/`_` still is not part of an address.
+        let j = json("a@b.c_ d\n");
+        assert!(!j.contains("\"link\""), "{j}");
+    }
+
+    #[test]
+    fn lazy_quote_line_after_a_partly_consumed_tab_keeps_its_offsets() {
+        let j = json("- > a\n\tb [x](https://a.io/p/)\n");
+        assert!(j.contains("\"raw\":\"a\\n  b \""), "{j}");
+        assert!(
+            j.contains("\"href\":\"https://a.io/p/\",\"text\":\"x\""),
+            "{j}"
+        );
+        assert!(!j.contains("\"raw\":\")\""), "{j}");
+        let j = json("1. > a\n\t https://a.io/p  \n\tb\n");
+        assert!(j.contains("\"href\":\"https://a.io/p\""), "{j}");
+    }
+
+    #[test]
+    fn leading_definition_consumes_its_newlines_like_marked() {
+        assert!(!json("[a]: /u \"t\"\n<p>\n").starts_with("[{\"type\":\"space\""));
+        assert!(!json("[a]: /u\n\n\nx\n").starts_with("[{\"type\":\"space\""));
+    }
+
+    #[test]
+    fn definition_on_an_unterminated_last_line_is_a_definition() {
+        let j = json("p\n\n[a]: <https://a.io/b+c=>");
+        assert!(!j.contains("\"link\""), "{j}");
     }
 }
