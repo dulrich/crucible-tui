@@ -156,7 +156,7 @@ use crate::colour::{
 };
 use crate::config::{load_config, resolve_config_path, write_highlight_alias};
 use crate::glyphs::{GlyphTier, resolve_glyphs, wide_forces_ascii};
-use crate::lang::{AliasOnlySupport, FenceLanguageResolver};
+use crate::lang::FenceLanguageResolver;
 use crate::overflow::find_first_overflow;
 use crate::pager::{page, should_page, write_stdout};
 use crate::probe::{
@@ -455,12 +455,6 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
     }
     let source = read_source(&options.file)?;
     let config = load_config(&resolve_config_path(&p.env), &mut |m| warn(m));
-    // `makeFenceLanguageResolver(config.highlightAs)`: built as TS builds it; `RenderOptions`
-    // (WP-3's) has no slot for it yet — WP-6 threads it with the syntect language set.
-    let _fence_resolver = FenceLanguageResolver::new(
-        &config.highlight_as.clone().unwrap_or_default(),
-        Rc::new(AliasOnlySupport),
-    );
 
     let target_width = resolve_width(options.width, p.columns);
     let ambiguous = resolve_ambiguous_width(ResolveAmbiguousOptions {
@@ -493,8 +487,8 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
             warn: Some(&w),
         })
     };
-    // `createWikiLinkResolver(resolve(file))` only under hyperlinks: the renderer builds it
-    // from `path` (`wikiresolve::create_wiki_link_resolver`) — that wiring is WP-6's.
+    // `createWikiLinkResolver(resolve(file))` only under hyperlinks: `render.rs` builds it
+    // from `path` (`wikiresolve::create_wiki_link_resolver`).
     let path = policy
         .hyperlinks
         .then(|| crate::wikiresolve::resolve(&p.cwd, &options.file));
@@ -556,9 +550,8 @@ fn run_highlight_as(args: &[String], p: &Process) -> CliResult {
         .into());
     }
     let (fence, language) = (&args[0], &args[1]);
-    // WP-6: validate against syntect's language set (D-C) once the highlighter lands; today
-    // this is `lang.rs`'s alias-only seam (the alias targets and `plaintext`).
-    let validator = FenceLanguageResolver::builtin(Rc::new(AliasOnlySupport));
+    // Validated against the same language set `render.rs` highlights with (D-C).
+    let validator = FenceLanguageResolver::builtin(Rc::new(crate::highlight::SyntectSupport));
     if !validator.is_supported(language) {
         return Err(format!(
             "highlight-as: unsupported language \"{language}\" — highlight.js does not recognize it, so the fence would render unhighlighted rather than mysteriously plain later. Common valid targets: javascript, typescript, python, bash, sql, json, yaml, plaintext (\"plaintext\" is always accepted, if the fence should just not be highlighted)."

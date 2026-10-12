@@ -163,11 +163,26 @@ fn plaintext(language: &str) -> bool {
     matches!(language, "plaintext" | "text" | "txt")
 }
 
+include!("hljs_map.rs");
+
+/// The one fence-language lookup both consumers share (the renderer's resolver through
+/// [`supports_language`]/`pick_runs`, and `mdview highlight-as`'s validator): syntect's own
+/// token lookup first, then the generated highlight.js-name table ([`HLJS_TO_SYNTECT`]).
+/// `name` is already lower-cased.
+fn find_syntax(name: &str) -> Option<&'static syntect::parsing::SyntaxReference> {
+    SYNTAXES.find_syntax_by_token(name).or_else(|| {
+        HLJS_TO_SYNTECT
+            .iter()
+            .find(|(k, _)| *k == name)
+            .and_then(|(_, target)| SYNTAXES.find_syntax_by_name(target))
+    })
+}
+
 /// `supportsLanguage`: highlight.js's `getLanguage` lower-cases, so this does too; the
 /// `plaintext` grammar (and its `text`/`txt` aliases) is always known, as it was to hljs.
 pub fn supports_language(name: &str) -> bool {
     let lower = name.to_lowercase();
-    plaintext(&lower) || (!lower.is_empty() && SYNTAXES.find_syntax_by_token(&lower).is_some())
+    plaintext(&lower) || (!lower.is_empty() && find_syntax(&lower).is_some())
 }
 
 /// The fence-language support oracle `lang.rs`'s resolver asks: [`supports_language`].
@@ -256,9 +271,7 @@ fn pick_runs(code: &str, language: Option<&str>) -> Option<Vec<Run>> {
         if plaintext(&lower) {
             return None;
         }
-        return SYNTAXES
-            .find_syntax_by_token(&lower)
-            .map(|syntax| runs(syntax, code).0);
+        return find_syntax(&lower).map(|syntax| runs(syntax, code).0);
     }
     let first = code.lines().next().unwrap_or("");
     if let Some(syntax) = SYNTAXES.find_syntax_by_first_line(first) {

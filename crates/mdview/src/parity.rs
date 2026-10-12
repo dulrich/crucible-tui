@@ -35,6 +35,18 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             let mut out = stdout.lock();
             writeln!(out, "{}", crate::style::style_table_json()).map_err(|e| e.to_string())?;
         }
+        // `scripts/gen-hljs-map.ts`'s second input: the syntect set, one JSON line per syntax.
+        Some("syntaxes") => {
+            let mut out = stdout.lock();
+            for syntax in crate::highlight::SYNTAXES.syntaxes() {
+                let line = json!({
+                    "name": syntax.name,
+                    "fileExtensions": syntax.file_extensions,
+                    "firstLine": syntax.first_line_match,
+                });
+                writeln!(out, "{line}").map_err(|e| e.to_string())?;
+            }
+        }
         Some(other) => return Err(format!("__parity: unknown subcommand '{other}'")),
         None => return Err("__parity: missing subcommand".into()),
     }
@@ -109,7 +121,13 @@ fn parse_options(request: &Value) -> Result<RenderOptions, String> {
     let path = request
         .get("path")
         .and_then(Value::as_str)
-        .map(str::to_owned);
+        // `resolve(path)` (`scripts/revision.ts`'s `resolverFor`): absolute against the cwd.
+        .map(|p| {
+            let cwd = std::env::current_dir()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            crate::wikiresolve::resolve(&cwd, p)
+        });
     // `highlightAs`: optional; the TS side's default resolver is an empty map.
     let highlight_as = match request.get("highlightAs") {
         None | Some(Value::Null) => Default::default(),

@@ -367,7 +367,14 @@ pub fn render(
             &options.highlight_as,
             Rc::new(SyntectSupport),
         ),
-        resolve_wiki_link: None,
+        // `createWikiLinkResolver(resolve(file))`, only under hyperlinks (`src/cli.ts`); the
+        // path arrives already absolute (`cli.rs`, `parity.rs`).
+        resolve_wiki_link: options
+            .policy
+            .hyperlinks
+            .then_some(options.path.as_deref())
+            .flatten()
+            .map(|path| crate::wikiresolve::create_wiki_link_resolver(path).into_context()),
         emoji,
         sgr,
         hyperlinks: Some(options.policy.hyperlinks),
