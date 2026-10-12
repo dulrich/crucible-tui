@@ -45,5 +45,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if args.first().map(String::as_str) == Some("__parity") {
         return parity::run(&args[1..]);
     }
-    Err("the Rust viewer is not implemented yet (plans/mdview-rust-port.md)".into())
+    match cli::main(args) {
+        Ok(code) => Ok(code),
+        Err(cli::CliError::Message(message)) => Err(message),
+        // The incomplete renderer is not a user error: one line, exit 2, so `cli-diff`
+        // counts it as `pending-renderer` rather than a mismatch. Gone once WP-3..6 land.
+        Err(cli::CliError::Render(error)) => {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "mdview: render: {error}");
+            Ok(2)
+        }
+    }
 }
