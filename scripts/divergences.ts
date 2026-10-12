@@ -568,7 +568,7 @@ function htmlCloseTagInterrupt(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// WP-9 lexer drafts (unratified): list-blockquote-interrupt, codespan-mask-skew,
+// WP-9 lexer entries (user-ratified 2026-10-12, standing ruling: spec over marked): list-blockquote-interrupt, codespan-mask-skew,
 // image-alt-backtick, autolink-backslash-paren, link-label-hard-break
 // ---------------------------------------------------------------------------
 
@@ -908,7 +908,7 @@ export const REGISTRY: readonly Divergence[] = [
       "marked 14's list item loop (node_modules/marked/lib/marked.esm.js:440-444, breaks on a " +
       "next bullet, hr, fence, heading or `<(?:[a-z].*>|!--)` only) has no blockquote break, so " +
       "the `>` line joins the item.",
-    ratified: null,
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
     witness: "tests/fixtures/divergences/list-blockquote-interrupt.md",
     status: "live",
     predicate: listBlockquoteInterrupt,
@@ -923,7 +923,7 @@ export const REGISTRY: readonly Divergence[] = [
       "`blockSkip` (node_modules/marked/lib/marked.esm.js:1125, `` `[^`]*?` ``, applied at " +
       ":1537-1538), which pairs single backticks regardless of run length; the mask lands " +
       "between the real spans and hides the later `**` delimiters, which stay literal.",
-    ratified: null,
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
     witness: "tests/fixtures/divergences/codespan-mask-skew.md",
     status: "live",
     predicate: codespanMaskSkew,
@@ -937,7 +937,7 @@ export const REGISTRY: readonly Divergence[] = [
       "the link-text rules, so `![a '`' b](pic.png)` is an image. marked 14's `_inlineLabel` " +
       "(node_modules/marked/lib/marked.esm.js:1166) admits a backtick only inside a paired " +
       "`` `[^`]*` ``, so an unmatched one fails the label and `![` stays literal text.",
-    ratified: null,
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
     witness: "tests/fixtures/divergences/image-alt-backtick.md",
     status: "live",
     predicate: imageAltBacktick,
@@ -951,7 +951,7 @@ export const REGISTRY: readonly Divergence[] = [
       "so `https://example.com/Thing_\\(kind\\` is one link. marked 14's GFM `_backpedal` " +
       "(node_modules/marked/lib/marked.esm.js:1228, applied at :929) admits `(` only in a closed " +
       "`\\([^)]*\\)`, so an unclosed `(` ends the URL at the backslash before it.",
-    ratified: null,
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
     witness: "tests/fixtures/divergences/autolink-backslash-paren.md",
     status: "live",
     predicate: autolinkBackslashParen,
@@ -966,7 +966,7 @@ export const REGISTRY: readonly Divergence[] = [
       "own source and its `br` rule (node_modules/marked/lib/marked.esm.js:1118, " +
       "`( {2,}|\\\\)\\n(?!\\s*$)`) refuses a break at that source's end, so the spaces and " +
       "newline stay in the text.",
-    ratified: null,
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
     witness: "tests/fixtures/divergences/link-label-hard-break.md",
     status: "live",
     predicate: linkLabelHardBreak,
@@ -981,7 +981,7 @@ export const REGISTRY: readonly Divergence[] = [
       "`top` false: no paragraph rule (node_modules/marked/lib/marked.esm.js:1468), `blockText` " +
       "takes one line (:991), and the `html` rule (:1417) runs before `text` (:1484), so the " +
       "tag line becomes a separate type-7 html block.",
-    ratified: null,
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
     witness: "tests/fixtures/divergences/item-html-line.md",
     status: "live",
     predicate: itemHtmlLine,
