@@ -3,16 +3,16 @@
 //!
 //! Each function takes already-walked inline text where the TS original took a `parseInline`
 //! callback: the walk (`walk.rs`) owns recursion, so these stay leaves. The syntax highlighter
-//! is WP-6's: under `full` a fence returns `RenderError::Missing("highlight")` (the one-line
-//! seam into `highlight.rs`); under `none`/`formats` highlighting is off by construction
-//! (`blocks.ts` `highlightCode`'s `sgr !== "full"` gate), so those fences render here.
+//! is `highlight.rs` (WP-6a), reached only under `full`; under `none`/`formats` highlighting
+//! is off by construction (`blocks.ts` `highlightCode`'s `sgr !== "full"` gate).
 
 use std::sync::LazyLock;
 
 use regex::Regex;
 
 use crate::context::LayoutContext;
-use crate::inline::{COLON_REPLACER, emojify};
+use crate::highlight::highlight_to_ansi;
+use crate::inline::{COLON_REPLACER, emojify, fix_hard_return};
 use crate::list_lines::strip_ansi;
 use crate::render::RenderError;
 use crate::style::{SgrMode, StyleName, apply_style_chain};
@@ -51,17 +51,26 @@ fn style(ctx: &LayoutContext, names: &[StyleName], text: &str) -> String {
     apply_style_chain(ctx.sgr, names, text)
 }
 
-/// `renderCode`. Under `full` the highlighter (WP-6) is required, so it is unimplemented here.
+/// `highlightCode`: off unless `full` (`blocks.ts:192`), and `fixHardReturn` runs first. The
+/// TS `catch` (flat yellow) is unreachable: `highlight_to_ansi` never throws.
+fn highlight_code(ctx: &LayoutContext, code: &str, language: Option<&str>) -> String {
+    if ctx.sgr != SgrMode::Full {
+        return code.to_owned();
+    }
+    highlight_to_ansi(ctx.sgr, &fix_hard_return(code), language)
+}
+
+/// `renderCode`: the language resolved through `ctx.resolveFenceLanguage`, then highlighted.
 pub fn render_code(
     ctx: &LayoutContext,
     lang: Option<&str>,
     text: &str,
 ) -> Result<String, RenderError> {
-    if ctx.sgr == SgrMode::Full {
-        let _language = ctx.resolve_fence_language.resolve(lang);
-        return Err(RenderError::Missing("highlight"));
-    }
-    Ok(section(&indentify(TAB, text)))
+    let language = ctx.resolve_fence_language.resolve(lang);
+    Ok(section(&indentify(
+        TAB,
+        &highlight_code(ctx, text, language.as_deref()),
+    )))
 }
 
 /// `renderHr`.
@@ -247,8 +256,8 @@ mod tests {
             "    x\n\n"
         );
         assert_eq!(
-            render_code(&ctx(SgrMode::Full), None, "x"),
-            Err(RenderError::Missing("highlight"))
+            strip_ansi(&render_code(&ctx(SgrMode::Full), None, "x").unwrap()),
+            "    x\n\n"
         );
     }
 

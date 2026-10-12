@@ -506,6 +506,7 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
         policy,
         emoji: config.emoji,
         path,
+        highlight_as: config.highlight_as.clone().unwrap_or_default(),
     };
     let rendered = crate::render(&source, None, &render_options).map_err(CliError::Render)?;
     let output = rendered.text;

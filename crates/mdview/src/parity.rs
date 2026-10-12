@@ -110,6 +110,15 @@ fn parse_options(request: &Value) -> Result<RenderOptions, String> {
         .get("path")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    // `highlightAs`: optional; the TS side's default resolver is an empty map.
+    let highlight_as = match request.get("highlightAs") {
+        None | Some(Value::Null) => Default::default(),
+        Some(Value::Object(map)) => map
+            .iter()
+            .map(|(k, v)| Ok((k.clone(), v.as_str().ok_or("bad highlightAs")?.to_owned())))
+            .collect::<Result<_, String>>()?,
+        Some(_) => return Err("bad highlightAs".into()),
+    };
     Ok(RenderOptions {
         width,
         tier,
@@ -121,6 +130,7 @@ fn parse_options(request: &Value) -> Result<RenderOptions, String> {
         },
         emoji,
         path,
+        highlight_as,
     })
 }
 

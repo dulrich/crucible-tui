@@ -954,6 +954,7 @@ mod tests {
             },
             emoji: None,
             path: None,
+            highlight_as: Default::default(),
         };
         render(source, None, &options).expect("renders").text
     }

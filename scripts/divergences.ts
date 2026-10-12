@@ -617,7 +617,7 @@ export const REGISTRY: readonly Divergence[] = [
       "line pad depends on a leading escape (docs/agents/list-pipeline.md, \"The claim decision\").",
     ratified: { by: "user (plan approval)", date: "2026-10-11" },
     witness: "tests/fixtures/divergences/hl-fence-claim.md",
-    status: "pending-witness",
+    status: "live",
     predicate: hlFenceClaim,
   },
   {

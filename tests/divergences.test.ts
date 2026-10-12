@@ -3,6 +3,9 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { attribute, REGISTRY, type Divergence, type Node, type Site } from "../scripts/divergences";
+import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
+import { renderDocumentDetailed } from "../src/render";
+import { NARROW_MEASURE } from "../src/width";
 import { buildDefaultMdview, diffTokens, runLexerDiff, tsTokens } from "../scripts/lexer-diff";
 
 // The divergence registry and the L-gate — WP-1 of `plans/mdview-rust-port.md`.
@@ -101,6 +104,31 @@ describe("divergence registry — witnesses", () => {
       expect(existsSync(path)).toBe(true);
       const source = readFileSync(path, "utf8");
       for (const tier of ["unicode", "ascii"] as const) {
+        if (entry.id === "hl-fence-claim") {
+          // D-C, a render site: the TS side is the real colour-on render; the Rust side is
+          // synthesized as the claim decision would lay it out once syntect opens the fence's
+          // pointed content line with an escape — the same line, two columns of pad further in.
+          const glyphs = tier === "unicode" ? UNICODE_GLYPHS : ASCII_GLYPHS;
+          const ts = renderDocumentDetailed(source, 80, glyphs, NARROW_MEASURE, undefined, undefined, {
+            sgr: "full",
+            hyperlinks: false,
+            tmux: false,
+          });
+          const lines = ts.text.split("\n");
+          const pointed = lines.findIndex((line, i) => ts.codeRanges.some(([a, b]) => i + 1 >= a && i + 1 <= b) && /^ +\* /.test(line));
+          expect(pointed).toBeGreaterThan(-1);
+          const rustLines = lines.map((line, i) => (i === pointed ? `  ${line}` : line));
+          const site: Site = {
+            kind: "render",
+            path: entry.witness,
+            tier,
+            policy: "full",
+            ts: { text: ts.text, codeRanges: ts.codeRanges },
+            rust: { text: rustLines.join("\n"), codeRanges: ts.codeRanges },
+          };
+          expect(attribute(site)).toEqual({ id: entry.id });
+          continue;
+        }
         const ts = tsTokens(source, tier) as Node[];
         const sites = diffTokens(ts, spec(entry, ts, source), tier);
         const own = sites.filter((site) => REGISTRY.filter((e) => e.predicate(site)).map((e) => e.id).join() === entry.id);
