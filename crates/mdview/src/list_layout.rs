@@ -9,10 +9,8 @@
 //! `render.rs`'s renderer object delegates its five visitors here, handing itself in as the
 //! host whose walk the visitors re-enter (TS: `this.parser`).
 //!
-//! **The list seam stays closed at WP-4a.** Composition (`renderList`, `substituteBullets`) is
-//! `lists.rs`'s, WP-4b's; the two one-line seams below return `RenderError::Missing("list")`
-//! until then, so a list renders as unimplemented, never partially. Everything around them —
-//! the depth push, `rewrapListBody`, the tight-item seam — is ported and unit-tested directly.
+//! Composition (`renderList`, `substituteBullets`) is `lists.rs`'s (WP-4b); the two one-line
+//! seams below call it.
 //!
 //! The *why* behind every rule here is the TS module's own comments and
 //! `docs/agents/list-pipeline.md`; this file cites `list-layout.ts:NNN` for each.
@@ -29,7 +27,7 @@ use crate::inline::HARD_RETURN;
 use crate::list_lines::{
     MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, is_guard_shaped_line, strip_ansi,
 };
-use crate::render::RenderError;
+use crate::lists;
 use crate::text::{JS_WS_CLASS, js_trim, js_trim_end, js_trim_start};
 use crate::token::Token;
 use crate::walk::{self, R, Visitors};
@@ -196,14 +194,19 @@ pub fn rewrap_list_body(
 
 // ---- The two seams into list composition (`lists.rs`, WP-4b). ----
 
-/// seam: `crate::lists`' `renderList(layout, token, parse, sentinel)` (WP-4b).
-fn render_list(_: &LayoutContext, _: &Token, _: &dyn Fn(&[Token], bool) -> R, _: char) -> R {
-    Err(RenderError::Missing("list"))
+/// `renderList(layout, token, parse, sentinel)` (`lists.ts:483`).
+fn render_list(
+    ctx: &LayoutContext,
+    token: &Token,
+    parse: &dyn Fn(&[Token], bool) -> R,
+    sentinel: char,
+) -> R {
+    lists::render_list(ctx, token, parse, sentinel)
 }
 
-/// seam: `crate::lists`' `substituteBullets(body, glyphs, sentinel)` (WP-4b).
-fn substitute_bullets(_: &str, _: &GlyphSet, _: char) -> R {
-    Err(RenderError::Missing("list"))
+/// `substituteBullets(body, glyphs, sentinel)` (`lists.ts:757`).
+fn substitute_bullets(body: &str, glyphs: &GlyphSet, sentinel: char) -> R {
+    Ok(lists::substitute_bullets(body, glyphs, sentinel))
 }
 
 /// The per-render layout state and its five visitors (`ListTextLayout`).
@@ -991,23 +994,32 @@ mod tests {
     }
 
     #[test]
-    fn a_list_is_unimplemented_and_leaves_no_residue() {
+    fn a_failing_list_leaves_no_residue() {
+        use crate::render::RenderError;
         let c = ctx(40);
         let r = Renderer::new(&c);
+        // An inline-only token at block level makes the item's walk fail (WP-4b: the list seam
+        // is open, so the error path is reached through composition).
         let list = Token::List {
             ordered: false,
-            items: vec![],
+            items: vec![crate::token::ListItem {
+                raw: "- x".into(),
+                task: false,
+                checked: None,
+                loose: false,
+                tokens: vec![Token::Br],
+            }],
         };
         assert_eq!(
             r.list_text.list(&r, &list),
-            Err(RenderError::Missing("list"))
+            Err(RenderError::UnknownToken("br"))
         );
         assert_eq!((c.prefix.width(), c.prefix.list_depth()), (0, 0));
         // Inside a blockquote: the quote's push and `quoteColumns` unwind on the error path too.
         let quoted = [list.clone()];
         assert_eq!(
             r.list_text.blockquote(&r, &quoted),
-            Err(RenderError::Missing("list"))
+            Err(RenderError::UnknownToken("br"))
         );
         assert_eq!(r.list_text.counters(), (0, 0));
         assert_eq!(c.prefix.width(), 0);

@@ -490,10 +490,13 @@ mod tests {
     }
 
     #[test]
-    fn lists_tables_and_full_colour_fences_are_unimplemented_not_partial() {
+    fn tables_and_full_colour_fences_are_unimplemented_not_partial() {
+        // A list renders since WP-4b.
         assert_eq!(
-            render("- a\n", None, &opts(80, Tier::Unicode, Sgr::None)),
-            Err(RenderError::Missing("list"))
+            render("- a\n", None, &opts(80, Tier::Unicode, Sgr::None))
+                .unwrap()
+                .text,
+            "    • a\n\n"
         );
         assert_eq!(
             RenderError::Missing("list").to_string(),

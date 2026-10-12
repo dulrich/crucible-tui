@@ -11,10 +11,11 @@ fn parse(line: &str) -> Value {
 }
 
 #[test]
-fn a_well_formed_render_request_gets_an_unimplemented_error_never_text() {
+fn a_well_formed_render_request_gets_its_render() {
+    // A list rendered `unimplemented: list` until WP-4b ported composition.
     let response = parse(&mdview::parity::handle_render(REQUEST));
-    assert_eq!(response["error"], "unimplemented: list");
-    assert!(response.get("text").is_none());
+    assert!(response.get("error").is_none());
+    assert_eq!(response["text"], "    • a list is WP-4's\n\n");
 }
 
 #[test]
@@ -35,7 +36,7 @@ fn serve_answers_each_line_once_and_skips_blank_lines() {
     assert!(
         lines
             .iter()
-            .all(|l| parse(l)["error"] == "unimplemented: list")
+            .all(|l| parse(l)["text"] == "    • a list is WP-4's\n\n")
     );
 }
 

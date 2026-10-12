@@ -13,3 +13,4 @@ dc8d5a2234114f97 nested-bracket-label wiki-link inside a full reference link lab
 ee7943a1b6c221b7 nested-bracket-label wiki-link inside an inline image alt
 31bf02605d9425fc nested-bracket-label wiki-link inside a full reference image alt
 109f81d45a19ca2c nested-bracket-label wiki-link inside a full reference image alt (longer ref)
+7b907f7e2e145365 task-state-prepass D-B: blockquoted non-GFM task state recognised by comrak's relaxed tasklist
