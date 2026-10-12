@@ -308,6 +308,34 @@ impl Visitors for Renderer<'_> {
     }
 }
 
+/// `(parsed, diagnostic)`: whether the block parsed, and on failure the diagnostic's 0-based
+/// half-open line span within the rendered text.
+pub type FrontmatterFacts = (bool, Option<(usize, usize)>);
+
+/// What the frontmatter formatter knows about its own block, for the R-gate's D-A attribution
+/// (`scripts/divergences.ts`'s `RenderSide.frontmatter`): `None` without frontmatter, else
+/// whether it parsed and — only on failure — the 0-based half-open line span `[start, end)` of
+/// the diagnostic within the rendered text. The meta block opens the document, and a failed
+/// parse's echo range starts on the line after the diagnostic, so the span is
+/// `[0, echo_start - 1)`.
+pub fn frontmatter_facts(
+    source: &str,
+    options: &RenderOptions,
+) -> Result<Option<FrontmatterFacts>, RenderError> {
+    let (meta, _) = frontmatter::split_frontmatter(source);
+    let Some(meta) = meta else { return Ok(None) };
+    let result = frontmatter::format_meta_block_detailed(
+        &meta,
+        options.width,
+        measure_for(options.ambiguous),
+        options.policy.sgr,
+    )?;
+    Ok(Some(match result.verbatim_ranges.first() {
+        Some(&(start, _)) if start > 1 => (false, Some((0, start - 1))),
+        _ => (true, None),
+    }))
+}
+
 /// Render `source` (`renderDocumentDetailed`). `tokens`, when given, replaces the adapter's lex
 /// of the body (the R-gate); they are marked's own, already pre-processed by `lexBody`.
 pub fn render(

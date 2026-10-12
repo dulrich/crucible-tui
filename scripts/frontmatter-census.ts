@@ -23,6 +23,7 @@ import { parse } from "yaml";
 import { formatMetaBlockDetailed, splitFrontmatter } from "../src/frontmatter";
 import { NARROW_MEASURE, WIDE_MEASURE } from "../src/width";
 import { loadManifest, resolveCorpusFiles } from "./corpus";
+import { REGISTRY, type RenderSite } from "./divergences";
 
 const ROOT = join(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -80,6 +81,8 @@ const SYNTHETIC = [
   "? [a, b]\n: v\nk: 1",
   "a: *undefined",
   "just a scalar: line\nnot: [a, b]: c",
+  "x: [a]: c",
+  "x: {a: 1}: c",
   "- not\n- a map",
   "__proto__: x\nconstructor: y",
   "a: 1 # comment\n# whole\nb: '#not'",
@@ -131,6 +134,8 @@ let agree = 0;
 const wellFormed = (s: string): string =>
   s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
 let daCases = 0;
+/** Registered (`scripts/divergences.ts`) frontmatter divergences other than D-A, by id. */
+const registered = new Map<string, number>();
 let loneSurrogateCombos = 0;
 const daMetas = new Set<string>();
 combos.forEach((combo, i) => {
@@ -145,6 +150,29 @@ combos.forEach((combo, i) => {
   if (ts.text !== tsRaw.text) loneSurrogateCombos += 1;
   const tsParsed = parsedTs.get(meta) as boolean;
   if (answer.error !== undefined) return record("rust-error", tier, combo, ts.text, answer.error);
+  const rustEcho = answer.ranges?.[0];
+  if (tsParsed && !answer.parsed && rustEcho !== undefined) {
+    // A parse-verdict split the registry names (`flow-key-mapping`): the site is the two
+    // metadata blocks, with Rust's diagnostic span read off its echo range.
+    const site: RenderSite = {
+      kind: "render",
+      path: `census:${JSON.stringify(meta.slice(0, 40))}`,
+      tier: "unicode",
+      policy: sgr === "full" ? "P2" : "P0",
+      ts: { text: ts.text, codeRanges: ts.verbatimRanges, frontmatter: { parsed: true } },
+      rust: {
+        text: answer.text ?? "",
+        codeRanges: answer.ranges ?? [],
+        frontmatter: { parsed: false, diagnostic: [0, rustEcho[0] - 1] },
+      },
+    };
+    const ids = REGISTRY.filter((entry) => entry.kind === "frontmatter" && entry.predicate(site)).map((e) => e.id);
+    const [id] = ids;
+    if (ids.length === 1 && id !== undefined) {
+      registered.set(id, (registered.get(id) ?? 0) + 1);
+      return;
+    }
+  }
   if (tsParsed !== answer.parsed) return record(`parse ts=${tsParsed} rust=${answer.parsed}`, tier, combo, ts.text, answer.text ?? "");
   const rustText = answer.text as string;
   const rustRanges = answer.ranges as Array<[number, number]>;
@@ -196,6 +224,6 @@ for (const [cls, list] of classes) {
 const t0 = [...metas.values()].filter((t) => t === "T0").length;
 const failed = [...parsedTs.values()].filter((p) => !p).length;
 console.log(
-  `frontmatter-census: sources=${sources.length} blocks=${metas.size} (T0=${t0} T1=${metas.size - t0}) tsFailed=${failed} combos=${combos.length} agree=${agree} D-A=${daCases} (over ${daMetas.size} block(s)) loneSurrogateWellFormed=${loneSurrogateCombos} disagreements=${disagreements}`,
+  `frontmatter-census: sources=${sources.length} blocks=${metas.size} (T0=${t0} T1=${metas.size - t0}) tsFailed=${failed} combos=${combos.length} agree=${agree} D-A=${daCases} (over ${daMetas.size} block(s)) loneSurrogateWellFormed=${loneSurrogateCombos}${[...registered].map(([id, n]) => ` ${id}=${n}`).join("")} disagreements=${disagreements}`,
 );
 process.exit(disagreements === 0 && combos.length > 0 ? 0 : 1);
