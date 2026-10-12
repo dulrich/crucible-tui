@@ -40,6 +40,19 @@ const BLOCK_GROUP_RUST: Record<string, string> = {
   "link-label-escaped-bracket": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"link\",\"href\":\"https://example.com/d\",\"text\":\"[https://example.com/a](https://example.com/b\\\\_c.pdf)\",\"tokens\":[{\"type\":\"text\",\"raw\":\"[https://example.com/a](https://example.com/b\",\"text\":\"[https://example.com/a](https://example.com/b\"},{\"type\":\"escape\",\"text\":\"_\"},{\"type\":\"text\",\"raw\":\"c.pdf)\",\"text\":\"c.pdf)\"}]}]}]",
 };
 
+/** Frozen Rust-side tokens for the WP-9 T2 remainder-group witnesses (see `spec`). */
+const REMAINDER_GROUP_RUST: Record<string, string> = {
+  "paragraph-trailing-blank-line": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"a\",\"text\":\"a\"}]},{\"type\":\"space\"}]",
+  "autolink-no-delimiter": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"See a/www.example.com/x and Onlinehttps://example.com/y ok\",\"text\":\"See a/www.example.com/x and Onlinehttps://example.com/y ok\"}]}]",
+  "autolink-underscore-host": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"Ref: https://a_b/\",\"text\":\"Ref: https://a_b/\"}]}]",
+  "setext-hash-content": "[{\"type\":\"heading\",\"depth\":2,\"tokens\":[{\"type\":\"text\",\"raw\":\"#a #b\",\"text\":\"#a #b\"}]},{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"Text here.\",\"text\":\"Text here.\"}]}]",
+  "emphasis-underscore-after-asterisk": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"x *\",\"text\":\"x *\"},{\"type\":\"em\",\"text\":\"“c”\",\"tokens\":[{\"type\":\"text\",\"raw\":\"“c”\",\"text\":\"“c”\"}]},{\"type\":\"text\",\"raw\":\" — d\",\"text\":\" — d\"}]}]",
+  "emphasis-long-opener-em": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"'a'***\",\"text\":\"&#39;a&#39;***\"},{\"type\":\"em\",\"text\":\": b\",\"tokens\":[{\"type\":\"text\",\"raw\":\": b\",\"text\":\": b\"}]}]}]",
+  "emphasis-rule-of-three-mid": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"x+*），x。y\",\"text\":\"x+*），x。y\"},{\"type\":\"strong\",\"text\":\"a / b\",\"tokens\":[{\"type\":\"text\",\"raw\":\"a / b\",\"text\":\"a / b\"}]},{\"type\":\"text\",\"raw\":\"，\",\"text\":\"，\"}]}]",
+  "emphasis-mask-angle-span": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"strong\",\"text\":\"a (< b c):\",\"tokens\":[{\"type\":\"text\",\"raw\":\"a (< b c):\",\"text\":\"a (&lt; b c):\"}]},{\"type\":\"text\",\"raw\":\" d\\n\",\"text\":\" d\\n\"},{\"type\":\"strong\",\"text\":\"e (> f g):\",\"tokens\":[{\"type\":\"text\",\"raw\":\"e (> f g):\",\"text\":\"e (&gt; f g):\"}]},{\"type\":\"text\",\"raw\":\" h\",\"text\":\" h\"}]}]",
+  "emphasis-count-pairing": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"strong\",\"text\":\"*a* *b*\",\"tokens\":[{\"type\":\"em\",\"text\":\"a\",\"tokens\":[{\"type\":\"text\",\"raw\":\"a\",\"text\":\"a\"}]},{\"type\":\"text\",\"raw\":\" \",\"text\":\" \"},{\"type\":\"em\",\"text\":\"b\",\"tokens\":[{\"type\":\"text\",\"raw\":\"b\",\"text\":\"b\"}]}]},{\"type\":\"text\",\"raw\":\"*, c d e.*\",\"text\":\"*, c d e.*\"}]}]",
+};
+
 /**
  * The spec-correct Rust side for a live lexer witness, synthesized from the TS tokens.
  * single-tilde-del: GFM's flanking rules leave both tildes literal, so each single-tilde
@@ -235,6 +248,11 @@ function spec(entry: Divergence, ts: Node[], source: string): Node[] {
     // normalized tokens for the witness, since the Rust side follows the spec here.
     return JSON.parse(BLOCK_GROUP_RUST[entry.id] as string) as Node[];
   }
+  if (REMAINDER_GROUP_RUST[entry.id] !== undefined) {
+    // WP-9 T2 remainder group: the spec-correct parse, frozen from the comrak adapter's own
+    // normalized tokens for the witness, as for the block group above.
+    return JSON.parse(REMAINDER_GROUP_RUST[entry.id] as string) as Node[];
+  }
   throw new Error(`no synthetic Rust side for ${entry.id}`);
 }
 
@@ -335,6 +353,20 @@ describe("divergence registry — attribution", () => {
     expect(attribute(arraySite)).toEqual({ id: "single-tilde-del" });
     const double: Site = { ...arraySite, ts: [text("x ("), { ...del, raw: "~~a b (~~" }, text("c)")], rust: [text("x (~~a b (~~c)")] };
     expect("disallowed" in attribute(double)).toBe(true);
+  });
+
+  test("autolink-backslash-paren compares href and text after entity decoding (user ruling 2026-10-12)", () => {
+    const link = (href: string, shown: string): Node => ({ type: "link", href, text: shown, tokens: [text(shown)] });
+    const site: Site = {
+      path: "$[0].tokens",
+      tier: "unicode",
+      ts: [text("q: "), link("https://a.io/s?q=b\\", "https://a.io/s?q=b\\"), { type: "text", raw: "(&t=c\\", text: "(&amp;t=c\\" }],
+      rust: [text("q: "), link("https://a.io/s?q=b\\(&t=c\\", "https://a.io/s?q=b\\(&amp;t=c\\")],
+    };
+    expect(attribute(site)).toEqual({ id: "autolink-backslash-paren" });
+    // A text that really differs from the href is still not a bare autolink.
+    const other: Site = { ...site, rust: [text("q: "), link("https://a.io/s?q=b\\(&t=c\\", "https://a.io/s?q=b\\(&amp;t=d\\")] };
+    expect("disallowed" in attribute(other)).toBe(true);
   });
 
   test("an unmatched site and an unratified match are both disallowed", () => {
