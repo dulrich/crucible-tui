@@ -218,9 +218,26 @@ impl Visitors for Renderer<'_> {
         Ok(wrap_code(&blocks::render_code(self.layout, lang, text)?))
     }
 
-    fn table(&self, _token: &Token) -> R {
-        // seam: crate::table's renderTable port (WP-5)
-        Err(RenderError::Missing("table"))
+    fn table(&self, token: &Token) -> R {
+        // `src/render.ts:813`: the budget is `max(1, targetWidth - prefix.width())`.
+        let Token::Table {
+            header,
+            rows,
+            align,
+        } = token
+        else {
+            return Err(RenderError::Missing("table"));
+        };
+        let l = self.layout;
+        Ok(crate::table::render_table(
+            header,
+            rows,
+            align,
+            self.budget(),
+            l.glyphs,
+            l.measure,
+            l.sgr,
+        ))
     }
 
     fn blockquote(&self, tokens: &[Token]) -> R {
@@ -477,10 +494,6 @@ mod tests {
         assert_eq!(
             render("- a\n", None, &opts(80, Tier::Unicode, Sgr::None)),
             Err(RenderError::Missing("list"))
-        );
-        assert_eq!(
-            render("|a|\n|-|\n|b|\n", None, &opts(80, Tier::Unicode, Sgr::None)),
-            Err(RenderError::Missing("table"))
         );
         assert_eq!(
             RenderError::Missing("list").to_string(),
