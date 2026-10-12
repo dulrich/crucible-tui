@@ -171,6 +171,38 @@ function spec(entry: Divergence, ts: Node[], source: string): Node[] {
     // CommonMark §6.2: the rest of the run after `b` is literal, and so is everything after.
     return inPara([strong([t("(a")], "(a"), t(" "), strong([t("b")], "b"), t("**)****:**")]);
   }
+  const em = (inner: Node[], text: string): Node => ({ type: "em", text, tokens: inner });
+  const url = (href: string): Node => ({ type: "link", href, text: href, tokens: [t(href)] });
+  if (entry.id === "emphasis-closer-remainder") {
+    // CommonMark §6.2: the rest of the right-flanking `**` is literal, and so is the last `*`.
+    return inPara([t("Then "), em([t("she")], "she"), t("*.* went.")]);
+  }
+  if (entry.id === "emphasis-rule-of-three-inner-em") {
+    // CommonMark §6.2: the inner `*` pair closes first, then the `**` pair.
+    return inPara([strong([t("Big "), em([t("(here)")], "(here)"), t(".")], "Big *(here)*."), t(" after")]);
+  }
+  if (entry.id === "codespan-mask-escaped-backtick") {
+    // CommonMark §6.1/§6.3: the escaped backtick is literal, so `*this*` is em.
+    const c = (text: string): Node => ({ type: "codespan", text });
+    return inPara([t("Type "), { type: "escape", text: "`" }, t(" then "), c("c"), t(" and "), em([t("this")], "this"), t(" or "), c("f"), t(".")]);
+  }
+  if (entry.id === "autolink-paren-count") {
+    // GFM §6.9: two `)` against one `(`, so the trailing `)` is not part of the link.
+    return inPara([t("Shown as ("), url("https://a.io/c)d(e"), t(") here.")]);
+  }
+  if (entry.id === "autolink-nbsp") {
+    // GFM §6.9/§2.1: U+00A0 is not whitespace, so the link runs on through it.
+    return inPara([t("See ("), url("https://a.io/x) "), t(" next.")]);
+  }
+  if (entry.id === "link-in-link") {
+    // CommonMark §6.3: the inner-most link is used; the outer brackets stay text.
+    const inner: Node = { type: "link", href: "https://a.io", text: "a.io", tokens: [t("a.io")] };
+    return inPara([t("Read ["), inner, t("](notes.md) now.")]);
+  }
+  if (entry.id === "html-tag-underscore") {
+    // CommonMark §6.6: `foo_bar` is not a tag name, so the angle brackets are text.
+    return inPara([{ type: "text", raw: "Find the <foo_bar> tag.", text: "Find the &lt;foo_bar&gt; tag." }]);
+  }
   if (entry.id === "list-close-tag-lazy-line") {
     // Neither-correct (Rust kept): comrak ends the list, then a space, then the html block.
     return ts.flatMap((n, k): Node[] => {
