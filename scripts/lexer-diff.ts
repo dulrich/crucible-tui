@@ -28,7 +28,13 @@
  * onto the census schema, or a TS lex that throws is an *error* for that file × tier —
  * never a match, never skipped. The run fails when `disallowed > 0`, `errors > 0`, or zero
  * pairs were compared: a lexer-diff that compared nothing never passes. A predicate
- * collision (two entries matching one site) throws out of `attribute()` and aborts the run.
+ * collision (two entries matching one site) throws out of `attribute()`; the run records it
+ * as an *error* naming the file × tier and site, and keeps going, so one collision on a
+ * large corpus neither aborts the run nor hides which file it was.
+ *
+ * **`--sites-out <file>`** writes every site, attributed or not, as JSONL
+ * `{file, tier, path, id | disallowed | error}` — the per-file list a risk-targeted
+ * render sample is built from (rev 5 of `plans/mdview-rust-port.md`).
  *
  * **The dumper.** `--dump <file> [--tier unicode|ascii]` prints the normalized `lexBody`
  * tokens for one file as JSON — census fields only, so a dump is stable.
@@ -39,7 +45,7 @@
  * `scripts/colour-axis.ts` does — the L-gate is always about *this* checkout's lexer.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { splitFrontmatter } from "../src/frontmatter";
@@ -205,7 +211,15 @@ export interface LexerDiffOptions {
   tiers: readonly Tier[];
   /** Path to an `mdview` binary that speaks `__parity lex`. */
   mdview: string;
+  /** Called once per site with its verdict; `--sites-out` writes these as JSONL. */
+  onSite?: (record: SiteRecord) => void;
 }
+
+export type SiteRecord = { file: string; tier: Tier; path: string } & (
+  | { id: string }
+  | { disallowed: string }
+  | { error: string }
+);
 
 export interface LexerDiffSummary {
   files: number;
@@ -264,7 +278,16 @@ export async function runLexerDiff(options: LexerDiffOptions): Promise<LexerDiff
         }
         summary.pairs++;
         for (const site of diffTokens(ts, rust, tier)) {
-          const verdict = attribute(site);
+          let verdict: ReturnType<typeof attribute>;
+          try {
+            verdict = attribute(site);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            summary.errorEntries.push({ file, tier, error: message });
+            options.onSite?.({ file, tier, path: site.path, error: message });
+            continue;
+          }
+          options.onSite?.({ file, tier, path: site.path, ...verdict });
           if ("id" in verdict) {
             summary.attributed[verdict.id] = (summary.attributed[verdict.id] ?? 0) + 1;
           } else {
@@ -296,6 +319,7 @@ interface CliOptions {
   mdview?: string;
   dump?: string;
   dumpTier: Tier;
+  sitesOut?: string;
 }
 
 function parseTier(value: string | undefined, flag: string): Tier {
@@ -331,6 +355,7 @@ export function parseArgs(args: string[]): CliOptions {
         .map((t) => parseTier(t.trim(), "--tiers"));
     } else if (arg === "--mdview") options.mdview = next();
     else if (arg === "--dump") options.dump = next();
+    else if (arg === "--sites-out") options.sitesOut = next();
     else if (arg === "--tier") options.dumpTier = parseTier(next(), "--tier");
     else throw new Error(`lexer-diff: unknown argument ${JSON.stringify(arg)}`);
   }
@@ -378,7 +403,17 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
   }
   const files = await selectFiles(options);
   const mdview = options.mdview ?? buildDefaultMdview();
-  const summary = await runLexerDiff({ files, tiers: options.tiers, mdview });
+  const sites: string[] = [];
+  const summary = await runLexerDiff({
+    files,
+    tiers: options.tiers,
+    mdview,
+    onSite: options.sitesOut === undefined ? undefined : (record) => sites.push(JSON.stringify(record)),
+  });
+  if (options.sitesOut !== undefined) {
+    await writeFile(options.sitesOut, sites.length === 0 ? "" : `${sites.join("\n")}\n`);
+    console.log(`lexer-diff: ${sites.length} sites written to ${options.sitesOut}`);
+  }
   for (const entry of summary.errorEntries.slice(0, 20)) {
     console.log(`lexer-diff: ERROR ${entry.file} [${entry.tier}]: ${entry.error}`);
   }
