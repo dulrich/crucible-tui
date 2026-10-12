@@ -154,7 +154,20 @@ fn options_of(record: &Value) -> mdview::render::RenderOptions {
         },
         emoji: record["emoji"].as_bool(),
         path: None,
+        highlight_as: Default::default(),
     }
+}
+
+/// D-C (WP-6a): colour-on fenced output is judged with SGR stripped. Same line count; every
+/// line outside a code range byte-identical; every line inside one equal once SGR is stripped.
+fn dc_equal(want: &str, got: &str, ranges: &[(usize, usize)]) -> bool {
+    let (w, g): (Vec<&str>, Vec<&str>) = (want.split('\n').collect(), got.split('\n').collect());
+    w.len() == g.len()
+        && w.iter().zip(&g).enumerate().all(|(i, (a, b))| {
+            a == b
+                || (ranges.iter().any(|&(s, e)| (s..=e).contains(&(i + 1)))
+                    && mdview::list_lines::strip_ansi(a) == mdview::list_lines::strip_ansi(b))
+        })
 }
 
 /// WP-3's golden replay: every `render.jsonl` record either matches `text` and `codeRanges`
@@ -165,6 +178,7 @@ fn golden_render_replay() {
     let golden = load_golden(&golden_dir().join("render.jsonl")).unwrap_or_else(|e| panic!("{e}"));
     let allowlist = load_allowlist();
     let mut matched = 0usize;
+    let mut dc_relaxed = 0usize;
     let mut allowlisted = 0usize;
     let mut used = std::collections::HashSet::new();
     let mut missing: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -184,6 +198,11 @@ fn golden_render_replay() {
                 let want = record["text"].as_str().unwrap_or_default();
                 if out.text == want && out.code_ranges == ranges {
                     matched += 1;
+                } else if options.policy.sgr == mdview::render::Sgr::Full
+                    && out.code_ranges == ranges
+                    && dc_equal(want, &out.text, &ranges)
+                {
+                    dc_relaxed += 1;
                 } else if allowlist.contains_key(&hash) {
                     allowlisted += 1;
                     used.insert(hash);
@@ -201,7 +220,7 @@ fn golden_render_replay() {
     }
     let unimplemented: usize = missing.values().sum();
     println!(
-        "golden replay: records={} matched={matched} unimplemented={unimplemented} {missing:?} allowlisted={allowlisted} failed={}",
+        "golden replay: records={} matched={matched} dc-relaxed={dc_relaxed} unimplemented={unimplemented} {missing:?} allowlisted={allowlisted} failed={}",
         golden.records.len(),
         failures.len()
     );

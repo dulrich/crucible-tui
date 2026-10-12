@@ -19,8 +19,9 @@ use crate::blocks;
 use crate::context::{LayoutContext, LayoutContextInit};
 use crate::frontmatter;
 use crate::glyphs::{GlyphSet, glyphs_for};
+use crate::highlight::SyntectSupport;
 use crate::inline;
-use crate::lang::{AliasOnlySupport, FenceLanguageResolver};
+use crate::lang::FenceLanguageResolver;
 use crate::lex;
 use crate::list_layout::{ListTextLayout, create_list_text_layout};
 use crate::token::Token;
@@ -68,6 +69,9 @@ pub struct RenderOptions {
     pub emoji: Option<bool>,
     /// The viewed file's path, for the wiki-link resolver under hyperlinks.
     pub path: Option<String>,
+    /// The config's `highlightAs` fence-language aliases (`makeFenceLanguageResolver`'s input),
+    /// layered over the built-ins; empty for the default resolver.
+    pub highlight_as: std::collections::BTreeMap<String, String>,
 }
 
 /// What a render returns: the text and its 1-based inclusive code ranges.
@@ -342,7 +346,10 @@ pub fn render(
         width: target_width,
         glyphs,
         measure,
-        resolve_fence_language: FenceLanguageResolver::builtin(Rc::new(AliasOnlySupport)),
+        resolve_fence_language: FenceLanguageResolver::new(
+            &options.highlight_as,
+            Rc::new(SyntectSupport),
+        ),
         resolve_wiki_link: None,
         emoji,
         sgr,
@@ -400,6 +407,7 @@ mod tests {
                 tmux: false,
             },
             emoji: None,
+            highlight_as: Default::default(),
             path: None,
         }
     }
@@ -473,10 +481,6 @@ mod tests {
         assert_eq!(
             render("|a|\n|-|\n|b|\n", None, &opts(80, Tier::Unicode, Sgr::None)),
             Err(RenderError::Missing("table"))
-        );
-        assert_eq!(
-            render("```\nx\n```\n", None, &opts(80, Tier::Unicode, Sgr::Full)),
-            Err(RenderError::Missing("highlight"))
         );
         assert_eq!(
             RenderError::Missing("list").to_string(),
