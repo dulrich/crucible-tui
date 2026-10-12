@@ -715,6 +715,145 @@ function itemHtmlLine(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// WP-9 lexer entries, attempt 2 (standing ruling 2026-10-12): emphasis-rule-of-three-scope,
+// link-destination-unbalanced-paren, emphasis-opener-remainder, emphasis-run-split,
+// list-close-tag-lazy-line
+// ---------------------------------------------------------------------------
+
+const ENDS_PUNCT = /[\p{P}\p{S}]$/u;
+
+/**
+ * `emphasis-rule-of-three-scope` matches an inline array where the TS side holds no `em` and
+ * the Rust side holds one `em` whose children carry a `strong` ending in punctuation that the
+ * TS side holds too (same subtree), no code span holds a backtick, and both sides spell the
+ * same characters once delimiter runs are removed. marked 14 applies the rule of 3 against the
+ * outer `*` opener while scanning for its closer
+ * (node_modules/marked/lib/marked.esm.js:817-821), so a both-flanking `**` between
+ * punctuation (`)**:`) is skipped and the outer `*` never closes; CommonMark §6.2's process
+ * emphasis pairs that `**` with the nearer `**` opener first (4 is not a multiple of 3).
+ */
+function emphasisRuleOfThreeScope(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (ts.some((n) => n.type === "em") || codespanTexts(ts).some((t) => t.includes("`"))) return false;
+  const tsStrong = new Set(ts.filter((n) => n.type === "strong").map((n) => JSON.stringify(n)));
+  const ems = rust.filter((n) => n.type === "em");
+  if (ems.length !== 1) return false;
+  const inner = asArray(ems[0]?.tokens as Node[] | undefined);
+  const hit = inner.some((n) => n.type === "strong" && ENDS_PUNCT.test(s(n.text)) && tsStrong.has(JSON.stringify(n)));
+  return hit && leafLetters(ts) === leafLetters(rust);
+}
+
+/** Unescaped `(` minus unescaped `)` in a destination. */
+const parenBalance = (href: string): number => {
+  const bare = href.replace(/\\./g, "");
+  return (bare.match(/\(/g)?.length ?? 0) - (bare.match(/\)/g)?.length ?? 0);
+};
+
+/**
+ * `link-destination-unbalanced-paren` matches an inline array where the TS side holds a
+ * `link` whose href has an unbalanced unescaped `(`, the Rust side holds no node with that
+ * href, and the Rust side holds a `link` whose href is what follows that href's last `(`.
+ * marked 14's `link` rule takes the destination as `[^\s\x00-\x1f]*`
+ * (node_modules/marked/lib/marked.esm.js:1167) and `findClosingBracket` (:737) only trims
+ * when the parens close, so `[#](https://…` is accepted as a destination; CommonMark §6.3
+ * admits a parenthesis in a destination only escaped or in a balanced pair, so the outer
+ * link fails and the inner `[#](https://…)` is the link.
+ */
+function linkDestinationUnbalancedParen(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const rustHrefs = new Set(rust.map((n) => s(n.href)).filter((h) => h !== ""));
+  return ts.some((l) => {
+    const href = s(l.href);
+    if (l.type !== "link" || parenBalance(href) <= 0 || rustHrefs.has(href)) return false;
+    const tail = href.slice(href.lastIndexOf("(") + 1);
+    return tail !== "" && rust.some((r) => r.type === "link" && s(r.href) === tail);
+  });
+}
+
+/**
+ * `emphasis-opener-remainder` matches an inline array where, at the same index, the TS side
+ * holds a `text` ending in a run of three or more `*`, the Rust side the same text with two
+ * fewer, followed by a `strong`; both sides spell the same characters once delimiter runs are
+ * removed. marked 14 needs a closer as long as the whole opener run (:823-825), and once that
+ * fails it eats the run one `*` at a time as text; the remainder then cannot open before
+ * punctuation because the previous character `*` is excluded from `punctuation` (:1122) and
+ * the left-delimiter check (:800) refuses it. CommonMark §6.2 process emphasis uses two
+ * delimiters from the `****` opener for a `**` closer and leaves the rest literal.
+ */
+function emphasisOpenerRemainder(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const hit = ts.some((t, i) => {
+    const raw = s(t.raw);
+    const r = rust[i];
+    return (
+      t.type === "text" &&
+      /\*{3,}$/.test(raw) &&
+      r?.type === "text" &&
+      s(r.raw) === raw.slice(0, -2) &&
+      rust[i + 1]?.type === "strong"
+    );
+  });
+  return hit && leafLetters(ts) === leafLetters(rust);
+}
+
+/**
+ * `emphasis-run-split` matches an inline array of equal length on both sides that differ at
+ * exactly one index, where the Rust side holds a `text` opening and closing `**`, the TS side
+ * a `strong` whose text is that text without them, and the previous node is the same `strong`
+ * on both sides. marked 14 resets `prevChar` after every non-text token
+ * (node_modules/marked/lib/marked.esm.js:1545-1546), so the `**` left of a `****` run whose
+ * first half closed a strong is read as a fresh opener at the start of the source (:800);
+ * CommonMark §6.2: that run is right-flanking only, so its remainder is literal, and the
+ * both-flanking `****` before `:` cannot pair with the final `**` (rule of 3: 4 + 2 = 6).
+ */
+function emphasisRunSplit(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (ts.length !== rust.length) return false;
+  const diff = ts.map((_, i) => i).filter((i) => JSON.stringify(ts[i]) !== JSON.stringify(rust[i]));
+  if (diff.length !== 1) return false;
+  const k = diff[0] as number;
+  const t = ts[k];
+  const r = rust[k];
+  const prev = ts[k - 1];
+  if (t?.type !== "strong" || r?.type !== "text" || prev?.type !== "strong") return false;
+  const raw = s(r.raw);
+  return raw.length > 4 && raw.startsWith("**") && raw.endsWith("**") && s(t.text) === raw.slice(2, -2);
+}
+
+/**
+ * `list-close-tag-lazy-line` matches a block array holding, at the same index on both sides,
+ * a `list` whose TS last item ends in an `html` token opening with `</`, followed on the TS
+ * side by a `space`, and on the Rust side by a `space` and then an `html` with the same text
+ * (trailing newlines aside). **Neither side is spec-correct** (standing ruling: neither-correct,
+ * Rust kept): `</notes>` is a type-7 start (§4.6), which cannot interrupt a paragraph, so it is
+ * a lazy continuation line of the item's paragraph (§5.2) — inline HTML in the item's text.
+ * marked's list loop (node_modules/marked/lib/marked.esm.js:440-444) keeps the line in the item
+ * but lexes it non-top as an `html` block (:1417); comrak ends the list before it. The
+ * `space` between them on the Rust side is what separates this from `html-close-tag-interrupt`.
+ */
+function listCloseTagLazyLine(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  return ts.some((list, k) => {
+    if (list.type !== "list" || rust[k]?.type !== "list") return false;
+    const items = asArray(list.items as Node[] | undefined);
+    const tail = asArray(items[items.length - 1]?.tokens as Node[] | undefined).at(-1);
+    if (tail?.type !== "html" || !s(tail.text).startsWith("</")) return false;
+    if (ts[k + 1]?.type !== "space" || rust[k + 1]?.type !== "space" || rust[k + 2]?.type !== "html") return false;
+    return s(rust[k + 2]?.text).trimEnd() === s(tail.text).trimEnd();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // hljs-prototype-key
 // ---------------------------------------------------------------------------
 
@@ -985,6 +1124,83 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/item-html-line.md",
     status: "live",
     predicate: itemHtmlLine,
+  },
+  {
+    id: "emphasis-rule-of-three-scope",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 "Emphasis and strong emphasis", process emphasis: a closer looks ' +
+      "back for the nearest matching opener, and the rule of 3 compares that closer with *that* " +
+      "opener — so in `*see **(this)**: here.*` the both-flanking `**` closes the `**` before " +
+      "`(` (2 + 2), and the outer `*` pair is em. marked 14 checks the rule of 3 against the " +
+      "outer `*` opener while scanning for its closer (node_modules/marked/lib/marked.esm.js:" +
+      "817-821), skips that `**`, and the `*` never closes.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-rule-of-three-scope.md",
+    status: "live",
+    predicate: emphasisRuleOfThreeScope,
+  },
+  {
+    id: "link-destination-unbalanced-paren",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.3 "Links": a non-angle destination "includes parentheses only if ' +
+      '(a) they are backslash-escaped or (b) they are part of a balanced pair of unescaped ' +
+      'parentheses", so `[D]([#](https://example.com/x "D"))` is not a link around `D`, and ' +
+      "the inner `[#](https://example.com/x \"D\")` is. marked 14's `link` rule takes the " +
+      "destination as `[^\\s\\x00-\\x1f]*` (node_modules/marked/lib/marked.esm.js:1167) and " +
+      "`findClosingBracket` (:737) trims only when the parens close, so `[#](https://…` is " +
+      "accepted as the href.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/link-destination-unbalanced-paren.md",
+    status: "live",
+    predicate: linkDestinationUnbalancedParen,
+  },
+  {
+    id: "emphasis-opener-remainder",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 "Emphasis and strong emphasis", process emphasis: when opener ' +
+      "and closer differ in length, the shorter count is used and the rest of the longer run " +
+      "stays, so `****[c](url) d**` is `**` then strong. marked 14 needs a closer as long as " +
+      "the whole opener (node_modules/marked/lib/marked.esm.js:823-825); when that fails the " +
+      "run is eaten one `*` at a time as text, and the remainder cannot open before `[` because " +
+      "the previous `*` is excluded from `punctuation` (:1122) and the left-delimiter check " +
+      "(:800) refuses it, so the whole run stays literal.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-opener-remainder.md",
+    status: "live",
+    predicate: emphasisOpenerRemainder,
+  },
+  {
+    id: "emphasis-run-split",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 "Emphasis and strong emphasis": in `**b****)****:**` the run ' +
+      "after `b` is right-flanking only, so two of it close `**b` and the other two are " +
+      "literal; the both-flanking `****` before `:` cannot pair with the final `**` (rule of " +
+      "3: 4 + 2 = 6, neither a multiple of 3). marked 14 resets `prevChar` after every " +
+      "non-text token (node_modules/marked/lib/marked.esm.js:1545-1546), so the left-over " +
+      "`**` reads as a fresh opener (:800) and pairs with the final `**` as strong.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-run-split.md",
+    status: "live",
+    predicate: emphasisRunSplit,
+  },
+  {
+    id: "list-close-tag-lazy-line",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §4.6 "HTML blocks": `</notes>` is a type-7 start ("All types of HTML ' +
+      'blocks except type 7 may interrupt a paragraph"), so after `2. second  ` it is a lazy ' +
+      "continuation line (§5.2) — inline HTML in the item's paragraph. Neither side does " +
+      "that: marked 14's list loop (node_modules/marked/lib/marked.esm.js:440-444) keeps the " +
+      "line in the item but lexes it non-top as an `html` block (:1417); comrak ends the list, " +
+      "emits a `space`, and makes it a top-level html block. Rust's output is kept.",
+    ratified: { by: "user (standing ruling: neither-correct, Rust kept)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/list-close-tag-lazy-line.md",
+    status: "live",
+    predicate: listCloseTagLazyLine,
   },
 ];
 

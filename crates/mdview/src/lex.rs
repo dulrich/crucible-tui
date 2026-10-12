@@ -1058,7 +1058,14 @@ impl<'s> Lexer<'s> {
                 list_end = if trimmed == 0 {
                     p0
                 } else {
-                    v.offs[trimmed - 1] + v.s[..trimmed].chars().last().map_or(1, char::len_utf8)
+                    let off = v.offs[trimmed - 1];
+                    let end = off + v.s[..trimmed].chars().last().map_or(1, char::len_utf8);
+                    // A pre-pass replacement maps every byte to `sub.start`; ending inside it
+                    // means ending after it (the ascii `[\u{1} ]` is one byte longer than `[ ]`).
+                    match self.subs.get(&self.line_of(off)) {
+                        Some(sub) if sub.start <= off && off < sub.end => end.max(sub.end),
+                        _ => end,
+                    }
                 };
             }
             if !loose {
@@ -2302,6 +2309,20 @@ mod tests {
         };
         assert_eq!(text, "[/] half");
         assert!(!items[1].task);
+    }
+
+    #[test]
+    fn ascii_sentinel_at_nested_list_end_leaves_no_space() {
+        // `[\u{1} ]` is one byte longer than `[ ]`; a nested list ending on it (with a trailing
+        // space) must end after the substitution, or the residual ` ] ` reads as a `space`.
+        let t = lex("- a:\n  - b\n  - [ ] \n- c\n", Tier::Ascii);
+        let Token::List { items, .. } = &t[0] else {
+            panic!()
+        };
+        assert!(matches!(
+            items[0].tokens.as_slice(),
+            [Token::Text { .. }, Token::List { .. }]
+        ));
     }
 
     #[test]

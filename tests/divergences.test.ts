@@ -147,6 +147,46 @@ function spec(entry: Divergence, ts: Node[], source: string): Node[] {
       return { ...n, items };
     });
   }
+  const strong = (inner: Node[], text: string): Node => ({ type: "strong", text, tokens: inner });
+  if (entry.id === "emphasis-rule-of-three-scope") {
+    // CommonMark §6.2: `**` closes the nearer `**`, then the outer `*` pair is em.
+    const em: Node = {
+      type: "em",
+      text: "see **(this)**: here.",
+      tokens: [t("see "), strong([t("(this)")], "(this)"), t(": here.")],
+    };
+    return inPara([t("Note "), em]);
+  }
+  if (entry.id === "link-destination-unbalanced-paren") {
+    // CommonMark §6.3: the unbalanced `(` fails the outer destination; the inner link stands.
+    const link: Node = { type: "link", href: "https://example.com/x", text: "#", tokens: [t("#")] };
+    return inPara([t("[D]("), link, t(")")]);
+  }
+  if (entry.id === "emphasis-opener-remainder") {
+    // CommonMark §6.2: two of the four `*` open the strong; two stay literal.
+    const link: Node = { type: "link", href: "https://example.com/", text: "c", tokens: [t("c")] };
+    return inPara([t("A **"), strong([link, t(" d")], "[c](https://example.com/) d"), t(" e.")]);
+  }
+  if (entry.id === "emphasis-run-split") {
+    // CommonMark §6.2: the rest of the run after `b` is literal, and so is everything after.
+    return inPara([strong([t("(a")], "(a"), t(" "), strong([t("b")], "b"), t("**)****:**")]);
+  }
+  if (entry.id === "list-close-tag-lazy-line") {
+    // Neither-correct (Rust kept): comrak ends the list, then a space, then the html block.
+    return ts.flatMap((n, k): Node[] => {
+      if (n.type === "space" && ts[k - 1]?.type === "list") return [];
+      if (n.type !== "list") return [n];
+      const items = [...(n.items as Node[])];
+      const last = items[items.length - 1]!;
+      const tokens = [...(last.tokens as Node[])];
+      const html = tokens.pop()!;
+      const text = tokens[tokens.length - 1]!;
+      const trimmed = String(text.text).trimEnd();
+      tokens[tokens.length - 1] = { ...text, raw: trimmed, text: trimmed, tokens: [t(trimmed)] };
+      items[items.length - 1] = { ...last, raw: `2. ${trimmed}`, tokens };
+      return [{ ...n, items }, { type: "space" }, { type: "html", text: `${String(html.text)}\n\n` }];
+    });
+  }
   throw new Error(`no synthetic Rust side for ${entry.id}`);
 }
 
