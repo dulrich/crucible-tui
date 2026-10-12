@@ -6,10 +6,9 @@
 //! returns `RenderError::Missing(feature)`, never a panic and never a partial render, so the
 //! parity server reports `unimplemented: <feature>` and `render-diff` counts it as an error.
 //!
-//! The list-free halves of `src/list-layout.ts`'s `text`/`paragraph`/`heading`/`blockquote`
-//! visitors live here until WP-4 owns that module: with no list open, `listDepth() === 0`, so
-//! `wrappedText` is `renderInlineText` and the `inlineDepth`/`quoteColumns` counters are read
-//! by nothing.
+//! Five visitors — `list`, `text`, `paragraph`, `heading`, `blockquote` — share one render's
+//! layout state and live in `list_layout.rs` (`src/list-layout.ts`); the renderer object here
+//! delegates to them, exactly as `src/render.ts` assigns `createListTextLayout`'s methods.
 
 use std::rc::Rc;
 use std::sync::LazyLock;
@@ -17,13 +16,13 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::blocks;
-use crate::context::{LayoutContext, LayoutContextInit, PrefixEntry};
+use crate::context::{LayoutContext, LayoutContextInit};
 use crate::frontmatter;
 use crate::glyphs::{GlyphSet, glyphs_for};
 use crate::inline;
 use crate::lang::{AliasOnlySupport, FenceLanguageResolver};
 use crate::lex;
-use crate::list_lines::{is_guard_shaped_line, strip_ansi};
+use crate::list_layout::{ListTextLayout, create_list_text_layout};
 use crate::token::Token;
 use crate::walk::{self, R, Visitors};
 use crate::width::{Measure, measure_for};
@@ -175,11 +174,21 @@ fn strip_emoji_trailing_space(body: &str, code_ranges: &[(usize, usize)]) -> Str
 }
 
 /// The owned renderer object: every visitor `src/render.ts` installs, over one layout.
-struct Renderer<'a> {
+pub(crate) struct Renderer<'a> {
     layout: &'a LayoutContext,
+    /// `createListTextLayout(layout, SENTINEL)`: the five layout-state visitors.
+    pub(crate) list_text: ListTextLayout<'a>,
 }
 
-impl Renderer<'_> {
+impl<'a> Renderer<'a> {
+    /// One renderer, and one fresh layout state, per render.
+    pub(crate) fn new(layout: &'a LayoutContext) -> Self {
+        Renderer {
+            layout,
+            list_text: create_list_text_layout(layout, SENTINEL),
+        }
+    }
+
     fn budget(&self) -> usize {
         self.layout
             .width
@@ -198,13 +207,7 @@ impl Visitors for Renderer<'_> {
     }
 
     fn heading(&self, depth: u8, tokens: &[Token]) -> R {
-        let inner = walk::parse_inline(self, tokens)?;
-        Ok(blocks::render_heading(
-            self.layout,
-            depth,
-            &inner,
-            self.budget(),
-        ))
+        self.list_text.heading(self, depth, tokens)
     }
 
     fn code(&self, lang: Option<&str>, text: &str) -> R {
@@ -217,18 +220,11 @@ impl Visitors for Renderer<'_> {
     }
 
     fn blockquote(&self, tokens: &[Token]) -> R {
-        self.layout.prefix.push(PrefixEntry {
-            columns: 4,
-            list: false,
-        });
-        let body = walk::parse(self, tokens, true);
-        self.layout.prefix.pop();
-        Ok(blocks::render_blockquote(self.layout, &body?))
+        self.list_text.blockquote(self, tokens)
     }
 
-    fn list(&self, _token: &Token) -> R {
-        // seam: crate::list_layout's ownedList over crate::lists' renderList (WP-4)
-        Err(RenderError::Missing("list"))
+    fn list(&self, token: &Token) -> R {
+        self.list_text.list(self, token)
     }
 
     fn html(&self, text: &str) -> R {
@@ -236,32 +232,11 @@ impl Visitors for Renderer<'_> {
     }
 
     fn paragraph(&self, tokens: &[Token]) -> R {
-        let budget = self.budget();
-        let inner = walk::parse_inline(self, tokens)?;
-        let result = blocks::render_paragraph(self.layout, &inner, budget);
-        let marker = |line: &str| is_guard_shaped_line(&strip_ansi(line));
-        if !result.split('\n').skip(1).any(marker) {
-            return Ok(result);
-        }
-        Ok(
-            blocks::render_paragraph(self.layout, &inner, budget.saturating_sub(1).max(1))
-                .split('\n')
-                .enumerate()
-                .map(|(i, line)| {
-                    if i > 0 && marker(line) {
-                        format!(" {line}")
-                    } else {
-                        line.to_owned()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
+        self.list_text.paragraph(self, tokens)
     }
 
-    fn text(&self, text: &str, _tokens: Option<&[Token]>) -> R {
-        // `wrappedText` with no list open is `renderInlineText`.
-        Ok(text.to_owned())
+    fn text(&self, text: &str, tokens: Option<&[Token]>) -> R {
+        self.list_text.text(self, text, tokens)
     }
 
     fn link(&self, href: &str, tokens: &[Token]) -> R {
@@ -383,7 +358,7 @@ pub fn render(
             &lexed
         }
     };
-    let rendered_body = walk::parse(&Renderer { layout: &layout }, body_tokens, true)?;
+    let rendered_body = walk::parse(&Renderer::new(&layout), body_tokens, true)?;
     let RenderOutput {
         text: stripped_body,
         code_ranges: body_ranges,
