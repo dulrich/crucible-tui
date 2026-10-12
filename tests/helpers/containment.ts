@@ -78,8 +78,13 @@ const FILESYSTEM_ROOTS = new Set([
   "var",
 ]);
 
-/** Never walked: generated or vendored trees with no authored content. */
-export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage", "target"]);
+/**
+ * Never walked: generated or vendored trees with no authored content, plus `.claude` —
+ * gitignored harness state whose `worktrees/` holds full checkouts of live workers, so
+ * walking it re-scans every control-plane file once per worktree and fails the guard
+ * whenever a dispatched worker exists.
+ */
+export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage", "target", ".claude"]);
 
 /**
  * Machine-generated lock files. Exempt from rule 1 only: their base64 integrity
