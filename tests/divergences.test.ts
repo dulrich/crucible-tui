@@ -89,6 +89,64 @@ function spec(entry: Divergence, ts: Node[], source: string): Node[] {
       return [{ ...n, items }, { type: "html", text: `${String(html.text)}\n\n` }];
     });
   }
+  const t = (raw: string): Node => ({ type: "text", raw, text: raw });
+  const inPara = (tokens: Node[]): Node[] => ts.map((n) => (n.type === "paragraph" ? { ...n, tokens } : n));
+  if (entry.id === "list-blockquote-interrupt") {
+    // CommonMark §5.1: the `>` line interrupts, so the list ends and a block quote follows.
+    return ts.flatMap((n): Node[] => {
+      if (n.type !== "list") return [n];
+      const items = [...(n.items as Node[])];
+      const last = items[items.length - 1]!;
+      const tokens = [...(last.tokens as Node[])];
+      const quote = tokens.pop()!;
+      items[items.length - 1] = { ...last, tokens };
+      return [{ ...n, items }, quote];
+    });
+  }
+  if (entry.id === "codespan-mask-skew") {
+    // CommonMark §6.1: `` ` ``` ` `` is one span, so the `**` after it pairs (§6.2).
+    const c = (text: string): Node => ({ type: "codespan", text });
+    const strong: Node = { type: "strong", text: "bold", tokens: [t("bold")] };
+    return inPara([t("Use "), c("```"), t(" here and "), strong, t(" then "), c("x"), t(" end.")]);
+  }
+  if (entry.id === "image-alt-backtick") {
+    // CommonMark §6.1/§6.4: the unmatched backtick is literal, so the image stands.
+    const alt = "run &#39;`\\w+`&#39; | tr -d &#39;`&#39; | wc";
+    return inPara([{ type: "image", href: "pic.png", title: null, text: alt }]);
+  }
+  if (entry.id === "autolink-backslash-paren") {
+    // GFM autolink extension: the URL runs to the end of the line.
+    const url = "https://example.com/wiki/Thing_\\(kind\\";
+    return inPara([t("Link: "), { type: "link", href: url, text: url, tokens: [t(url)] }]);
+  }
+  if (entry.id === "link-label-hard-break") {
+    // CommonMark §6.7: the two spaces before the label's newline are a hard break.
+    const url = "https://example.com/";
+    const link: Node = { type: "link", href: url, text: `${url}  \n`, tokens: [t(url), { type: "br" }] };
+    return ts.map((n) =>
+      n.type === "paragraph" ? { ...n, tokens: (n.tokens as Node[]).map((x) => (x.type === "link" ? { ...x, tokens: link.tokens } : x)) } : n,
+    );
+  }
+  if (entry.id === "item-html-line") {
+    // CommonMark §4.6: type 7 cannot interrupt, so the tag line continues the item's text.
+    return ts.map((n) => {
+      if (n.type !== "list") return n;
+      const items = (n.items as Node[]).map((item) => {
+        const tokens = item.tokens as Node[];
+        const html = tokens.at(-1);
+        const text = tokens.at(-2);
+        if (html?.type !== "html" || text?.type !== "text") return item;
+        const merged: Node = {
+          type: "text",
+          raw: `${String(text.text)}\n\n${String(html.text)}`,
+          text: `${String(text.text)}\n${String(html.text)}`,
+          tokens: [t(`${String(text.text)}\n`), html],
+        };
+        return { ...item, tokens: [...tokens.slice(0, -2), merged] };
+      });
+      return { ...n, items };
+    });
+  }
   throw new Error(`no synthetic Rust side for ${entry.id}`);
 }
 
