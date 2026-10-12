@@ -236,6 +236,14 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 bun run build:rust
 ./target/x86_64-unknown-linux-musl/release/jsonedit --check crates/jsonedit/tests/fixtures/valid.json
+bun run scripts/gen-emoji-table.ts --check
+bun run scripts/gen-width-tables.ts --check
+bun run scripts/gen-hljs-map.ts --check
+bun run scripts/frontmatter-census.ts --no-t1
+bun run scripts/table-alloc-diff.ts
+bun run scripts/render-diff.ts --rev-a . --rev-b rust:. --input tokens --policy P0,P1
+bun run scripts/render-diff.ts --rev-a . --rev-b rust:. --input tokens --policy P2 --require-nonzero sgr,fences
+bun run scripts/cli-diff.ts
 bun run sweep
 bun run sweep -- --glyphs ascii
 bun run sweep -- --colour-mode both
