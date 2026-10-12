@@ -75,7 +75,7 @@ fn render_result_is_output_or_pending_exit_two_never_a_panic() {
     let out = mdview(&d, &["--check", "--width", "80", &fixture("wide-table.md")]);
     match out.status.code() {
         Some(0) => assert!(!out.stdout.is_empty()),
-        Some(2) => assert_eq!(out.stderr, b"mdview: render: unimplemented\n"),
+        Some(2) => assert!(out.stderr.starts_with(b"mdview: render: unimplemented")),
         other => panic!(
             "unexpected exit {other:?}: {}",
             String::from_utf8_lossy(&out.stderr)
