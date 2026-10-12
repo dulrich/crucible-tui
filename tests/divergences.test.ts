@@ -29,6 +29,17 @@ function mapTree(nodes: Node[], f: (node: Node) => Node | Node[]): Node[] {
   });
 }
 
+/** Frozen Rust-side tokens for the WP-9 T2 block-group witnesses (see `spec`). */
+const BLOCK_GROUP_RUST: Record<string, string> = {
+  "item-ordered-interrupt": "[{\"type\":\"list\",\"ordered\":false,\"items\":[{\"raw\":\"- a (b\\n  2) c d.\",\"task\":false,\"checked\":null,\"loose\":false,\"tokens\":[{\"type\":\"text\",\"raw\":\"a (b\\n\\n2) c d.\",\"text\":\"a (b\\n2) c d.\",\"tokens\":[{\"type\":\"text\",\"raw\":\"a (b\\n2) c d.\",\"text\":\"a (b\\n2) c d.\"}]}]}]}]",
+  "setext-indented-bullet": "[{\"type\":\"list\",\"ordered\":false,\"items\":[{\"raw\":\"- x\\n    - a\\n    - b\\n  -\",\"task\":false,\"checked\":null,\"loose\":false,\"tokens\":[{\"type\":\"text\",\"raw\":\"x\\n\",\"text\":\"x\",\"tokens\":[{\"type\":\"text\",\"raw\":\"x\",\"text\":\"x\"}]},{\"type\":\"list\",\"ordered\":false,\"items\":[{\"raw\":\"  - a\\n\",\"task\":false,\"checked\":null,\"loose\":false,\"tokens\":[{\"type\":\"text\",\"raw\":\"a\",\"text\":\"a\",\"tokens\":[{\"type\":\"text\",\"raw\":\"a\",\"text\":\"a\"}]}]},{\"raw\":\"  - b\\n\",\"task\":false,\"checked\":null,\"loose\":false,\"tokens\":[{\"type\":\"text\",\"raw\":\"b\",\"text\":\"b\",\"tokens\":[{\"type\":\"text\",\"raw\":\"b\",\"text\":\"b\"}]}]},{\"raw\":\"-\",\"task\":false,\"checked\":null,\"loose\":false,\"tokens\":[]}]}]}]}]",
+  "empty-item-trailing-space": "[{\"type\":\"heading\",\"depth\":2,\"tokens\":[{\"type\":\"text\",\"raw\":\"Plan\",\"text\":\"Plan\"}]},{\"type\":\"list\",\"ordered\":true,\"items\":[{\"raw\":\"1. \\n\",\"task\":false,\"checked\":null,\"loose\":false,\"tokens\":[]},{\"raw\":\"2.\",\"task\":false,\"checked\":null,\"loose\":false,\"tokens\":[]}]},{\"type\":\"space\"},{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"After.\",\"text\":\"After.\"}]}]",
+  "paragraph-tab-marker-interrupt": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"Steps:\",\"text\":\"Steps:\"}]},{\"type\":\"list\",\"ordered\":false,\"items\":[{\"raw\":\"-\\tfirst\",\"task\":false,\"checked\":null,\"loose\":false,\"tokens\":[{\"type\":\"text\",\"raw\":\"\\tfirst\",\"text\":\"\\tfirst\",\"tokens\":[{\"type\":\"text\",\"raw\":\"\\tfirst\",\"text\":\"\\tfirst\"}]}]}]}]",
+  "html-tag-name-invalid": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"Use </ns:tag> here.\",\"text\":\"Use &lt;/ns:tag&gt; here.\"}]}]",
+  "autolink-unclosed-paren": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"text\",\"raw\":\"Ref: \",\"text\":\"Ref: \"},{\"type\":\"link\",\"href\":\"https://example.org/wiki/A_B_(C\",\"text\":\"https://example.org/wiki/A_B_(C\",\"tokens\":[{\"type\":\"text\",\"raw\":\"https://example.org/wiki/A_B_(C\",\"text\":\"https://example.org/wiki/A_B_(C\"}]}]}]",
+  "link-label-escaped-bracket": "[{\"type\":\"paragraph\",\"tokens\":[{\"type\":\"link\",\"href\":\"https://example.com/d\",\"text\":\"[https://example.com/a](https://example.com/b\\\\_c.pdf)\",\"tokens\":[{\"type\":\"text\",\"raw\":\"[https://example.com/a](https://example.com/b\",\"text\":\"[https://example.com/a](https://example.com/b\"},{\"type\":\"escape\",\"text\":\"_\"},{\"type\":\"text\",\"raw\":\"c.pdf)\",\"text\":\"c.pdf)\"}]}]}]",
+};
+
 /**
  * The spec-correct Rust side for a live lexer witness, synthesized from the TS tokens.
  * single-tilde-del: GFM's flanking rules leave both tildes literal, so each single-tilde
@@ -218,6 +229,11 @@ function spec(entry: Divergence, ts: Node[], source: string): Node[] {
       items[items.length - 1] = { ...last, raw: `2. ${trimmed}`, tokens };
       return [{ ...n, items }, { type: "space" }, { type: "html", text: `${String(html.text)}\n\n` }];
     });
+  }
+  if (BLOCK_GROUP_RUST[entry.id] !== undefined) {
+    // WP-9 T2 block group: the spec-correct parse, frozen from the comrak adapter's own
+    // normalized tokens for the witness, since the Rust side follows the spec here.
+    return JSON.parse(BLOCK_GROUP_RUST[entry.id] as string) as Node[];
   }
   throw new Error(`no synthetic Rust side for ${entry.id}`);
 }
