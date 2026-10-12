@@ -1,0 +1,13 @@
+[package]
+name = "jsonedit"
+version = "0.1.0"
+description = "Validate and edit JSON, JSONC and JSON5 files without losing their bytes"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Pinned exactly at the measured version (plans/jsonedit.md, "Dependency posture").
+jsonc-parser = { version = "=0.34.0", features = ["cst"] }
+
+[lints]
+workspace = true

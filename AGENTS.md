@@ -24,9 +24,12 @@ command, it owns the whole set at once — binary, package, env vars, config dir
 compatibility shim for the old config path — and it updates this section rather than
 deleting it.
 
+A second command, `jsonedit`, now ships from this repo (`crates/jsonedit/`, `plans/jsonedit.md`); mdview is unchanged.
+
 ## Stack
 
 - Bun + TypeScript, single flat package (no workspaces).
+- A Rust Cargo workspace beside it (`Cargo.toml`, `members = ["crates/*"]`, toolchain pinned by `rust-toolchain.toml` to 1.98.1); `crates/jsonedit/` is its first crate, shipped as a static musl binary built with `cargo auditable`.
 - `marked` (**lexer only — and since 2026-08-17 that is finally true**) + **this repo's own
   renderer method bodies and its own tree walk** — every renderer method lives in
   `src/inline.ts`, `src/blocks.ts`, `src/lists.ts`, `src/table.ts` and `src/render.ts`, and
@@ -60,6 +63,7 @@ deleting it.
   an in-house web renderer working over the same corpus; the only other CLI-only tool in
   that family is TypeScript; and a working prototype in this stack was measured against
   the corpus before the plan was written.
+  **Under review: a Rust port of mdview is anticipated (see `plans/jsonedit.md` Decisions locked 2).**
 
 ## Layout
 
@@ -170,6 +174,11 @@ tests/helpers/inline-parity.ts  the inline parity table — every owned inline v
 tests/helpers/inline-parity-golden.ts  the frozen marked-terminal inline byte table,
                     captured before removal
 dist/mdview         compiled binary (gitignored; see PATH install below)
+Cargo.toml          the Rust workspace root (members crates/*, shared lints, release profile)
+Cargo.lock          committed; every graph-consuming cargo call runs --locked
+rust-toolchain.toml the pinned Rust toolchain (1.98.1, clippy, rustfmt, musl target)
+crates/jsonedit/    the jsonedit bin crate — logic in src/lib.rs, thin src/main.rs
+target/             Cargo build output (gitignored)
 ```
 
 ## Child docs and reference files — the index
@@ -220,6 +229,11 @@ bun run build
 ./dist/mdview --check --width 80 tests/fixtures/wide-table.md
 bun run scripts/gen-licenses.ts --check
 bun run src/cli.ts --check --width 80 tests/fixtures/wide-table.md
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+bun run build:rust
+./target/x86_64-unknown-linux-musl/release/jsonedit --version
 bun run sweep
 bun run sweep -- --glyphs ascii
 bun run sweep -- --colour-mode both
@@ -252,6 +266,21 @@ second form into a gate: it is a gate that can never fail.
 The `--check` step is the CLI's own self-smoke: it renders with no pager and exits
 non-zero if any output line exceeds the target width. Every step `bun run verify` runs is
 binding and must exit 0.
+
+### Rust host prerequisites and jsonedit install
+
+One-time, on a fresh host (`verify` never runs `rustup` or `cargo install`):
+
+```bash
+rustup toolchain install 1.98.1 --profile minimal -c clippy,rustfmt -t x86_64-unknown-linux-musl
+cargo install cargo-auditable --locked
+```
+
+Use the explicit install: rustup's auto-install from `rust-toolchain.toml` (default profile) failed on this host. Build with `bun run build:rust`; install is a symlink, and like mdview's it does not track source — rebuild after any edit:
+
+```bash
+ln -sfn "$PWD/target/x86_64-unknown-linux-musl/release/jsonedit" ~/.local/bin/jsonedit   # from the repo root
+```
 
 ### Security gate bootstrap (trivy)
 
@@ -314,6 +343,8 @@ until the cache goes stale again.
 The premise this WP started from — "trim dependency fat to shrink the binary" —
 inverted once it was measured. Record that inversion here so nobody re-derives it and
 re-opens a removal pass that costs review time for zero benefit.
+
+**Scope.** The npm measurements below (closure counts, `package.json` pins) are mdview's. The classification rule, the declaration rule (both directions) and the tested-version pin rule apply to Cargo too: Cargo runtime deps are pinned `=x.y.z` in `crates/*/Cargo.toml`, and a bump is a deliberate change with its own verification. `THIRD-PARTY-LICENSES.txt` carries both closures (Cargo: normal deps for the musl target).
 
 **The dependency classification rule (`plans/colour-policy.md`, "Decisions locked",
 written here at that plan's WP-5).** Every runtime dependency this repo has ever carried

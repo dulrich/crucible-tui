@@ -173,6 +173,78 @@ const NOASSERTION_NOTES: Record<string, string> = {
     "reproduced in full below, verbatim from marked's own LICENSE.md.",
 };
 
+// --- Cargo runtime closure ---------------------------------------------------
+
+interface CargoPackage {
+  id: string;
+  name: string;
+  version: string;
+  license: string | null;
+  license_file: string | null;
+  manifest_path: string;
+}
+interface CargoMetadata {
+  packages: CargoPackage[];
+  workspace_members: string[];
+  resolve: { nodes: { id: string; deps: { pkg: string; dep_kinds: { kind: string | null }[] }[] }[] };
+}
+
+interface CargoInfo {
+  name: string;
+  version: string;
+  license: string;
+  licenseText: string | null;
+}
+
+function cargoClosure(): CargoInfo[] {
+  const proc = Bun.spawnSync(
+    ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", "x86_64-unknown-linux-musl"],
+    { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
+  );
+  if (proc.exitCode !== 0) {
+    throw new Error(`gen-licenses: cargo metadata failed:\n${new TextDecoder().decode(proc.stderr)}`);
+  }
+  const meta = JSON.parse(new TextDecoder().decode(proc.stdout)) as CargoMetadata;
+  const byId = new Map(meta.packages.map((p) => [p.id, p]));
+  const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
+  const members = new Set(meta.workspace_members);
+  const seen = new Set<string>();
+  const queue = [...members];
+  while (queue.length > 0) {
+    const id = queue.pop() as string;
+    for (const dep of nodes.get(id)?.deps ?? []) {
+      if (!dep.dep_kinds.some((k) => k.kind === null)) continue;
+      if (members.has(dep.pkg) || seen.has(dep.pkg)) continue;
+      seen.add(dep.pkg);
+      queue.push(dep.pkg);
+    }
+  }
+  const infos = new Map<string, CargoInfo>();
+  for (const id of seen) {
+    const pkg = byId.get(id);
+    if (!pkg) throw new Error(`gen-licenses: cargo metadata names an unknown package id ${id}`);
+    const dir = dirname(pkg.manifest_path);
+    const files = pkg.license_file
+      ? [pkg.license_file]
+      : readdirSync(dir)
+          .filter((f) => /^(LICEN[CS]E|COPYING)/i.test(f))
+          .sort();
+    const licenseText =
+      files.length > 0 ? files.map((f) => readFileSync(join(dir, f), "utf8").trimEnd()).join("\n\n") : null;
+    infos.set(`${pkg.name}@${pkg.version}`, {
+      name: pkg.name,
+      version: pkg.version,
+      license: pkg.license ?? "UNKNOWN",
+      licenseText,
+    });
+  }
+  return [...infos.values()].sort((a, b) =>
+    a.name === b.name ? a.version.localeCompare(b.version) : a.name.localeCompare(b.name),
+  );
+}
+
+const crates = cargoClosure();
+
 const lines: string[] = [];
 lines.push("Third-party licenses for mdview (crucible-tui)");
 lines.push("=".repeat(48));
@@ -206,13 +278,42 @@ for (const pkg of packages) {
   lines.push("-".repeat(48));
 }
 
+lines.push("");
+lines.push("=".repeat(48));
+lines.push("Cargo (Rust) runtime closure — jsonedit");
+lines.push("=".repeat(48));
+lines.push("");
+lines.push(
+  "Generated from `cargo metadata --filter-platform x86_64-unknown-linux-musl`: normal " +
+    "(non-dev, non-build) dependency edges from the workspace members, transitively, " +
+    "excluding the members themselves.",
+);
+lines.push("");
+lines.push(`${crates.length} crates in the runtime closure.`);
+lines.push("");
+lines.push("-".repeat(48));
+
+for (const krate of crates) {
+  lines.push("");
+  lines.push(`${krate.name}@${krate.version}`);
+  lines.push(`License: ${krate.license}`);
+  lines.push("");
+  lines.push(
+    krate.licenseText ??
+      `NOTE: this crate ships no licence file in its published package; its declared SPDX licence expression is "${krate.license}".`,
+  );
+  lines.push("");
+  lines.push("-".repeat(48));
+}
+
+const counts = `${packages.length} npm packages + ${crates.length} crates`;
 const output = `${lines.join("\n")}\n`;
 const targetPath = join(ROOT, "THIRD-PARTY-LICENSES.txt");
 
 if (process.argv.includes("--check")) {
   const existing = existsSync(targetPath) ? readFileSync(targetPath, "utf8") : null;
   if (existing === output) {
-    console.log(`gen-licenses --check: THIRD-PARTY-LICENSES.txt is current (${packages.length} packages)`);
+    console.log(`gen-licenses --check: THIRD-PARTY-LICENSES.txt is current (${counts})`);
   } else {
     console.error(
       existing === null
@@ -223,5 +324,5 @@ if (process.argv.includes("--check")) {
   }
 } else {
   await Bun.write(targetPath, output);
-  console.log(`gen-licenses: wrote THIRD-PARTY-LICENSES.txt (${packages.length} packages)`);
+  console.log(`gen-licenses: wrote THIRD-PARTY-LICENSES.txt (${counts})`);
 }

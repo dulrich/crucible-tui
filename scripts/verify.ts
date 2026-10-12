@@ -10,6 +10,14 @@
  * build, a smoke of the built artifact, and license freshness (in `--check`
  * mode, which never writes `THIRD-PARTY-LICENSES.txt`).
  *
+ * The Cargo workspace (WP-1 of `plans/jsonedit.md`) adds five steps after
+ * the mdview self-smoke and before the sweeps: `cargo fmt --check`, clippy
+ * with warnings denied, `cargo test`, the static musl `bun run build:rust`
+ * (via `cargo auditable`), and a smoke of the built jsonedit artifact. Every
+ * graph-consuming cargo call runs `--locked`. `verify` never runs `cargo
+ * install` or `rustup` either — toolchain setup stays outside, like `bun
+ * install`.
+ *
  * Runs fail-fast, in order, and prints which step failed. `verify` never
  * runs `bun install` — local floats (`bun install`), CI freezes (`bun
  * install --frozen-lockfile`), and that asymmetry is deliberate.
@@ -131,6 +139,17 @@ const steps: Step[] = [
     name: "self-smoke (--check)",
     run: () =>
       sh(["bun", "run", "src/cli.ts", "--check", "--width", "80", "tests/fixtures/wide-table.md"]),
+  },
+  { name: "cargo fmt", run: () => sh(["cargo", "fmt", "--all", "--check"]) },
+  {
+    name: "cargo clippy",
+    run: () => sh(["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"]),
+  },
+  { name: "cargo test", run: () => sh(["cargo", "test", "--workspace", "--locked"]) },
+  { name: "build (rust)", run: () => sh(["bun", "run", "build:rust"]) },
+  {
+    name: "artifact smoke (jsonedit)",
+    run: () => sh(["./target/x86_64-unknown-linux-musl/release/jsonedit", "--version"]),
   },
   { name: "sweep (unicode)", run: () => sh(["bun", "run", "sweep"]) },
   { name: "sweep (ascii)", run: () => sh(["bun", "run", "sweep", "--", "--glyphs", "ascii"]) },

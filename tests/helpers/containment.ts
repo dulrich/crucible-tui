@@ -79,7 +79,7 @@ const FILESYSTEM_ROOTS = new Set([
 ]);
 
 /** Never walked: generated or vendored trees with no authored content. */
-export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage"]);
+export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage", "target"]);
 
 /**
  * Machine-generated lock files. Exempt from rule 1 only: their base64 integrity
@@ -90,6 +90,7 @@ export const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage"]);
 const GENERATED_LOCKFILES = new Set([
   "bun.lock",
   "bun.lockb",
+  "Cargo.lock",
   "package-lock.json",
   "pnpm-lock.yaml",
   "yarn.lock",

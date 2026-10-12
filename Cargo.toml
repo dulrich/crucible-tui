@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+
+# Release builds are the shipped, static musl artifact (`bun run build:rust`).
+# Thin LTO + one codegen unit trade a slower release build for a smaller,
+# faster binary; `panic = "abort"` drops unwind tables (a CLI has nothing to
+# recover); `strip = "symbols"` keeps the binary small while cargo-auditable's
+# `.dep-v0` section (a data section, not a symbol) survives for trivy.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
