@@ -431,7 +431,12 @@ mod tests {
             None,
             &opts(80, Tier::Unicode, Sgr::None),
         );
-        assert_eq!(out, Err(RenderError::Missing("frontmatter")));
+        let out = out.expect("renders");
+        assert_eq!(
+            out.text,
+            format!("title: x\n{}\n\n    c\n\n", "─".repeat(79))
+        );
+        assert_eq!(out.code_ranges, vec![(4, 4)]);
     }
 
     #[test]
