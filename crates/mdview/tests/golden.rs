@@ -97,3 +97,124 @@ fn a_malformed_golden_line_is_an_error_not_a_skip() {
     assert!(load_golden(&path).is_err());
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+/// FNV-1a 64 over the source bytes, as 16 hex digits: the allowlist's key. (No hash crate is
+/// pinned; this is an identifier, not a security boundary.)
+fn source_hash(source: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in source.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// `golden-allowlist.txt`: `<fnv64 source hash> <registry id> <note>`; `#` comments and
+/// blank lines ignored.
+fn load_allowlist() -> std::collections::HashMap<String, String> {
+    let text = std::fs::read_to_string(golden_dir().join("golden-allowlist.txt"))
+        .expect("tests/golden/golden-allowlist.txt exists");
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let mut parts = l.splitn(3, ' ');
+            let hash = parts.next().unwrap_or_default().to_owned();
+            let id = parts.next().unwrap_or_default().to_owned();
+            assert!(
+                !id.is_empty(),
+                "allowlist line names no registry entry: {l}"
+            );
+            (hash, id)
+        })
+        .collect()
+}
+
+fn options_of(record: &Value) -> mdview::render::RenderOptions {
+    use mdview::render::{Ambiguous, Policy, RenderOptions, Sgr, Tier};
+    let policy = &record["policy"];
+    RenderOptions {
+        width: usize::try_from(record["width"].as_u64().expect("width")).expect("width fits"),
+        tier: match record["tier"].as_str() {
+            Some("ascii") => Tier::Ascii,
+            _ => Tier::Unicode,
+        },
+        ambiguous: match record["ambiguous"].as_str() {
+            Some("wide") => Ambiguous::Wide,
+            _ => Ambiguous::Narrow,
+        },
+        policy: Policy {
+            sgr: match policy["sgr"].as_str() {
+                Some("full") => Sgr::Full,
+                Some("formats") => Sgr::Formats,
+                _ => Sgr::None,
+            },
+            hyperlinks: policy["hyperlinks"].as_bool().unwrap_or(false),
+            tmux: policy["tmux"].as_bool().unwrap_or(false),
+        },
+        emoji: record["emoji"].as_bool(),
+        path: None,
+    }
+}
+
+/// WP-3's golden replay: every `render.jsonl` record either matches `text` and `codeRanges`
+/// exactly, returns `Missing(feature)` (counted per feature), or is allowlisted by source hash
+/// against a named registry entry. Nothing is skipped silently.
+#[test]
+fn golden_render_replay() {
+    let golden = load_golden(&golden_dir().join("render.jsonl")).unwrap_or_else(|e| panic!("{e}"));
+    let allowlist = load_allowlist();
+    let mut matched = 0usize;
+    let mut allowlisted = 0usize;
+    let mut used = std::collections::HashSet::new();
+    let mut missing: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut failures = Vec::new();
+    for record in &golden.records {
+        let source = record["source"].as_str().expect("source");
+        let options = options_of(record);
+        let hash = source_hash(source);
+        match mdview::render::render(source, None, &options) {
+            Err(mdview::render::RenderError::Missing(feature)) => {
+                *missing.entry(feature.to_owned()).or_default() += 1;
+            }
+            Err(e) => failures.push(format!("{hash} error {e}")),
+            Ok(out) => {
+                let ranges: Vec<(usize, usize)> =
+                    serde_json::from_value(record["codeRanges"].clone()).expect("codeRanges");
+                let want = record["text"].as_str().unwrap_or_default();
+                if out.text == want && out.code_ranges == ranges {
+                    matched += 1;
+                } else if allowlist.contains_key(&hash) {
+                    allowlisted += 1;
+                    used.insert(hash);
+                } else {
+                    failures.push(format!(
+                        "{hash} width={} {:?}\n  want {want:?} {ranges:?}\n  got  {:?} {:?}",
+                        options.width,
+                        source.chars().take(160).collect::<String>(),
+                        out.text,
+                        out.code_ranges
+                    ));
+                }
+            }
+        }
+    }
+    let unimplemented: usize = missing.values().sum();
+    println!(
+        "golden replay: records={} matched={matched} unimplemented={unimplemented} {missing:?} allowlisted={allowlisted} failed={}",
+        golden.records.len(),
+        failures.len()
+    );
+    let stale: Vec<&String> = allowlist.keys().filter(|h| !used.contains(*h)).collect();
+    assert!(
+        stale.is_empty(),
+        "allowlist entries matched nothing: {stale:?}"
+    );
+    assert!(matched > 0, "golden replay matched 0 records");
+    assert!(
+        failures.is_empty(),
+        "{} record(s) diverge:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

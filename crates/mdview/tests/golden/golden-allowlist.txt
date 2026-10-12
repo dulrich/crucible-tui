@@ -1,0 +1,15 @@
+# Golden replay allowlist (crates/mdview/tests/golden.rs, golden_render_replay).
+# One line per record source: <fnv1a-64 hex of the source> <registry id> <note>.
+# A registry id is a scripts/divergences.ts entry. `unregistered-lexer` marks a lexer
+# divergence (comrak adapter, lex.rs, WP-7's) that has no registry entry yet: each such line
+# must become a registry id or disappear when WP-7 fixes lex.rs.
+176a8b43ce699f1c yaml-diagnostic D-A: unparseable-frontmatter witness, diagnostic lines only
+ed1017824edb43ca yaml-diagnostic D-A: unparseable-frontmatter skill example, diagnostic lines only
+a13bfe788a03b597 yaml-diagnostic D-A: CJK excerpt witness, diagnostic lines only
+a00cb657ab812d5f task-state-prepass D-B: the pre-pass rewrote a task line inside an indented code block
+25b4ea3a3d0c37dd unregistered-lexer wiki-link inside an inline link label: marked keeps the link literal, comrak links it
+dc8d5a2234114f97 unregistered-lexer wiki-link inside a full reference link label
+2476765298183067 unregistered-lexer wiki-link inside a full reference link label (short ref)
+ee7943a1b6c221b7 unregistered-lexer wiki-link inside an inline image alt
+31bf02605d9425fc unregistered-lexer wiki-link inside a full reference image alt
+109f81d45a19ca2c unregistered-lexer wiki-link inside a full reference image alt (longer ref)
