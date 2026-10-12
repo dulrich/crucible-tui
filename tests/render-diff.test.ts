@@ -24,7 +24,13 @@ import {
   extractCodeContent,
   type PairedCombo,
 } from "../scripts/diff-classify";
-import { loadRevision, materializeRevisionRoot, type ComboRecord, type RevisionHandle } from "../scripts/revision";
+import {
+  loadRevision,
+  materializeRevisionRoot,
+  type ComboRecord,
+  type Measurer,
+  type RevisionHandle,
+} from "../scripts/revision";
 import { sha256Hex } from "../scripts/hash";
 import { findContinuationOverIndent, findListOrphans } from "../src/detectors";
 import { ASCII_GLYPHS, UNICODE_GLYPHS } from "../src/glyphs";
@@ -499,7 +505,15 @@ describe("loadRevision", () => {
     const handle = await loadRevision(REPO_ROOT, REPO_ROOT);
     try {
       expect(handle.label).toBe(`dir:${REPO_ROOT}`);
-      const { text, codeRanges } = handle.render("# Hi\n\nSome text.\n", 80, "unicode", "narrow");
+      expect(handle.kind).toBe("ts");
+      const { text, codeRanges } = await handle.render({
+        source: "# Hi\n\nSome text.\n",
+        width: 80,
+        tier: "unicode",
+        ambiguous: "narrow",
+        policy: "P0",
+        emoji: "default",
+      });
       expect(text).toContain("Hi");
       expect(codeRanges).toEqual([]);
     } finally {
@@ -562,20 +576,50 @@ describe("loadRevision", () => {
 // all. These fixtures are constructed markdown, never a `src/` edit.
 // ---------------------------------------------------------------------------
 
+// Since WP-1 of `plans/mdview-rust-port.md` rendering (the handle, async) and measurement
+// (the measurer) are separate seams; this pair keeps the original direct wiring of both.
 function directHandle(): RevisionHandle {
   const glyphs = { unicode: UNICODE_GLYPHS, ascii: ASCII_GLYPHS };
   const measure = { narrow: NARROW_MEASURE, wide: WIDE_MEASURE };
   return {
     label: "direct",
-    render: (source, width, tier, ambiguous) => renderDocumentDetailed(source, width, glyphs[tier], measure[ambiguous]),
+    kind: "ts",
+    render: async (req) =>
+      renderDocumentDetailed(req.source, req.width, glyphs[req.tier], measure[req.ambiguous], undefined, undefined, {
+        sgr: "none",
+        hyperlinks: false,
+        tmux: false,
+      }),
+    close: async () => {},
+  };
+}
+
+function directMeasurer(): Measurer {
+  const measure = { narrow: NARROW_MEASURE, wide: WIDE_MEASURE };
+  return {
     detect: (text, width, codeRanges, ambiguous) => ({
       orphans: findListOrphans(text, width, { codeRanges, measure: measure[ambiguous] }).length,
       overIndent: findContinuationOverIndent(text, { codeRanges, measure: measure[ambiguous] }).length,
       columnZero: 0,
     }),
     overflowed: (text, width, codeRanges, ambiguous) => findFirstOverflow(text, width, codeRanges, measure[ambiguous]) !== null,
-    close: async () => {},
+    scan: () => [],
+    styleCodes: new Set(),
+    echoRangeCount: () => 0,
+    lexBody: () => [],
   };
+}
+
+/** The pre-WP-1 positional call shape, kept so the mutation proofs below read unchanged. */
+async function comboRecord(
+  handle: RevisionHandle,
+  file: string,
+  source: string,
+  width: number,
+  tier: "unicode" | "ascii",
+  ambiguous: "narrow" | "wide",
+) {
+  return computeComboRecord(handle, directMeasurer(), { source, path: file, width, tier, ambiguous, policy: "P0", emoji: "default" });
 }
 
 describe("mutation proof — each channel is independently observable", () => {
@@ -592,13 +636,13 @@ describe("mutation proof — each channel is independently observable", () => {
     "More prose after the fence.",
   ].join("\n");
 
-  test("channel 1 (textSha) — a prose-only edit moves textSha and leaves codeContentSha/codeRanges alone", () => {
+  test("channel 1 (textSha) — a prose-only edit moves textSha and leaves codeContentSha/codeRanges alone", async () => {
     const mutated = withFence.replace(
       "Some prose before the fence.",
       "Some DIFFERENT prose before the fence, still short.",
     );
-    const before = computeComboRecord(handle, "f.md", withFence, 80, "unicode", "narrow").record;
-    const after = computeComboRecord(handle, "f.md", mutated, 80, "unicode", "narrow").record;
+    const before = (await comboRecord(handle, "f.md", withFence, 80, "unicode", "narrow")).record;
+    const after = (await comboRecord(handle, "f.md", mutated, 80, "unicode", "narrow")).record;
     expect(before).not.toBeNull();
     expect(after).not.toBeNull();
     expect(before!.textSha).not.toBe(after!.textSha);
@@ -606,10 +650,10 @@ describe("mutation proof — each channel is independently observable", () => {
     expect(before!.codeRanges).toEqual(after!.codeRanges);
   });
 
-  test("channel 2 (codeContentSha, the class-C scenario) — a mutation strictly inside the fence moves codeContentSha while the width gate is blind to it", () => {
+  test("channel 2 (codeContentSha, the class-C scenario) — a mutation strictly inside the fence moves codeContentSha while the width gate is blind to it", async () => {
     const mutated = withFence.replace("const answer = 42;", "const answer = 43;");
-    const before = computeComboRecord(handle, "f.md", withFence, 80, "unicode", "narrow").record!;
-    const after = computeComboRecord(handle, "f.md", mutated, 80, "unicode", "narrow").record!;
+    const before = (await comboRecord(handle, "f.md", withFence, 80, "unicode", "narrow")).record!;
+    const after = (await comboRecord(handle, "f.md", mutated, 80, "unicode", "narrow")).record!;
 
     expect(before.codeContentSha).not.toBe(after.codeContentSha);
     // The fence did not move, only its content did.
@@ -627,13 +671,13 @@ describe("mutation proof — each channel is independently observable", () => {
     expect(before.textSha).not.toBe(after.textSha);
   });
 
-  test("channel 3 (codeRanges) — pushing the fence down the document moves codeRanges even though the fence's own content is byte-identical", () => {
+  test("channel 3 (codeRanges) — pushing the fence down the document moves codeRanges even though the fence's own content is byte-identical", async () => {
     const shifted = withFence.replace(
       "Some prose before the fence.",
       "Some prose before the fence.\n\nAn extra paragraph that pushes the fence down.",
     );
-    const before = computeComboRecord(handle, "f.md", withFence, 80, "unicode", "narrow").record!;
-    const after = computeComboRecord(handle, "f.md", shifted, 80, "unicode", "narrow").record!;
+    const before = (await comboRecord(handle, "f.md", withFence, 80, "unicode", "narrow")).record!;
+    const after = (await comboRecord(handle, "f.md", shifted, 80, "unicode", "narrow")).record!;
 
     expect(before.codeRanges).not.toEqual(after.codeRanges);
     // The content the ranges bound is unchanged — only its position moved — so the
@@ -654,8 +698,8 @@ describe("mutation proof — each channel is independently observable", () => {
       "\n",
     );
     const width = 64;
-    const badCounts = handle.detect(badRendered, width, [], "narrow");
-    const goodCounts = handle.detect(goodRendered, width, [], "narrow");
+    const badCounts = directMeasurer().detect(badRendered, width, [], "narrow");
+    const goodCounts = directMeasurer().detect(goodRendered, width, [], "narrow");
     expect(badCounts.orphans).toBe(1);
     expect(goodCounts.orphans).toBe(0);
     expect(badCounts).not.toEqual(goodCounts);
@@ -669,7 +713,7 @@ describe("mutation proof — each channel is independently observable", () => {
 // ---------------------------------------------------------------------------
 
 describe("null run — the same revision against itself", () => {
-  test("zero channels differ across a small multi-file, multi-combo run", () => {
+  test("zero channels differ across a small multi-file, multi-combo run", async () => {
     const handle = directHandle();
     const docs: Record<string, string> = {
       "one.md": "# One\n\nSome prose here.\n\n```js\nconst a = 1;\n```\n",
@@ -683,8 +727,8 @@ describe("null run — the same revision against itself", () => {
       for (const width of widths) {
         for (const tier of tiers) {
           for (const mode of ambiguous) {
-            const before = computeComboRecord(handle, file, source, width, tier, mode).record!;
-            const after = computeComboRecord(handle, file, source, width, tier, mode).record!;
+            const before = (await comboRecord(handle, file, source, width, tier, mode)).record!;
+            const after = (await comboRecord(handle, file, source, width, tier, mode)).record!;
             pairs.push({ before, after });
           }
         }

@@ -1,5 +1,7 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { Marked } from "marked";
-import type { Tokens } from "marked";
+import type { Token, Tokens } from "marked";
 import { renderTable } from "./table";
 import {
   renderCode as renderBlockCode,
@@ -8,7 +10,7 @@ import {
 } from "./blocks";
 import { formatMetaBlockDetailed, splitFrontmatter } from "./frontmatter";
 import { resolveColourPolicy, type ColourPolicy } from "./colour";
-import { UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
+import { ASCII_GLYPHS, UNICODE_GLYPHS, type GlyphSet } from "./glyphs";
 import {
   DEL_TOKENIZER,
   renderBr,
@@ -24,7 +26,7 @@ import { createLayoutContext, type WikiLinkResolver } from "./layout-context";
 import { createListTextLayout } from "./list-layout";
 import { TASK_GLYPHS } from "./lists";
 import { TokenWalker, type WalkRendererMethods } from "./walk";
-import { NARROW_MEASURE, type Measure } from "./width";
+import { NARROW_MEASURE, WIDE_MEASURE, type Measure } from "./width";
 import { type WikiLinkToken, styleWikiLabel, wikiLinkExtension } from "./wikilink";
 
 // Obsidian's custom checkbox states aren't GFM tasklist syntax — marked's tasklist
@@ -505,6 +507,39 @@ function defaultColourPolicy(): ColourPolicy {
 }
 
 /**
+ * The token list the walk consumes for one body — WP-1 of `plans/mdview-rust-port.md`,
+ * extracted from `renderDocumentDetailed` byte-neutrally: `preprocessBody`, then one `Marked`
+ * instance with exactly the two `use()` calls below, then the single lex. `body` is the
+ * source with its frontmatter already split off (`splitFrontmatter`), exactly as
+ * `renderDocumentDetailed` hands it in. It exists as its own function so the port's
+ * instruments (`scripts/lexer-diff.ts`, the token dumper, the R-gate's `--input tokens`)
+ * read the very tokens the walk reads, not a re-derivation of them.
+ */
+export function lexBody(body: string, glyphs: GlyphSet): Token[] {
+  const processedBody = preprocessBody(body, glyphs);
+
+  const instance = new Marked();
+  // **The one extension this repo registers** (WP-2 of `plans/wiki-link-tokenizer.md`) —
+  // plus, since 2026-09-12, one tokenizer *override* (`DEL_TOKENIZER`, registered next).
+  //
+  // `use({ extensions })` writes `opts.extensions.inline` (`marked.cjs:2215-2222`) and
+  // `opts.extensions.startInline` (`:2232-2237`), which is what `instance.lexer(...)` reads
+  // — so this affects the **lexing** pass and nothing else. The walk is still this repo's:
+  // the extension carries no `renderer` field, so `opts.extensions.renderers` stays empty
+  // and `marked`'s own pre-dispatch hook has nothing to dispatch even in principle.
+  // `TokenWalker` routes the `wikilink` token to `renderer.wikilink` below.
+  //
+  // This is `marked` used one level deeper than before and still lexer-only: the
+  // dependency-classification rule (root `AGENTS.md`) is unmoved — a tokenizer extension is
+  // grammar, it reads no environment and writes no escape byte.
+  instance.use({ extensions: [wikiLinkExtension] });
+  // The owned `del` tokenizer (`src/inline.ts`, `DEL_TOKENIZER`): marked's own matches a
+  // strikethrough closer inside a later code span; this one masks code spans first.
+  instance.use({ tokenizer: DEL_TOKENIZER });
+  return instance.lexer(processedBody);
+}
+
+/**
  * Render a markdown document to ANSI for the terminal: the frontmatter block (when
  * present) as a readable metadata block, followed by the rendered prose body. Wires
  * `marked` as the lexer. **No renderer method here is `marked-terminal`'s, and neither is
@@ -578,6 +613,59 @@ export function renderDocumentDetailed(
   policy: ColourPolicy = defaultColourPolicy(),
   resolveWikiLink?: WikiLinkResolver,
 ): RenderResult {
+  const result = renderDocumentDetailedImpl(
+    source,
+    targetWidth,
+    glyphs,
+    measure,
+    emojiOverride,
+    resolveFenceLanguageFor,
+    policy,
+    resolveWikiLink,
+  );
+  const captureDir = process.env.MDVIEW_GOLDEN_CAPTURE;
+  if (captureDir !== undefined && captureDir !== "") {
+    captureGolden(captureDir, {
+      source,
+      targetWidth,
+      tier: glyphs.tier,
+      canonicalGlyphs: glyphs === UNICODE_GLYPHS || glyphs === ASCII_GLYPHS,
+      ambiguous: measure === WIDE_MEASURE ? "wide" : measure === NARROW_MEASURE ? "narrow" : "custom",
+      emojiOverride: emojiOverride ?? null,
+      fenceResolver: resolveFenceLanguageFor === resolveFenceLanguage ? "default" : "custom",
+      policy: { sgr: policy.sgr, hyperlinks: policy.hyperlinks, tmux: policy.tmux },
+      wikiResolver: resolveWikiLink === undefined ? "none" : "custom",
+      text: result.text,
+      codeRanges: result.codeRanges,
+    });
+  }
+  return result;
+}
+
+/**
+ * The golden-capture hook — WP-1 of `plans/mdview-rust-port.md`. **Inert unless
+ * `MDVIEW_GOLDEN_CAPTURE` names a directory**: then every `renderDocumentDetailed` call
+ * appends one JSONL record (its positional inputs, by name where an input is a function or a
+ * frozen constant, and its whole result) to `capture-<pid>.jsonl` there.
+ * `scripts/golden-capture.ts` runs `bun test tests` under it and converts the records into
+ * the Rust crate's golden files. It reads the rendered result and writes nothing into it, so
+ * a render with the variable set is byte-identical to one without.
+ */
+function captureGolden(dir: string, record: Record<string, unknown>): void {
+  mkdirSync(dir, { recursive: true });
+  appendFileSync(join(dir, `capture-${process.pid}.jsonl`), `${JSON.stringify(record)}\n`, "utf8");
+}
+
+function renderDocumentDetailedImpl(
+  source: string,
+  targetWidth: number,
+  glyphs: GlyphSet,
+  measure: Measure,
+  emojiOverride: boolean | undefined,
+  resolveFenceLanguageFor: FenceLanguageResolver,
+  policy: ColourPolicy,
+  resolveWikiLink: WikiLinkResolver | undefined,
+): RenderResult {
   const { meta, body } = splitFrontmatter(source);
   // The divider is appended *into* `metaBlock` itself, before `metaLineOffset` below is
   // computed from it — not emitted separately into the final concatenation. Emitting it
@@ -591,26 +679,6 @@ export function renderDocumentDetailed(
   const metaBlock =
     metaResult !== null ? `${metaResult.text}\n${renderRule(glyphs, targetWidth, measure)}\n\n` : "";
 
-  const processedBody = preprocessBody(body, glyphs);
-
-  const instance = new Marked();
-  // **The one extension this repo registers** (WP-2 of `plans/wiki-link-tokenizer.md`) —
-  // plus, since 2026-09-12, one tokenizer *override* (`DEL_TOKENIZER`, registered next).
-  //
-  // `use({ extensions })` writes `opts.extensions.inline` (`marked.cjs:2215-2222`) and
-  // `opts.extensions.startInline` (`:2232-2237`), which is what `instance.lexer(...)` reads
-  // — so this affects the **lexing** pass and nothing else. The walk is still this repo's:
-  // the extension carries no `renderer` field, so `opts.extensions.renderers` stays empty
-  // and `marked`'s own pre-dispatch hook has nothing to dispatch even in principle.
-  // `TokenWalker` routes the `wikilink` token to `renderer.wikilink` below.
-  //
-  // This is `marked` used one level deeper than before and still lexer-only: the
-  // dependency-classification rule (root `AGENTS.md`) is unmoved — a tokenizer extension is
-  // grammar, it reads no environment and writes no escape byte.
-  instance.use({ extensions: [wikiLinkExtension] });
-  // The owned `del` tokenizer (`src/inline.ts`, `DEL_TOKENIZER`): marked's own matches a
-  // strikethrough closer inside a later code span; this one masks code spans first.
-  instance.use({ tokenizer: DEL_TOKENIZER });
   // WP-11 (representative-corpus): shortcode substitution follows the glyph tier.
   //
   // It was twice proposed to set `emoji: false` unconditionally to save ~468 KB in
@@ -883,7 +951,7 @@ export function renderDocumentDetailed(
   // does not move in this package.
   const walker = new TokenWalker(renderer);
 
-  const renderedBody = walker.parse(instance.lexer(processedBody));
+  const renderedBody = walker.parse(lexBody(body, glyphs));
   const { text: strippedBody, codeRanges: bodyRanges } = extractCodeRanges(renderedBody);
 
   // Deliberately a second, separate pass from `extractCodeRanges` above rather than
