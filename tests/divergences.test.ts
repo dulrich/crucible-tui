@@ -59,6 +59,18 @@ function spec(entry: Divergence, ts: Node[], source: string): Node[] {
       n.type === "code" ? { ...n, text: fenceBody } : n.type === "blockquote" ? { ...n, tokens: (n.tokens as Node[]).map(recognise) } : n,
     );
   }
+  if (entry.id === "tilde-backtick-run") {
+    // GFM §6.3: the backtick after `~` opens a code span (the witness is one paragraph).
+    const t = (raw: string): Node => ({ type: "text", raw, text: raw });
+    const c = (text: string): Node => ({ type: "codespan", text });
+    const inline = [t("Remove the old block (~"), c(":10-20"), t("), keep "), c("other"), t(" ("), c(":5"), t(").")];
+    return ts.map((n) => (n.type === "paragraph" ? { ...n, tokens: inline } : n));
+  }
+  if (entry.id === "leading-bom") {
+    // comrak strips the BOM's role: the html line is an html block that eats its blank line.
+    const [, , ...rest] = ts;
+    return [{ type: "html", text: `${source.split("\n")[0]}\n\n` }, ...rest];
+  }
   throw new Error(`no synthetic Rust side for ${entry.id}`);
 }
 
@@ -70,7 +82,6 @@ describe("divergence registry — witnesses", () => {
   test("every live entry's witness yields a site only its own entry matches, at both tiers", () => {
     expect(live.length).toBeGreaterThan(0);
     for (const entry of live) {
-      expect(entry.ratified).not.toBeNull();
       const path = resolve(REPO_ROOT, entry.witness);
       expect(existsSync(path)).toBe(true);
       const source = readFileSync(path, "utf8");
@@ -80,7 +91,9 @@ describe("divergence registry — witnesses", () => {
         const own = sites.filter((site) => REGISTRY.filter((e) => e.predicate(site)).map((e) => e.id).join() === entry.id);
         expect({ id: entry.id, tier, own: own.length }).toEqual({ id: entry.id, tier, own: expect.any(Number) });
         expect(own.length).toBeGreaterThan(0);
-        for (const site of own) expect(attribute(site)).toEqual({ id: entry.id });
+        // An unratified entry (awaiting the user's ruling) still matches, and stays disallowed.
+        const verdict = entry.ratified === null ? { disallowed: `${entry.id} matches but is not ratified` } : { id: entry.id };
+        for (const site of own) expect(attribute(site)).toEqual(verdict);
       }
     }
   });
@@ -149,6 +162,14 @@ describe("lexer-diff against the comrak adapter (WP-7)", () => {
     expect(summary.errors).toBe(0);
     expect(summary.attributed["task-state-prepass"]).toBeGreaterThanOrEqual(4);
   }, 300_000);
+
+  test("an inline container whose extent differs makes its array one site", () => {
+    const t = (raw: string): Node => ({ type: "text", raw, text: raw });
+    const del = (raw: string): Node => ({ type: "del", raw, text: raw.slice(1, -1), tokens: [t(raw.slice(1, -1))] });
+    const sites = diffTokens([t("a "), del("~x ~"), t("y ~z")], [t("a ~x "), del("~y ~"), t("z")], "unicode");
+    expect(sites.map((x) => x.path)).toEqual(["$"]);
+    expect(attribute(sites[0]!)).toEqual({ id: "single-tilde-del" });
+  });
 
   test("an equal-length array whose node types differ is one site, not positional pairs", () => {
     const t = (raw: string): Node => ({ type: "text", raw, text: raw });

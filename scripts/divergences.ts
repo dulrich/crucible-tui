@@ -140,9 +140,12 @@ function containsSingleTildeDel(nodes: Node[]): boolean {
 
 /**
  * `single-tilde-del` matches a token site when (1) the TS side contains at least one
- * single-tilde `del` (at the site or nested under it), (2) the Rust side contains none, and
- * (3) dissolving every such `del` on the TS side into literal `~` text (and merging adjacent
- * text on both sides) makes the two sides deep-equal. So a node-level site (TS `del`, Rust
+ * single-tilde `del` (at the site or nested under it), and (2) dissolving every single-tilde
+ * `del` on **both** sides into literal `~` text (and merging adjacent text) makes the two
+ * sides deep-equal. The Rust side may hold single-tilde `del`s of its own (WP-7 attempt 2):
+ * GFM pairs a closer with the *nearest* preceding opener, so `a ~:1, b ~:2 (~:3` is `a ~:1, b
+ * <del>:2 (</del>:3` under the delimiter algorithm and `a <del>:1, b ~:2 (</del>:3` under marked's
+ * regex — the same phenomenon, a single-tilde pairing the GFM rules would not make. So a node-level site (TS `del`, Rust
  * `text` whose `raw` is the del's `raw`) and an array-level site (TS `[text, del, text]`,
  * Rust one merged `[text]`) both match; a site where anything *else* also differs does not.
  */
@@ -150,7 +153,7 @@ function singleTildeDel(site: Site): boolean {
   if (isRender(site)) return false;
   const ts = asArray(site.ts);
   const rust = asArray(site.rust);
-  if (!containsSingleTildeDel(ts) || containsSingleTildeDel(rust)) return false;
+  if (!containsSingleTildeDel(ts)) return false;
   return JSON.stringify(dissolveSingleTildeDel(ts)) === JSON.stringify(dissolveSingleTildeDel(rust));
 }
 
@@ -360,6 +363,88 @@ function hlFenceClaim(site: Site): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// tilde-backtick-run
+// ---------------------------------------------------------------------------
+
+/** A run mixing `~` and backticks — what marked's GFM `inline.text` start `[`~]+` swallows. */
+const MIXED_RUN = /~`|`~/;
+
+/**
+ * The inline source a node list spells, up to delimiter choice: text by `raw`, a code span
+ * as `` `text` ``, an escape as `\c`, a `del` by `raw`, any other container as its type
+ * around its flattened children, and anything else by its JSON.
+ */
+function flattenInline(nodes: Node[]): string {
+  return nodes
+    .map((n) => {
+      switch (n.type) {
+        case "text":
+          return Array.isArray(n.tokens) ? flattenInline(n.tokens as Node[]) : s(n.raw);
+        case "codespan":
+          return `\`${s(n.text)}\``;
+        case "escape":
+          return `\\${s(n.text)}`;
+        case "del":
+          return s(n.raw);
+        case "strong":
+        case "em":
+        case "link":
+          return `<${n.type} ${s(n.href)}>${flattenInline(asArray(n.tokens as Node[] | undefined))}</${n.type}>`;
+        default:
+          return JSON.stringify(n);
+      }
+    })
+    .join("");
+}
+
+function hasMixedRunText(nodes: Node[]): boolean {
+  return nodes.some(
+    (n) =>
+      (n.type === "text" && !Array.isArray(n.tokens) && MIXED_RUN.test(s(n.raw))) ||
+      (Array.isArray(n.tokens) && hasMixedRunText(n.tokens as Node[])),
+  );
+}
+
+/**
+ * `tilde-backtick-run` matches a token site when the TS side holds a `text` whose `raw`
+ * contains a `~` adjacent to a backtick, the Rust side holds none, and both sides spell the
+ * same inline source (`flattenInline`) — so the only difference is where code spans were
+ * recognised (up to whitespace, see below). marked's GFM text rule starts `^([`~]+|...)`, which consumes a mixed
+ * tilde/backtick run as literal text, so the backtick string in it never opens a code span.
+ */
+function tildeBacktickRun(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (!hasMixedRunText(ts) || hasMixedRunText(rust)) return false;
+  // A code span's content drops one space at each end (§6.3), so the side that sees a span
+  // where the other sees text spells different spaces: compare with whitespace removed.
+  const bare = (nodes: Node[]): string => flattenInline(nodes).replace(/\s+/g, "");
+  return bare(ts) === bare(rust);
+}
+
+// ---------------------------------------------------------------------------
+// D-D leading-bom (unratified)
+// ---------------------------------------------------------------------------
+
+const BOM = "﻿";
+
+/**
+ * D-D (`leading-bom`): a document starting with U+FEFF. TS keeps the BOM as body content, so
+ * marked sees a paragraph opening with a BOM `text` (a following html line becomes inline
+ * html); comrak strips it and reads the rest as written. Matches only the root array (`$`)
+ * when the TS side's first token is a paragraph whose first inline is a `text` starting with
+ * the BOM.
+ */
+function leadingBom(site: Site): boolean {
+  if (isRender(site) || site.path !== "$") return false;
+  const first = asArray(site.ts)[0];
+  if (first?.type !== "paragraph") return false;
+  const head = asArray(first.tokens as Node[] | undefined)[0];
+  return head?.type === "text" && s(head.raw).startsWith(BOM);
+}
+
+// ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
@@ -370,7 +455,9 @@ export const REGISTRY: readonly Divergence[] = [
     spec:
       'GFM spec 0.29-gfm, "Strikethrough (extension)": a tilde run opens/closes only when ' +
       "left-/right-flanking per the emphasis delimiter-run rules; marked's `del` regex pairs " +
-      "single tildes the flanking rules would not (e.g. `(~line 79) … (~line 90)`).",
+      "single tildes the flanking rules would not (e.g. `(~line 79) … (~line 90)`), including " +
+      "pairing a closer with an opener other than the nearest one the delimiter algorithm " +
+      "(\"process emphasis\") would choose (e.g. `a ~:1, b ~:2 (~:3`).",
     ratified: { by: "user", date: "2026-10-11" },
     witness: "tests/fixtures/divergences/single-tilde-del.md",
     status: "live",
@@ -412,6 +499,32 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/hl-fence-claim.md",
     status: "pending-witness",
     predicate: hlFenceClaim,
+  },
+  {
+    id: "tilde-backtick-run",
+    kind: "lexer",
+    spec:
+      'GFM spec 0.29-gfm §6.3 "Code spans": "A backtick string is a string of one or more ' +
+      'backtick characters (`) that is neither preceded nor followed by a backtick" and "A code ' +
+      'span begins with a backtick string and ends with a backtick string of equal length"; a ' +
+      "preceding `~` does not stop a backtick string. marked 14's GFM `inline.text` rule starts " +
+      "`^([`~]+|[^`~])`, consuming a mixed tilde/backtick run as text (e.g. `(~`a`)`).",
+    ratified: { by: "user", date: "2026-10-11" },
+    witness: "tests/fixtures/divergences/tilde-backtick-run.md",
+    status: "live",
+    predicate: tildeBacktickRun,
+  },
+  {
+    id: "leading-bom",
+    kind: "lexer",
+    spec:
+      "plans/mdview-rust-port.md D-D: TS keeps a leading U+FEFF as body content (src/cli.ts) " +
+      "and comrak strips it, so the first block can differ (a BOM-led html line is a paragraph " +
+      "with inline html in marked, an html block in comrak). Held for the user at WP-9.",
+    ratified: null,
+    witness: "tests/fixtures/divergences/leading-bom.md",
+    status: "live",
+    predicate: leadingBom,
   },
 ];
 
