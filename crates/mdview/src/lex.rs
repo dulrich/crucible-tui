@@ -22,9 +22,10 @@
 //!   what marked's regex for it consumes.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use comrak::nodes::{AstNode, ListType, NodeValue, TableAlignment};
-use comrak::{Arena, Options, parse_document};
+use comrak::{Arena, Options, ResolvedReference, parse_document};
 
 use crate::render::Tier;
 use crate::token::{ListItem, TableCell, Token};
@@ -233,6 +234,11 @@ struct Lexer<'s> {
     first_at: Option<usize>,
     /// marked trims the last list item's text: nothing at or after this doc offset is seen.
     clip: usize,
+    /// Inside a table cell: the cell's first doc offset as comrak reports it, and the doc
+    /// offset of every byte of the unescaped cell string. comrak unescapes `\\|` before
+    /// parsing a cell and reports its inline sourcepos in the unescaped string's coordinates,
+    /// so a reported offset is `base + index`, and `offs[index]` is the real one.
+    cell: Option<(usize, Vec<usize>)>,
 }
 
 /// Options per Decisions locked 2.
@@ -248,11 +254,114 @@ fn options() -> Options<'static> {
     o
 }
 
+/// A reference label's lookup key: comrak's normalization (trim, collapse whitespace, case
+/// fold), approximated with Unicode lowercase.
+fn fold_label(l: &str) -> String {
+    l.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Every link reference definition comrak recognised in `src`: the def-shaped lines no leaf
+/// block covers (comrak consumes definitions into its private refmap, so they are the lines
+/// between leaves), resolved by comrak itself in a probe document that uses each label once.
+fn reference_definitions<'a>(
+    root: &'a AstNode<'a>,
+    src: &str,
+) -> HashMap<String, ResolvedReference> {
+    let lines: Vec<&str> = src.split('\n').collect();
+    let mut covered = vec![false; lines.len() + 1];
+    for n in root.descendants() {
+        let leaf = matches!(
+            n.data().value,
+            NodeValue::Paragraph
+                | NodeValue::Heading(_)
+                | NodeValue::CodeBlock(_)
+                | NodeValue::HtmlBlock(_)
+                | NodeValue::Table(_)
+                | NodeValue::ThematicBreak
+        );
+        if leaf {
+            let sp = n.data().sourcepos;
+            let end = sp.end.line.min(lines.len());
+            if sp.start.line <= end {
+                covered[sp.start.line..=end].fill(true);
+            }
+        }
+    }
+    let mut defs = String::new();
+    let mut labels: Vec<String> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if covered[i + 1] {
+            continue;
+        }
+        let t = line.trim_start_matches([' ', '\t', '>']);
+        let Some(rest) = t.strip_prefix('[') else {
+            continue;
+        };
+        let Some(close) = rest.find("]:") else {
+            continue;
+        };
+        let label = &rest[..close];
+        if label.trim().is_empty() || label.contains('[') {
+            continue;
+        }
+        defs.push_str(t);
+        defs.push('\n');
+        labels.push(label.to_string());
+    }
+    let mut out = HashMap::new();
+    if labels.is_empty() {
+        return out;
+    }
+    // Each probe is its own paragraph, on line `first + 2k` (1-based).
+    let first = defs.matches('\n').count() + 2;
+    let mut probe = defs;
+    for l in &labels {
+        probe.push_str("\n[");
+        probe.push_str(l);
+        probe.push_str("]\n");
+    }
+    let arena = Arena::new();
+    let proot = parse_document(&arena, &probe, &options());
+    for n in proot.descendants() {
+        if let NodeValue::Link(link) = &n.data().value {
+            let line = n.data().sourcepos.start.line;
+            if line < first || !(line - first).is_multiple_of(2) {
+                continue;
+            }
+            if let Some(l) = labels.get((line - first) / 2) {
+                out.entry(fold_label(l))
+                    .or_insert_with(|| ResolvedReference {
+                        url: link.url.clone(),
+                        title: link.title.clone(),
+                    });
+            }
+        }
+    }
+    out
+}
+
 /// Lex a body (frontmatter already split off) at a glyph tier.
 pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
     let src = normalize(body);
     let arena = Arena::new();
-    let root = parse_document(&arena, &src, &options());
+    let mut root = parse_document(&arena, &src, &options());
+    let refs = reference_definitions(root, &src);
+    if !refs.is_empty() {
+        // comrak caps the bytes of resolved references at min(input size, 100000) (a
+        // quadratic-expansion guard cmark also has; no CommonMark rule). marked has no cap,
+        // so every reference past it would stay unresolved: resolve the overflow from the
+        // document's own definitions, as comrak itself parsed them.
+        let mut o = options();
+        let map = Arc::new(refs);
+        o.parse.broken_link_callback =
+            Some(Arc::new(move |r: comrak::options::BrokenLinkReference| {
+                map.get(&fold_label(r.normalized)).cloned()
+            }));
+        root = parse_document(&arena, &src, &o);
+    }
     let mut line_starts = vec![0];
     for (i, b) in src.bytes().enumerate() {
         if b == b'\n' {
@@ -269,6 +378,7 @@ pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
         top: true,
         first_at: None,
         clip: usize::MAX,
+        cell: None,
     };
     lx.subs = lx.prepass();
     let end = src.len();
@@ -696,7 +806,8 @@ impl<'s> Lexer<'s> {
                 }
             }
             // `hr`'s raw is `rtrim(cap[0], '\n')`, so its newlines are left for `space`.
-            NodeValue::ThematicBreak => (vec![Token::Hr], eol, Consume::EndOfLine),
+            // An hr is one line; comrak's sourcepos can run past it at the end of input.
+            NodeValue::ThematicBreak => (vec![Token::Hr], self.line_end(l0), Consume::EndOfLine),
             NodeValue::CodeBlock(cb) => {
                 if cb.fenced {
                     let line = self.view_lines(l0, l0, first, chain, false).s;
@@ -757,7 +868,7 @@ impl<'s> Lexer<'s> {
                 let from = self.content_start(l0, &inner).0;
                 let saved = self.top;
                 self.top = true;
-                let tokens = self.blocks(n, &inner, from, None);
+                let tokens = self.blocks(n, &inner, from, Some(eol));
                 self.top = saved;
                 (vec![Token::Blockquote { tokens }], eol, Consume::EndOfLine)
             }
@@ -1126,6 +1237,10 @@ impl<'s> Lexer<'s> {
 
     /// Inline tokens for the nodes of a table row that fall inside one cell view.
     fn inlines_in(&mut self, row: N, cv: &View, in_table: bool) -> Vec<Token> {
+        let saved = self.cell.take();
+        if in_table {
+            self.cell = cv.offs.first().map(|&f| (f, cv.offs.clone()));
+        }
         let mut kids = Vec::new();
         if let (Some(&first), Some(&last)) = (cv.offs.first(), cv.offs.last()) {
             for cell in row.children() {
@@ -1137,7 +1252,23 @@ impl<'s> Lexer<'s> {
                 }
             }
         }
-        self.inline_seq(&kids, cv, 0, cv.s.len(), if in_table { b"|" } else { &[] })
+        let out = self.inline_seq(&kids, cv, 0, cv.s.len(), if in_table { b"|" } else { &[] });
+        self.cell = saved;
+        out
+    }
+
+    /// A doc offset comrak reported inside a table cell, mapped back to the source.
+    fn uncell(&self, d: usize) -> usize {
+        let Some((base, offs)) = &self.cell else {
+            return d;
+        };
+        let (Some(&last), true) = (offs.last(), d >= *base) else {
+            return d;
+        };
+        match offs.get(d - base) {
+            Some(&o) => o,
+            None => d + (last + 1) - (base + offs.len()),
+        }
     }
 
     /// The doc byte range `[start, end)` of a node.
@@ -1145,6 +1276,7 @@ impl<'s> Lexer<'s> {
         let sp = n.data().sourcepos;
         let s = self.pos(sp.start.line, sp.start.column);
         let e = self.pos(sp.end.line, sp.end.column);
+        let (s, e) = (self.uncell(s), self.uncell(e));
         let mut s = s;
         while s > 0 && !self.src.is_char_boundary(s) {
             s -= 1;
@@ -1535,6 +1667,7 @@ fn lex_inline_string(s: &str, outer: &Lexer) -> Vec<Token> {
         top: true,
         first_at: None,
         clip: usize::MAX,
+        cell: None,
     };
     let mut v = View::default();
     v.push_doc(s, 0, s.len());
@@ -2112,6 +2245,50 @@ mod tests {
         assert_eq!(header[1].text, "b | c");
         assert_eq!(align, &vec![None, Some("center".to_string())]);
         assert_eq!(rows[0][1].text, "");
+    }
+
+    #[test]
+    fn table_cell_spans_after_an_escaped_pipe_keep_their_place() {
+        let t = lex("| h |\n|---|\n| `a \\| b` then `c` |\n", Tier::Unicode);
+        let Token::Table { rows, .. } = &t[0] else {
+            panic!("{t:?}")
+        };
+        let kinds: Vec<String> = rows[0][0]
+            .tokens
+            .iter()
+            .map(|k| match k {
+                Token::Codespan { text } => format!("code:{text}"),
+                Token::Text { raw, .. } => format!("text:{raw}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, ["code:a | b", "text: then ", "code:c"]);
+    }
+
+    #[test]
+    fn references_resolve_past_comraks_expansion_cap() {
+        // Far more resolved-reference bytes than the input is long: comrak alone stops
+        // resolving once the cap is spent; marked resolves every one.
+        let url = format!("https://example.test/{}", "x".repeat(200));
+        let body = format!("{}\n\n[r]: {url}\n", "[a][r] ".repeat(40));
+        let t = lex(&body, Tier::Unicode);
+        let Token::Paragraph { tokens } = &t[0] else {
+            panic!("{t:?}")
+        };
+        let links = tokens
+            .iter()
+            .filter(|k| matches!(k, Token::Link { href, .. } if *href == url))
+            .count();
+        assert_eq!(links, 40);
+    }
+
+    #[test]
+    fn final_hr_leaves_its_blank_lines_to_a_space() {
+        let t = lex("a\n\n---\n\n", Tier::Unicode);
+        assert!(
+            matches!(t.as_slice(), [_, Token::Space, Token::Hr, Token::Space]),
+            "{t:?}"
+        );
     }
 
     #[test]

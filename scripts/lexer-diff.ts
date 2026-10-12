@@ -71,6 +71,18 @@ const isStructuralArray = (v: unknown): v is unknown[] =>
   Array.isArray(v) && v.some((e) => Array.isArray(e) || isRec(e));
 
 /** Every minimal differing subtree between two normalized token trees. */
+/**
+ * An inline container (`del`, `strong`, `em`) whose extent differs between the sides — `del`
+ * by `raw`, `strong`/`em` by `text`. Its delimiters moved, so its siblings are re-partitioned
+ * around it: the enclosing array is the site, as for a type mismatch (WP-7 attempt 2).
+ */
+function extentDiffers(a: unknown, b: unknown): boolean {
+  if (!isRec(a) || !isRec(b)) return false;
+  if (a.type === "del") return a.raw !== b.raw;
+  if (a.type === "strong" || a.type === "em") return a.text !== b.text;
+  return false;
+}
+
 export function diffTokens(ts: unknown[], rust: unknown[], tier: Tier): TokenSite[] {
   const sites: TokenSite[] = [];
   const site = (path: string, a: unknown, b: unknown): void => {
@@ -78,7 +90,7 @@ export function diffTokens(ts: unknown[], rust: unknown[], tier: Tier): TokenSit
   };
   const typeOf = (v: unknown): unknown => (isRec(v) ? v.type : undefined);
   const walkArray = (path: string, a: unknown[], b: unknown[]): void => {
-    if (a.length !== b.length || a.some((x, i) => typeOf(x) !== typeOf(b[i]))) {
+    if (a.length !== b.length || a.some((x, i) => typeOf(x) !== typeOf(b[i]) || extentDiffers(x, b[i]))) {
       site(path, a, b);
       return;
     }
@@ -376,6 +388,15 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
   }
   for (const [id, count] of Object.entries(summary.attributed).sort()) {
     console.log(`lexer-diff: attributed ${id}=${count}`);
+  }
+  // Disallowed sites an unratified entry matches, per entry: what the user is asked to rule on.
+  const unratified: Record<string, number> = {};
+  for (const entry of summary.disallowedSites) {
+    const m = / (\S+) matches but is not ratified$/.exec(` ${entry.reason}`);
+    if (m?.[1]) unratified[m[1]] = (unratified[m[1]] ?? 0) + 1;
+  }
+  for (const [id, count] of Object.entries(unratified).sort()) {
+    console.log(`lexer-diff: unratified ${id}=${count}`);
   }
   console.log(
     `lexer-diff: files=${summary.files} tiers=${options.tiers.join(",")} pairs=${summary.pairs} ` +
