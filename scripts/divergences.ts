@@ -494,6 +494,9 @@ function tildeBacktickRun(site: Site): boolean {
   const ts = asArray(site.ts);
   const rust = asArray(site.rust);
   if (!hasMixedRunText(ts) || hasMixedRunText(rust)) return false;
+  // A site where the single-tilde `del` count differs too is `single-tilde-del`'s (its
+  // cross-markup form already covers delimiters pairing differently around a dissolved `del`).
+  if (countSingleTildeDel(ts) !== countSingleTildeDel(rust)) return false;
   // A code span's content drops one space at each end (§6.3), so the side that sees a span
   // where the other sees text spells different spaces: compare with whitespace removed.
   // A codespan's `text` is entity-escaped where a `text` node's `raw` is not: decode both.
@@ -826,6 +829,231 @@ function emphasisRunSplit(site: Site): boolean {
   if (t?.type !== "strong" || r?.type !== "text" || prev?.type !== "strong") return false;
   const raw = s(r.raw);
   return raw.length > 4 && raw.startsWith("**") && raw.endsWith("**") && s(t.text) === raw.slice(2, -2);
+}
+
+// ---------------------------------------------------------------------------
+// WP-9 T2 lexer entries, emphasis group (standing ruling 2026-10-12, spec over marked):
+// emphasis-closer-remainder, emphasis-rule-of-three-inner-em, codespan-mask-escaped-backtick,
+// autolink-paren-count, autolink-nbsp, link-in-link, html-tag-underscore
+// ---------------------------------------------------------------------------
+
+/** The inline source a node list spells with its `*` emphasis delimiters put back. */
+function emphasisSource(nodes: Node[]): string {
+  return nodes
+    .map((n) => {
+      switch (n.type) {
+        case "text":
+          return Array.isArray(n.tokens) ? emphasisSource(n.tokens as Node[]) : s(n.raw);
+        case "em":
+          return `*${emphasisSource(asArray(n.tokens as Node[] | undefined))}*`;
+        case "strong":
+          return `**${emphasisSource(asArray(n.tokens as Node[] | undefined))}**`;
+        case "br":
+          return "\n";
+        default:
+          return JSON.stringify(n);
+      }
+    })
+    .join("");
+}
+
+/** The last character of the deepest last leaf a node spells (`em{strong{"ab"}}` -> `b`). */
+function lastLeafChar(node: Node | undefined): string {
+  if (node === undefined) return "";
+  const kids = asArray(node.tokens as Node[] | undefined);
+  if (kids.length > 0) return lastLeafChar(kids[kids.length - 1]);
+  return [...s(node.raw ?? node.text)].at(-1) ?? "";
+}
+
+const PUNCT_OR_SPACE = /[\s\p{P}\p{S}]/u;
+
+/**
+ * `emphasis-closer-remainder` matches an inline array where, at the first differing index k,
+ * the TS side holds an `em`/`strong` and the Rust side a `text` opening with a `*` run then a
+ * punctuation character; the node before k is the same `em`/`strong` on both sides, its last
+ * character is neither whitespace nor punctuation, and both sides spell the same source with
+ * their `*` delimiters put back (`*she**.*` — the closing run is right-flanking only).
+ * CommonMark 0.31.2 §6.2: a run preceded by a letter and followed by punctuation is not
+ * left-flanking, so what is left of it after closing is literal. marked 14 resets `prevChar`
+ * after every non-text token (node_modules/marked/lib/marked.esm.js:1545-1546), so the left-over
+ * `*` reads as a fresh opener (:800) and pairs with the next `*`. The `strong`-in-`****` shape
+ * `emphasis-run-split` already claims is left to it.
+ */
+function emphasisCloserRemainder(site: Site): boolean {
+  if (isRender(site) || emphasisRunSplit(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  let k = 0;
+  while (k < ts.length && k < rust.length && JSON.stringify(ts[k]) === JSON.stringify(rust[k])) k++;
+  const prev = ts[k - 1];
+  const t = ts[k];
+  const r = rust[k];
+  if (k === 0 || (prev?.type !== "em" && prev?.type !== "strong")) return false;
+  if ((t?.type !== "em" && t?.type !== "strong") || r?.type !== "text" || Array.isArray(r.tokens)) return false;
+  if (!/^\*+[\p{P}\p{S}]/u.test(s(r.raw))) return false;
+  const last = lastLeafChar(prev);
+  if (last === "" || PUNCT_OR_SPACE.test(last)) return false;
+  return emphasisSource(ts) === emphasisSource(rust);
+}
+
+/**
+ * `emphasis-rule-of-three-inner-em` matches an inline array where the Rust side holds a
+ * `strong` at index k whose children carry an `em`, and the TS side holds at k a `text`
+ * ending in `*`, at k+1 an `em` whose text is the strong's text, and at k+2 a `text` opening
+ * with `*`; both sides spell the same source with `*` delimiters put back
+ * (`**Big *(here)*.**`). CommonMark 0.31.2 §6.2 process emphasis: the both-flanking `*`
+ * between `)` and `.` closes the nearer `*` opener first, then `.**` closes `**`. marked 14
+ * applies the rule of 3 against the outer `**` opener while scanning for its closer
+ * (node_modules/marked/lib/marked.esm.js:817-821; 2 + 1 = 3), skips that `*`, never closes the
+ * `**`, and falls back to one literal `*` plus an `em`.
+ */
+function emphasisRuleOfThreeInnerEm(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const hit = rust.some((st, k) => {
+    if (st.type !== "strong" || !asArray(st.tokens as Node[] | undefined).some((n) => n.type === "em")) return false;
+    const [a, em, b] = [ts[k], ts[k + 1], ts[k + 2]];
+    return (
+      a?.type === "text" &&
+      s(a.raw).endsWith("*") &&
+      em?.type === "em" &&
+      s(em.text) === s(st.text) &&
+      b?.type === "text" &&
+      s(b.raw).startsWith("*")
+    );
+  });
+  return hit && emphasisSource(ts) === emphasisSource(rust);
+}
+
+function hasEscapedBacktick(nodes: Node[]): boolean {
+  return nodes.some(
+    (n) => (n.type === "escape" && s(n.text) === "`") || (Array.isArray(n.tokens) && hasEscapedBacktick(n.tokens as Node[])),
+  );
+}
+
+/**
+ * `codespan-mask-escaped-backtick` matches an inline array where both sides hold an escaped
+ * backtick (`` \` ``) and recognise the same code spans in order, none of them holding a
+ * backtick (that is `codespan-mask-skew`), no single-tilde `del` or mixed tilde/backtick run
+ * is involved, and both sides spell the same characters once delimiter runs are removed.
+ * marked 14 masks code spans for the emphasis pass with `blockSkip`'s `` `[^`]*?` ``
+ * (node_modules/marked/lib/marked.esm.js:1125) *before* it masks escaped characters
+ * (:1537-1542), so `` \` `` delimits a masked range and every later mask is shifted by one
+ * backtick: emphasis outside the real spans is hidden, and emphasis across them is exposed.
+ * CommonMark 0.31.2 §6.1 (a backslash-escaped backtick is literal) and §6.3 (spans first).
+ */
+function codespanMaskEscapedBacktick(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  if (!hasEscapedBacktick(ts) || !hasEscapedBacktick(rust)) return false;
+  const a = codespanTexts(ts);
+  if (JSON.stringify(a) !== JSON.stringify(codespanTexts(rust)) || a.some((t) => t.includes("`"))) return false;
+  if (countSingleTildeDel(ts) !== countSingleTildeDel(rust) || hasMixedRunText(ts)) return false;
+  return leafLetters(ts) === leafLetters(rust);
+}
+
+const isPlainText = (n: Node | Node[] | undefined): n is Node =>
+  n !== undefined && !Array.isArray(n) && n.type === "text" && !Array.isArray(n.tokens);
+
+/** A GFM extended autolink node: a `link` whose one child spells its own href. */
+const isUrlAutolink = (n: Node | Node[] | undefined): n is Node =>
+  n !== undefined &&
+  !Array.isArray(n) &&
+  n.type === "link" &&
+  /^(?:https?|ftp):\/\//.test(s(n.href)) &&
+  s(n.text) === s(n.href);
+
+const count = (v: string, c: string): number => v.split(c).length - 1;
+
+/**
+ * `autolink-paren-count` matches a node site where both sides hold a URL autolink, the TS
+ * href is the Rust href plus a final `)`, and the TS href holds more `)` than `(`; or a
+ * `text` site whose Rust `raw` is the TS `raw` after a leading `)` (where that `)` went).
+ * GFM 0.29 §6.9 "Autolinks (extension)": when an autolink ends in `)`, the parentheses of the
+ * whole link are counted and an unmatched trailing `)` is not part of it. marked 14's
+ * `_backpedal` (node_modules/marked/lib/marked.esm.js:1228) keeps any `\([^)]*\)` group, so a
+ * link whose last group looks balanced (`c)d(e)`) keeps the `)` the count would drop. A link
+ * site `nested-bracket-label` claims is left to it.
+ */
+function autolinkParenCount(site: Site): boolean {
+  if (isRender(site) || nestedBracketLabel(site)) return false;
+  const { ts, rust } = site;
+  if (isUrlAutolink(ts) && isUrlAutolink(rust)) {
+    const href = s(ts.href);
+    return href === `${s(rust.href)})` && count(href, ")") > count(href, "(");
+  }
+  return isPlainText(ts) && isPlainText(rust) && s(rust.raw) === `)${s(ts.raw)}` && s(rust.text) === `)${s(ts.text)}`;
+}
+
+/** Unicode whitespace that is not GFM whitespace (§2.1 names space, tab, LF, VT, FF, CR). */
+const NON_ASCII_SPACE = /^[)\]?!.,:;*_'"~]*[   -   　]/u;
+
+/**
+ * `autolink-nbsp` matches a node site where both sides hold a URL autolink and the Rust href
+ * is the TS href plus a run ending in one non-ASCII Unicode space (`)` + U+00A0); or a `text`
+ * site whose TS `raw` opens with such a run and the Rust `raw` is the rest. GFM 0.29 §6.9: an
+ * extended URL autolink runs to whitespace or `<`, and whitespace (§2.1) is ASCII only, so
+ * U+00A0 is part of the link and the `)` before it is not trailing. marked 14's `url` rule
+ * stops at JavaScript's `\s` (node_modules/marked/lib/marked.esm.js:1225), which matches
+ * U+00A0, and `_backpedal` (:1228) then drops the `)`.
+ */
+function autolinkNbsp(site: Site): boolean {
+  if (isRender(site)) return false;
+  const { ts, rust } = site;
+  if (isUrlAutolink(ts) && isUrlAutolink(rust)) {
+    const a = s(ts.href);
+    const b = s(rust.href);
+    return b.startsWith(a) && b.length > a.length && NON_ASCII_SPACE.exec(b.slice(a.length))?.[0] === b.slice(a.length);
+  }
+  if (!isPlainText(ts) || !isPlainText(rust)) return false;
+  const lead = NON_ASCII_SPACE.exec(s(ts.raw))?.[0];
+  return lead !== undefined && s(rust.raw) === s(ts.raw).slice(lead.length);
+}
+
+/**
+ * `link-in-link` matches a node site where the TS side holds a `link` whose children carry a
+ * `link` equal to the Rust side's; or a `text` site whose Rust `raw` is the TS `raw` plus `[`
+ * (before the inner link), or is `](dest)` plus the TS `raw` (after it). CommonMark 0.31.2
+ * §6.3 "Links": "Links may not contain other links, at any level of nesting. If multiple
+ * otherwise valid link definitions appear nested inside each other, the inner-most
+ * definition is used." marked 14's `link` rule admits a balanced `[…]` in its label
+ * (`_inlineLabel`, node_modules/marked/lib/marked.esm.js:1166) and lexes the label as inline
+ * content (`outputLink`, :182-196), so the outer link stands with the inner one inside it.
+ */
+function linkInLink(site: Site): boolean {
+  if (isRender(site)) return false;
+  const { ts, rust } = site;
+  if (ts !== undefined && !Array.isArray(ts) && ts.type === "link" && rust !== undefined && !Array.isArray(rust) && rust.type === "link") {
+    const inner = JSON.stringify(rust);
+    return asArray(ts.tokens as Node[] | undefined).some((n) => JSON.stringify(n) === inner);
+  }
+  if (!isPlainText(ts) || !isPlainText(rust)) return false;
+  const a = s(ts.raw);
+  const b = s(rust.raw);
+  if (b === `${a}[`) return true;
+  const m = /^\]\(([^\s()]+)\)/.exec(b);
+  return m !== null && b === `${m[0]}${a}`;
+}
+
+/**
+ * `html-tag-underscore` matches an inline array where the TS side holds an `html` whose tag
+ * name carries `_` (`<foo_bar>`), and the Rust side, with every such `html` folded back into
+ * the text around it, is the same. CommonMark 0.31.2 §6.6 "Raw HTML": a tag name is an ASCII
+ * letter followed by letters, digits or `-`, so `<foo_bar>` is not a tag and stays text.
+ * marked 14's inline `tag` rule takes the name as `[a-zA-Z][\w-]*`
+ * (node_modules/marked/lib/marked.esm.js:1157-1159), and `\w` admits `_`.
+ */
+function htmlTagUnderscore(site: Site): boolean {
+  if (isRender(site)) return false;
+  const ts = asArray(site.ts);
+  const rust = asArray(site.rust);
+  const isUnderscoreTag = (n: Node): boolean => n.type === "html" && /^<\/?[a-zA-Z][\w-]*_[\w-]*/.test(s(n.text));
+  if (!ts.some(isUnderscoreTag)) return false;
+  const fold = (nodes: Node[]): string =>
+    nodes.map((n) => (n.type === "text" && !Array.isArray(n.tokens) ? s(n.raw) : isUnderscoreTag(n) ? s(n.text) : `\u0000${JSON.stringify(n)}\u0000`)).join("");
+  return fold(ts) === fold(rust);
 }
 
 /**
@@ -1186,6 +1414,108 @@ export const REGISTRY: readonly Divergence[] = [
     witness: "tests/fixtures/divergences/emphasis-run-split.md",
     status: "live",
     predicate: emphasisRunSplit,
+  },
+  {
+    id: "emphasis-closer-remainder",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 "Emphasis and strong emphasis": in `*she**.*` the `**` after `she` ' +
+      "is preceded by a letter and followed by punctuation, so it is right-flanking only; one " +
+      "`*` closes `*she` and the other is literal, as is the final `*`. marked 14 resets " +
+      "`prevChar` after every non-text token (node_modules/marked/lib/marked.esm.js:1545-1546), " +
+      "so the left-over `*` reads as a fresh opener (:800) and pairs with the final `*` as em.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-closer-remainder.md",
+    status: "live",
+    predicate: emphasisCloserRemainder,
+  },
+  {
+    id: "emphasis-rule-of-three-inner-em",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.2 "Emphasis and strong emphasis", process emphasis: in ' +
+      "`**Big *(here)*.**` the both-flanking `*` between `)` and `.` closes the nearer `*` " +
+      "opener first, then `.**` closes `**` — strong around em. marked 14 applies the rule of 3 " +
+      "against the outer `**` opener while scanning for its closer " +
+      "(node_modules/marked/lib/marked.esm.js:817-821; 2 + 1 = 3), skips that `*`, never closes " +
+      "the `**`, and falls back to a literal `*` and an em.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/emphasis-rule-of-three-inner-em.md",
+    status: "live",
+    predicate: emphasisRuleOfThreeInnerEm,
+  },
+  {
+    id: "codespan-mask-escaped-backtick",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.1 "Backslash escapes" (`` \\` `` is a literal backtick) and §6.3 ' +
+      '"Code spans" (spans bind before emphasis): in `` Type \\` then `c` and *this* or `f`. `` ' +
+      "`*this*` is em. marked 14 masks code spans for the emphasis pass with `blockSkip`'s " +
+      "`` `[^`]*?` `` (node_modules/marked/lib/marked.esm.js:1125) before it masks escaped " +
+      "characters (:1537-1542), so the escaped backtick opens a mask, every later mask shifts by " +
+      "one backtick, and `*this*` is hidden from the pairing.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/codespan-mask-escaped-backtick.md",
+    status: "live",
+    predicate: codespanMaskEscapedBacktick,
+  },
+  {
+    id: "autolink-paren-count",
+    kind: "lexer",
+    spec:
+      'GFM 0.29 §6.9 "Autolinks (extension)": "When an autolink ends in `)`, we scan the entire ' +
+      "autolink for the total number of parentheses. If there is a greater number of closing " +
+      'parentheses than opening ones, we don\'t consider the unmatched trailing parentheses part ' +
+      'of the autolink" — so `(https://a.io/c)d(e)` links `https://a.io/c)d(e`. marked 14\'s ' +
+      "`_backpedal` (node_modules/marked/lib/marked.esm.js:1228) keeps any `\\([^)]*\\)` group " +
+      "and never counts, so the final `)` stays in the link.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/autolink-paren-count.md",
+    status: "live",
+    predicate: autolinkParenCount,
+  },
+  {
+    id: "autolink-nbsp",
+    kind: "lexer",
+    spec:
+      'GFM 0.29 §6.9 "Autolinks (extension)": an extended URL autolink runs to whitespace or ' +
+      "`<`, and whitespace (§2.1) is space, tab, newline, line tabulation, form feed or carriage " +
+      "return — so a U+00A0 is part of the link, and the `)` before it is not trailing " +
+      "punctuation. marked 14's `url` rule stops at JavaScript's `\\s` " +
+      "(node_modules/marked/lib/marked.esm.js:1225), which matches U+00A0, and `_backpedal` " +
+      "(:1228) then trims the `)`.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/autolink-nbsp.md",
+    status: "live",
+    predicate: autolinkNbsp,
+  },
+  {
+    id: "link-in-link",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.3 "Links": "Links may not contain other links, at any level of ' +
+      "nesting. If multiple otherwise valid link definitions appear nested inside each other, " +
+      'the inner-most definition is used." marked 14\'s `link` rule admits a balanced `[…]` in ' +
+      "its label (`_inlineLabel`, node_modules/marked/lib/marked.esm.js:1166) and lexes the " +
+      "label as inline content (`outputLink`, :182-196), so the outer link stands around the " +
+      "inner one.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/link-in-link.md",
+    status: "live",
+    predicate: linkInLink,
+  },
+  {
+    id: "html-tag-underscore",
+    kind: "lexer",
+    spec:
+      'CommonMark 0.31.2 §6.6 "Raw HTML": "A tag name consists of an ASCII letter followed by ' +
+      'zero or more ASCII letters, digits, or hyphens", so `<foo_bar>` is not a tag and stays ' +
+      "text. marked 14's inline `tag` rule takes the name as `[a-zA-Z][\\w-]*` " +
+      "(node_modules/marked/lib/marked.esm.js:1157-1159), and `\\w` admits `_`.",
+    ratified: { by: "user (standing ruling: spec over marked)", date: "2026-10-12" },
+    witness: "tests/fixtures/divergences/html-tag-underscore.md",
+    status: "live",
+    predicate: htmlTagUnderscore,
   },
   {
     id: "list-close-tag-lazy-line",

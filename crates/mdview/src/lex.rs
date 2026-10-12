@@ -502,7 +502,23 @@ impl<'s> Lexer<'s> {
                 Container::Item { line, indent } => {
                     if l == line {
                         let k = indent.min(cur.len());
+                        let after_marker = k > 0 && cur[k - 1].0 != ' ';
                         cur.drain(..k);
+                        // marked expands the tabs that open the text right after the marker to
+                        // three spaces each (`replace(/^\t+/, …)`, marked.esm.js:417); its indent
+                        // search stops at a tab, so they stay in the item's text.
+                        let tabs = if after_marker {
+                            cur.iter().take_while(|(c, _)| *c == '\t').count()
+                        } else {
+                            0
+                        };
+                        if tabs > 0 {
+                            let lead: Vec<(char, usize)> = cur[..tabs]
+                                .iter()
+                                .flat_map(|&(_, o)| [(' ', o); 3])
+                                .collect();
+                            cur.splice(..tabs, lead);
+                        }
                     } else {
                         let exp: Vec<(char, usize)> = cur
                             .iter()
@@ -1460,9 +1476,21 @@ impl<'s> Lexer<'s> {
                 pos = nl + 1;
                 continue;
             }
+            // comrak's `autolink_delim` trims a trailing U+2069 (pop directional isolate) from
+            // a GFM extended autolink; marked's `url` rule (`[^\s<]*`, marked.esm.js:1225)
+            // keeps it, and `_backpedal` (:1228) only trims ASCII punctuation — and so does the
+            // GFM spec's §6.9 (not whitespace, not trailing punctuation). Give it back.
+            let e = if matches!(value, NodeValue::Link(_))
+                && !v.s[s..e].starts_with(['[', '<'])
+                && v.s[e..b].starts_with('\u{2069}')
+            {
+                e + '\u{2069}'.len_utf8()
+            } else {
+                e
+            };
             self.push_text(&mut out, &v.s[pos..s]);
             let raw = v.s[s..e].to_string();
-            match self.inline_node(k, &value, v, s, e, &raw) {
+            match self.inline_node(k, &value, v, s, e, skip) {
                 Some(Inline::One(t)) => out.push(t),
                 Some(Inline::Text(t)) => self.push_text(&mut out, &t),
                 None => self.push_text(&mut out, &raw),
@@ -1500,9 +1528,14 @@ impl<'s> Lexer<'s> {
         v: &View,
         s: usize,
         e: usize,
-        raw: &str,
+        skip: &[u8],
     ) -> Option<Inline> {
+        let raw = &v.s[s..e];
         let kids: Vec<N> = k.children().collect();
+        // marked unescapes `\[`/`\]` in the whole link label before lexing it
+        // (`outputLink`, marked.esm.js:185), so an escape nested in emphasis inside the label
+        // is gone too: emphasis in a label inherits the label's skip set.
+        let nested: &[u8] = if skip.contains(&b'[') { b"[]" } else { &[] };
         match value {
             NodeValue::Emph | NodeValue::Strong => {
                 let d = if matches!(value, NodeValue::Strong) {
@@ -1514,7 +1547,7 @@ impl<'s> Lexer<'s> {
                     return None;
                 }
                 let text = raw[d..raw.len() - d].to_string();
-                let tokens = self.inline_seq(&kids, v, s + d, e - d, &[]);
+                let tokens = self.inline_seq(&kids, v, s + d, e - d, nested);
                 Some(Inline::One(if d == 2 {
                     Token::Strong { text, tokens }
                 } else {
@@ -1527,7 +1560,7 @@ impl<'s> Lexer<'s> {
                     return None;
                 }
                 let text = raw[d..raw.len() - d].to_string();
-                let tokens = self.inline_seq(&kids, v, s + d, e - d, &[]);
+                let tokens = self.inline_seq(&kids, v, s + d, e - d, nested);
                 Some(Inline::One(Token::Del {
                     raw: raw.to_string(),
                     text,
@@ -2510,5 +2543,32 @@ mod tests {
     fn heading_trailing_hashes() {
         assert_eq!(atx_text("# a #"), (2, 3));
         assert_eq!(atx_text("# a#"), (2, 4));
+    }
+
+    fn json(body: &str) -> String {
+        serde_json::to_string(&lex(body, Tier::Unicode)).unwrap()
+    }
+
+    #[test]
+    fn autolink_keeps_a_trailing_pop_directional_isolate_like_marked() {
+        let j = json("see \u{2068}https://a.io/x\u{2069}\nnext\n");
+        assert!(j.contains("\"href\":\"https://a.io/x\u{2069}\""), "{j}");
+        assert!(j.contains("\"raw\":\"\\nnext\""), "{j}");
+    }
+
+    #[test]
+    fn tab_after_an_item_marker_is_three_spaces_like_marked() {
+        let j = json("1.\t**b**: c\n");
+        assert!(j.contains("\"raw\":\"   **b**: c\""), "{j}");
+        // A tab after a space keeps its place (marked's `^\t+` does not match).
+        let j = json("- \tx\n");
+        assert!(!j.contains("\"   x"), "{j}");
+    }
+
+    #[test]
+    fn escaped_bracket_in_emphasis_inside_a_link_label_is_unescaped() {
+        let j = json("[**x\\[y\\]**](https://a.io/)\n");
+        assert!(j.contains("\"text\":\"x[y]\""), "{j}");
+        assert!(!j.contains("\"escape\""), "{j}");
     }
 }
