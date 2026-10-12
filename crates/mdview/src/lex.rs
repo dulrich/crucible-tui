@@ -57,6 +57,9 @@ const TASK_GLYPHS: &[(char, &str)] = &[
     ('d', "⬇"),
 ];
 
+/// A three-byte letter standing in for a leading U+FEFF in the string comrak parses.
+const BOM_STAND_IN: char = '\u{4e00}';
+
 /// `\r\n|\r` → `\n`, then code points 0 and 1 removed.
 pub fn normalize(body: &str) -> String {
     body.replace("\r\n", "\n")
@@ -234,6 +237,9 @@ struct Lexer<'s> {
     first_at: Option<usize>,
     /// marked trims the last list item's text: nothing at or after this doc offset is seen.
     clip: usize,
+    /// The last source line of the innermost container (blockquote or list item): marked
+    /// lexes a container's content as its own string, so nothing past it is visible.
+    cend: usize,
     /// Inside a table cell: the cell's first doc offset as comrak reports it, and the doc
     /// offset of every byte of the unescaped cell string. comrak unescapes `\\|` before
     /// parsing a cell and reports its inline sourcepos in the unescaped string's coordinates,
@@ -346,9 +352,17 @@ fn reference_definitions<'a>(
 /// Lex a body (frontmatter already split off) at a glyph tier.
 pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
     let src = normalize(body);
+    // D-D: marked reads a leading U+FEFF as paragraph content (it is not a block-start
+    // character), while comrak strips it. Hand comrak a same-width ordinary letter in its
+    // place, so it builds marked's tree; every token reads its text from `src`, never from
+    // the parse string, so the BOM itself comes back out.
+    let parsed = match src.strip_prefix('\u{feff}') {
+        Some(rest) => format!("{BOM_STAND_IN}{rest}"),
+        None => src.clone(),
+    };
     let arena = Arena::new();
-    let mut root = parse_document(&arena, &src, &options());
-    let refs = reference_definitions(root, &src);
+    let mut root = parse_document(&arena, &parsed, &options());
+    let refs = reference_definitions(root, &parsed);
     if !refs.is_empty() {
         // comrak caps the bytes of resolved references at min(input size, 100000) (a
         // quadratic-expansion guard cmark also has; no CommonMark rule). marked has no cap,
@@ -360,7 +374,7 @@ pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
             Some(Arc::new(move |r: comrak::options::BrokenLinkReference| {
                 map.get(&fold_label(r.normalized)).cloned()
             }));
-        root = parse_document(&arena, &src, &o);
+        root = parse_document(&arena, &parsed, &o);
     }
     let mut line_starts = vec![0];
     for (i, b) in src.bytes().enumerate() {
@@ -378,6 +392,7 @@ pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
         top: true,
         first_at: None,
         clip: usize::MAX,
+        cend: usize::MAX,
         cell: None,
     };
     lx.subs = lx.prepass();
@@ -858,7 +873,13 @@ impl<'s> Lexer<'s> {
             NodeValue::HtmlBlock(hb) => {
                 let mut text = self.view_string(l0, l1, first, chain);
                 // marked's html regex consumes trailing newlines into the token.
-                let (extra, consume) = self.html_trailer(l1, chain, hb.block_type);
+                let (mut extra, consume) = self.html_trailer(l1, chain, hb.block_type);
+                // The last list item's content is trimmed at the list's end (marked trims the
+                // item's trailing blank lines), so the trailer cannot reach past the clip.
+                if self.clip != usize::MAX {
+                    let room = self.clip.saturating_sub(self.line_end(l1));
+                    extra.truncate(room.min(extra.len()));
+                }
                 text.push_str(&extra);
                 (vec![Token::Html { text }], eol, consume)
             }
@@ -867,9 +888,12 @@ impl<'s> Lexer<'s> {
                 inner.push(Container::Quote);
                 let from = self.content_start(l0, &inner).0;
                 let saved = self.top;
+                let saved_cend = self.cend;
                 self.top = true;
+                self.cend = self.cend.min(l1);
                 let tokens = self.blocks(n, &inner, from, Some(eol));
                 self.top = saved;
+                self.cend = saved_cend;
                 (vec![Token::Blockquote { tokens }], eol, Consume::EndOfLine)
             }
             NodeValue::List(list) => {
@@ -887,28 +911,29 @@ impl<'s> Lexer<'s> {
     /// What marked's html regex swallows after the block's last line.
     fn html_trailer(&self, l1: usize, chain: &[Container], block_type: u8) -> (String, Consume) {
         let mut extra = String::new();
+        let last = self.nlines().min(self.cend);
         let mut l = l1 + 1;
-        if l > self.nlines() {
+        if l > last {
             return (extra, Consume::EndOfLine);
         }
         if block_type >= 6 {
             // `(?:\n[ \t]*)+\n|$`: every whitespace-only line, ending at a newline.
             let mut acc = String::new();
             let mut ok = String::new();
-            while l <= self.nlines() {
+            while l <= last {
                 let s = self.line_text(l, chain, true);
                 if !s.trim_matches([' ', '\t']).is_empty() {
                     break;
                 }
                 acc.push('\n');
                 acc.push_str(&s);
-                if l < self.nlines() {
+                if l < last {
                     ok = format!("{acc}\n");
                 }
                 l += 1;
             }
             // At the end of the document `$` takes everything that is left.
-            let ok = if l > self.nlines() { acc } else { ok };
+            let ok = if l > last { acc } else { ok };
             let consume = if ok.is_empty() {
                 Consume::EndOfLine
             } else {
@@ -918,10 +943,10 @@ impl<'s> Lexer<'s> {
             (extra, consume)
         } else {
             // `\n+`: the newline and every directly following empty line's newline.
-            while l <= self.nlines() {
+            while l <= last {
                 let s = self.line_text(l, chain, true);
                 extra.push('\n');
-                if !s.is_empty() || l == self.nlines() {
+                if !s.is_empty() || l == last {
                     break;
                 }
                 l += 1;
@@ -1090,7 +1115,31 @@ impl<'s> Lexer<'s> {
             if last {
                 self.clip = self.clip.min(list_end);
             }
-            let (tokens, multi) = self.item_blocks(item, &inner, from, until, l0);
+            let saved_cend = self.cend;
+            self.cend = self.cend.min(item_end_line);
+            let (mut tokens, multi) = self.item_blocks(item, &inner, from, until, l0);
+            self.cend = saved_cend;
+            // A non-last item's content ends without a newline. When its last line is
+            // whitespace that survives the item's dedent, directly after a blockquote, marked's
+            // blockquote `paragraph` lookahead (` +\n`) cannot fail there, so that whitespace
+            // becomes the quote's own trailing `space` instead of the item's.
+            if next_line.is_some() && item_end_line > l0 {
+                let last_txt = self.line_text(item_end_line, &inner, false);
+                let prev = self.line_text(item_end_line - 1, &inner, false);
+                if !last_txt.is_empty()
+                    && last_txt.trim_matches([' ', '\t']).is_empty()
+                    && !prev.trim().is_empty()
+                    && matches!(
+                        tokens.as_slice(),
+                        [.., Token::Blockquote { .. }, Token::Space]
+                    )
+                {
+                    tokens.pop();
+                    if let Some(Token::Blockquote { tokens: q }) = tokens.last_mut() {
+                        q.push(Token::Space);
+                    }
+                }
+            }
             self.clip = saved_clip;
             self.top = true;
             if multi {
@@ -1361,7 +1410,21 @@ impl<'s> Lexer<'s> {
                 i += 1;
             }
             let limit = nodes.get(i).map_or(b, |n| n.1);
-            if let Some((ws, we)) = find_wiki(&v.s, pos, limit, b) {
+            let wiki = find_wiki(&v.s, pos, limit, b);
+            if let Some((cs, ce)) = find_gap_code_span(&v.s, pos, limit)
+                && wiki.is_none_or(|(ws, _)| cs < ws)
+            {
+                // comrak's closing-backtick cache (`scan_to_closing_backtick`) records the
+                // *latest* run of each length it scanned past, so a later search for a run it
+                // already passed fails and leaves a valid code span (§6.3) as text.
+                self.push_text(&mut out, &v.s[pos..cs]);
+                if let Some(t) = codespan_token(&v.s[cs..ce]) {
+                    out.push(t);
+                }
+                pos = ce;
+                continue;
+            }
+            if let Some((ws, we)) = wiki {
                 self.push_text(&mut out, &v.s[pos..ws]);
                 let raw = v.s[ws..we].to_string();
                 out.push(self.wiki_token(&raw));
@@ -1464,23 +1527,7 @@ impl<'s> Lexer<'s> {
                     tokens,
                 }))
             }
-            NodeValue::Code(_) => {
-                let n = raw.len() - raw.trim_start_matches('`').len();
-                if raw.len() < 2 * n {
-                    return None;
-                }
-                let mut text = raw[n..raw.len() - n].replace('\n', " ");
-                if text.bytes().any(|c| c != b' ')
-                    && text.starts_with(' ')
-                    && text.ends_with(' ')
-                    && text.len() >= 2
-                {
-                    text = text[1..text.len() - 1].to_string();
-                }
-                Some(Inline::One(Token::Codespan {
-                    text: escape_encode(&text),
-                }))
-            }
+            NodeValue::Code(_) => codespan_token(raw).map(Inline::One),
             NodeValue::HtmlInline(_) => {
                 let lower = raw.to_ascii_lowercase();
                 if !self.in_link && lower.starts_with("<a ") {
@@ -1667,6 +1714,7 @@ fn lex_inline_string(s: &str, outer: &Lexer) -> Vec<Token> {
         top: true,
         first_at: None,
         clip: usize::MAX,
+        cend: usize::MAX,
         cell: None,
     };
     let mut v = View::default();
@@ -1923,6 +1971,48 @@ fn parse_link(raw: &str) -> Option<(usize, Option<LinkDest>)> {
 }
 
 /// The end of the code span opening at `v[s..]`: the next backtick run of the same length.
+/// A code span's token from its raw source (§6.3: newlines become spaces, and one space is
+/// stripped from each end when both ends have one and the content is not all spaces).
+fn codespan_token(raw: &str) -> Option<Token> {
+    let n = raw.len() - raw.trim_start_matches('`').len();
+    if raw.len() < 2 * n {
+        return None;
+    }
+    let mut text = raw[n..raw.len() - n].replace('\n', " ");
+    if text.bytes().any(|c| c != b' ')
+        && text.starts_with(' ')
+        && text.ends_with(' ')
+        && text.len() >= 2
+    {
+        text = text[1..text.len() - 1].to_string();
+    }
+    Some(Token::Codespan {
+        text: escape_encode(&text),
+    })
+}
+
+/// The first complete code span inside plain text `v[from..limit]`: an unescaped backtick
+/// run with a later run of equal length before `limit`.
+fn find_gap_code_span(v: &str, from: usize, limit: usize) -> Option<(usize, usize)> {
+    let t = v.as_bytes();
+    let mut i = from;
+    while i < limit {
+        if t[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let run = v[i..limit].len() - v[i..limit].trim_start_matches('`').len();
+        let slashes = v[from..i].len() - v[from..i].trim_end_matches('\\').len();
+        if slashes.is_multiple_of(2)
+            && let Some(e) = code_span_end(&v[..limit], i, limit)
+        {
+            return Some((i, e));
+        }
+        i += run;
+    }
+    None
+}
+
 fn code_span_end(v: &str, s: usize, b: usize) -> Option<usize> {
     let t = &v[s..b];
     let n = t.len() - t.trim_start_matches('`').len();
@@ -2041,6 +2131,102 @@ mod tests {
             vec![Token::Paragraph {
                 tokens: vec![text("a & b\n   cont"), Token::Br, text("x")]
             }]
+        );
+    }
+
+    #[test]
+    fn leading_bom_stays_paragraph_content_as_in_marked() {
+        // D-D: marked sees the BOM as text, so a following html line is inline html.
+        let t = lex("\u{feff}<img src=\"x\"/>\n\nText.\n", Tier::Unicode);
+        assert_eq!(
+            t,
+            vec![
+                Token::Paragraph {
+                    tokens: vec![
+                        text("\u{feff}"),
+                        Token::Html {
+                            text: "<img src=\"x\"/>".into()
+                        }
+                    ]
+                },
+                Token::Space,
+                Token::Paragraph {
+                    tokens: vec![text("Text.")]
+                },
+            ]
+        );
+        let h = lex("\u{feff}# T\n", Tier::Unicode);
+        assert!(matches!(&h[0], Token::Paragraph { .. }), "{h:?}");
+    }
+
+    #[test]
+    fn html_trailer_stops_at_its_container() {
+        let html = |t: &[Token]| -> Vec<String> {
+            fn walk(t: &[Token], out: &mut Vec<String>) {
+                for x in t {
+                    match x {
+                        Token::Html { text } => out.push(text.clone()),
+                        Token::Blockquote { tokens } => walk(tokens, out),
+                        Token::List { items, .. } => {
+                            for i in items {
+                                walk(&i.tokens, out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            walk(t, &mut out);
+            out
+        };
+        let t = lex("- a\n\n  </details>\n\n- b\n", Tier::Unicode);
+        assert_eq!(html(&t), vec!["</details>\n"]);
+        let t = lex("> a\n>\n> </details>\n\nz\n", Tier::Unicode);
+        assert_eq!(html(&t), vec!["</details>"]);
+        let t = lex("- a\n\n  </details>\n\n\n- b\n", Tier::Unicode);
+        assert_eq!(html(&t), vec!["</details>\n\n"]);
+    }
+
+    #[test]
+    fn code_span_past_comraks_backtick_cache_is_recognised() {
+        let t = lex("x `` y `a` z `b`.\n", Tier::Unicode);
+        let Token::Paragraph { tokens } = &t[0] else {
+            panic!("{t:?}")
+        };
+        let spans = tokens
+            .iter()
+            .filter(|x| matches!(x, Token::Codespan { .. }))
+            .count();
+        assert_eq!(spans, 2, "{tokens:?}");
+        let t = lex("x \\`a` b\n", Tier::Unicode);
+        let Token::Paragraph { tokens } = &t[0] else {
+            panic!("{t:?}")
+        };
+        assert!(!tokens.iter().any(|x| matches!(x, Token::Codespan { .. })));
+    }
+
+    #[test]
+    fn indented_blank_after_quote_in_item_is_the_quotes_space() {
+        let t = lex("- a\n\n  > q\n    \n- b\n", Tier::Unicode);
+        let Token::List { items, .. } = &t[0] else {
+            panic!("{t:?}")
+        };
+        let Some(Token::Blockquote { tokens }) = items[0].tokens.last() else {
+            panic!("{:?}", items[0].tokens)
+        };
+        assert_eq!(tokens.last(), Some(&Token::Space));
+        let t = lex("- a\n\n  > q\n  \n- b\n", Tier::Unicode);
+        let Token::List { items, .. } = &t[0] else {
+            panic!("{t:?}")
+        };
+        let Some(Token::Blockquote { tokens }) = items[0].tokens.last() else {
+            panic!("{:?}", items[0].tokens)
+        };
+        assert_ne!(
+            tokens.last(),
+            Some(&Token::Space),
+            "a dedented-empty line is no space"
         );
     }
 
