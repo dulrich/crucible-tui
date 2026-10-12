@@ -162,6 +162,17 @@ bullets, so it stayed green while 250 of 256 real files overflowed.
 
 **The corpora are the user's real data. Open them read-only; never write to them.**
 
+#### The rust-port binding instruments (rev 5 of `plans/mdview-rust-port.md`)
+
+WP-9's binding run is the **T2 lexer-diff plus a risk-targeted render sample**, not the all-combo T2 E2E, by user ruling of 2026-10-12: on T1 every render-level diff traced back to a lexer site, and `render-diff --input tokens` feeds both renderers the same tokens, so lexer and render are verified separately.
+
+- `scripts/lexer-diff.ts --sites-out <file>` writes every site, attributed or not, as JSONL `{file, tier, path, id | disallowed | error}`. A predicate collision is a per-file **error** naming the site, and the run continues; it used to abort with no file named. The full T2 corpus (~40k files, both tiers) takes about 70 s.
+- `scripts/risk-sample.ts --manifest <T2> --sites <jsonl> --out <sample.json>` writes an explicit-path manifest.
+  - **Take-all signals:** every file with a lexer site, degraded frontmatter, a control byte, CRLF/BOM, or a table of 9+ columns.
+  - **Capped signals** (`--per-signal`, default 60, ordered by sha256 of the path): common risky constructs.
+  - It hard-codes no location: the output root is the deepest directory common to the chosen files.
+- The sample's all-combo `render-diff --input tokens` run (P0–P4) takes about 95 min for ~1.3k files.
+
 #### The real validation corpus is private, and this repo does not know where it is
 
 The manifest that actually exercises this tool against ~44.5k real files — an Obsidian
