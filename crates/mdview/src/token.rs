@@ -13,6 +13,8 @@
 
 use serde::Serialize;
 
+use crate::text::Align;
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "parity-tokens", derive(serde::Deserialize))]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -31,7 +33,7 @@ pub enum Token {
     Table {
         header: Vec<TableCell>,
         rows: Vec<Vec<TableCell>>,
-        align: Vec<Option<String>>,
+        align: Vec<Option<Align>>,
     },
     Blockquote {
         tokens: Vec<Token>,

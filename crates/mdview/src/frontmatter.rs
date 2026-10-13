@@ -18,7 +18,7 @@ use regex::Regex;
 use yaml_rust2::parser::{Event, Parser};
 use yaml_rust2::scanner::TScalarStyle;
 
-use crate::style::{SgrMode, StyleName, create_styler, style_span};
+use crate::style::{Sgr, StyleName, create_styler, style_span};
 use crate::text::{JS_WS_CLASS, js_trim, js_trim_end, utf16_len};
 use crate::width::Measure;
 
@@ -560,7 +560,7 @@ pub fn parse_frontmatter(meta: &str) -> Result<JsValue, String> {
 // The formatter: `TS_BASELINE` `src/frontmatter.ts`, transcribed.
 // ---------------------------------------------------------------------------------------------
 
-fn dim(text: &str, sgr: SgrMode) -> String {
+fn dim(text: &str, sgr: Sgr) -> String {
     style_span(sgr, &create_styler(StyleName::Dim, None), text)
 }
 
@@ -673,7 +673,7 @@ fn format_mapping(
     target: i64,
     depth: usize,
     measure: Measure,
-    sgr: SgrMode,
+    sgr: Sgr,
 ) -> String {
     let entries = record.entries();
     if entries.is_empty() {
@@ -730,7 +730,7 @@ pub fn format_meta_block_detailed(
     meta: &str,
     target_width: usize,
     measure: Measure,
-    sgr: SgrMode,
+    sgr: Sgr,
 ) -> MetaBlockResult {
     let target = to_i64(target_width);
     match parse_frontmatter(meta) {
@@ -788,7 +788,7 @@ mod tests {
     }
 
     fn fmt(meta: &str, width: usize) -> MetaBlockResult {
-        format_meta_block_detailed(meta, width, crate::width::NARROW_MEASURE, SgrMode::None)
+        format_meta_block_detailed(meta, width, crate::width::NARROW_MEASURE, Sgr::None)
     }
 
     #[test]
@@ -958,8 +958,7 @@ mod tests {
 
     #[test]
     fn dim_wraps_keys_and_echo_under_colour() {
-        let r =
-            format_meta_block_detailed("a: 1", 80, crate::width::NARROW_MEASURE, SgrMode::Formats);
+        let r = format_meta_block_detailed("a: 1", 80, crate::width::NARROW_MEASURE, Sgr::Formats);
         assert_eq!(r.text, "\u{1b}[2ma\u{1b}[22m: 1");
     }
 }

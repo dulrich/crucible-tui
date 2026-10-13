@@ -49,40 +49,31 @@ fn follow_wiki_link(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::LayoutContextInit;
-    use crate::glyphs::UNICODE_GLYPHS;
-    use crate::lang::{AliasOnlySupport, FenceLanguageResolver};
-    use crate::style::SgrMode;
-    use crate::width::NARROW_MEASURE;
+    use crate::context::{LayoutContextInit, test_init};
+    use crate::style::Sgr;
     use std::rc::Rc;
 
-    fn ctx(sgr: SgrMode, hyperlinks: bool, resolver: bool) -> LayoutContext {
+    fn ctx(sgr: Sgr, hyperlinks: bool, resolver: bool) -> LayoutContext {
         LayoutContext::new(LayoutContextInit {
-            width: 80,
-            glyphs: &UNICODE_GLYPHS,
-            measure: NARROW_MEASURE,
-            resolve_fence_language: FenceLanguageResolver::builtin(Rc::new(AliasOnlySupport)),
             resolve_wiki_link: resolver.then(|| {
                 Rc::new(|slug: &str, _f: Option<&str>| Some(format!("file:///{slug}.md")))
                     as crate::context::WikiLinkResolver
             }),
-            emoji: true,
-            sgr,
             hyperlinks: Some(hyperlinks),
-            tmux: None,
+            ..test_init(80, sgr)
         })
     }
 
     #[test]
     fn label_styles_cyan_underline_and_embeds_prefix() {
-        let c = ctx(SgrMode::Full, false, false);
+        let c = ctx(Sgr::Full, false, false);
         assert_eq!(
             style_wiki_label(&c, "s", None, false, "s"),
             "\u{1b}[36m\u{1b}[4ms\u{1b}[24m\u{1b}[39m"
         );
-        let plain = ctx(SgrMode::None, false, false);
+        let plain = ctx(Sgr::None, false, false);
         assert_eq!(style_wiki_label(&plain, "s", None, true, "s"), "embed: s");
-        let formats = ctx(SgrMode::Formats, false, false);
+        let formats = ctx(Sgr::Formats, false, false);
         assert_eq!(
             style_wiki_label(&formats, "s", None, false, "s"),
             "\u{1b}[4ms\u{1b}[24m"
@@ -91,12 +82,12 @@ mod tests {
 
     #[test]
     fn a_resolver_links_only_under_hyperlinks() {
-        let on = ctx(SgrMode::None, true, true);
+        let on = ctx(Sgr::None, true, true);
         assert_eq!(
             style_wiki_label(&on, "n", None, false, "n"),
             "\u{1b}]8;;file:///n.md\u{7}n\u{1b}]8;;\u{7}"
         );
-        let off = ctx(SgrMode::None, false, true);
+        let off = ctx(Sgr::None, false, true);
         assert_eq!(style_wiki_label(&off, "n", None, false, "n"), "n");
     }
 }

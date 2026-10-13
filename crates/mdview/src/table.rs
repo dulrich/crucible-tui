@@ -10,7 +10,7 @@
 //! converts at its one slicing seam, `style_fragment`, with `text::utf16_to_byte`.
 
 use crate::glyphs::GlyphSet;
-use crate::render::Sgr as SgrMode;
+use crate::style::Sgr;
 use crate::style::{StyleName, apply_style, apply_style_chain, create_styler};
 use crate::text::{
     Align, js_trim_end, js_trim_start, pad_to_width, split_token, utf16_len, utf16_to_byte,
@@ -272,20 +272,11 @@ pub struct TableGrid {
     pub column_count: usize,
 }
 
-/// A marked `align` entry: `null` (and anything unrecognised) is `"left"` via `?? "left"`.
-fn align_of(value: Option<&str>) -> Align {
-    match value {
-        Some("center") => Align::Center,
-        Some("right") => Align::Right,
-        _ => Align::Left,
-    }
-}
-
 /// `tableGrid` over a table's three fields.
 pub fn table_grid(
     header: &[TableCell],
     rows: &[Vec<TableCell>],
-    align: &[Option<String>],
+    align: &[Option<Align>],
 ) -> TableGrid {
     let header: Vec<CellContent> = header.iter().map(cell_text).collect();
     let raw_rows: Vec<Vec<CellContent>> = rows
@@ -300,7 +291,7 @@ pub fn table_grid(
         row
     };
     let aligns = (0..column_count)
-        .map(|i| align_of(align.get(i).and_then(|a| a.as_deref())))
+        .map(|i| align.get(i).copied().flatten().unwrap_or_default())
         .collect();
     TableGrid {
         header: pad(header),
@@ -648,12 +639,12 @@ fn resolve_border_chars(glyphs: &GlyphSet) -> BorderChars {
 }
 
 /// `styleBorder` (`table.ts:745`): grey, hue-class, so dropped under `formats`.
-fn style_border(sgr: SgrMode, text: &str) -> String {
+fn style_border(sgr: Sgr, text: &str) -> String {
     apply_style(sgr, &create_styler(StyleName::Gray, None), text)
 }
 
 /// `styleHead` (`table.ts:746`): bold, format-class, so kept under `formats`.
-fn style_head(sgr: SgrMode, text: &str) -> String {
+fn style_head(sgr: Sgr, text: &str) -> String {
     apply_style(sgr, &create_styler(StyleName::Bold, None), text)
 }
 
@@ -663,7 +654,7 @@ fn style_head(sgr: SgrMode, text: &str) -> String {
 /// every `fragment.text.slice(a, b)` here becomes a byte slice through `utf16_to_byte`
 /// over the fragment text. A span edge inside a surrogate pair rounds to a char boundary
 /// rather than splitting the pair as JS would; no producer emits such an edge.
-fn style_fragment(fragment: &CellFragment, spans: &[CellSpan], sgr: SgrMode) -> String {
+fn style_fragment(fragment: &CellFragment, spans: &[CellSpan], sgr: Sgr) -> String {
     let Some(f_start) = fragment.start else {
         return fragment.text.clone();
     };
@@ -712,7 +703,7 @@ enum RuleKind {
 }
 
 /// `drawRule` (`table.ts:802`): one border-style wrap per column, as `cli-table3` emitted.
-fn draw_rule(widths: &[usize], chars: &BorderChars, kind: RuleKind, sgr: SgrMode) -> String {
+fn draw_rule(widths: &[usize], chars: &BorderChars, kind: RuleKind, sgr: Sgr) -> String {
     let (first, inner, fill, last) = match kind {
         RuleKind::Top => (chars.top_left, chars.top_mid, chars.top, chars.top_right),
         RuleKind::Mid => (chars.left_mid, chars.mid_mid, chars.mid, chars.right_mid),
@@ -743,7 +734,7 @@ fn draw_line(
     chars: &BorderChars,
     is_head: bool,
     measure: Measure,
-    sgr: SgrMode,
+    sgr: Sgr,
 ) -> String {
     let mut out = String::new();
     for (column, &width) in widths.iter().enumerate() {
@@ -800,7 +791,7 @@ fn compose_table(
     aligns: &[Align],
     chars: &BorderChars,
     measure: Measure,
-    sgr: SgrMode,
+    sgr: Sgr,
 ) -> String {
     let emit_row = |row: &[LaidOutCell<'_>], is_head: bool, out: &mut Vec<String>| {
         for line_index in 0..row_height(row) {
@@ -823,11 +814,11 @@ fn compose_table(
 pub fn render_table(
     header: &[TableCell],
     rows: &[Vec<TableCell>],
-    align: &[Option<String>],
+    align: &[Option<Align>],
     target_width: usize,
     glyphs: &GlyphSet,
     measure: Measure,
-    sgr: SgrMode,
+    sgr: Sgr,
 ) -> String {
     render_grid(
         &table_grid(header, rows, align),
@@ -866,7 +857,7 @@ pub fn render_grid<'g>(
     target_width: usize,
     glyphs: &GlyphSet,
     measure: Measure,
-    sgr: SgrMode,
+    sgr: Sgr,
 ) -> String {
     if grid.column_count == 0 {
         return String::new();

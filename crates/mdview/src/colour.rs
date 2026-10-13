@@ -7,9 +7,16 @@
 
 use std::collections::HashMap;
 
-pub use crate::render::Policy as ColourPolicy;
-pub use crate::render::Sgr as SgrMode;
+use crate::style::Sgr;
 use crate::text::{is_js_whitespace, js_trim};
+
+/// The resolved colour policy, passed explicitly — never read from the environment here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    pub sgr: Sgr,
+    pub hyperlinks: bool,
+    pub tmux: bool,
+}
 
 /// An environment handed in, never read here.
 pub type Env = HashMap<String, String>;
@@ -86,37 +93,37 @@ fn directive_from_env(env: &Env, name: &str, warn: &dyn Fn(&str)) -> Option<Colo
 fn noop(_: &str) {}
 
 /// `resolveColor`: the SGR level.
-pub fn resolve_color(input: &ColourPolicyInput<'_>) -> SgrMode {
+pub fn resolve_color(input: &ColourPolicyInput<'_>) -> Sgr {
     let empty = Env::new();
     let env = input.env.unwrap_or(&empty);
     let warn: &dyn Fn(&str) = input.warn.unwrap_or(&noop);
     match input.flag {
-        Some(ColourDirective::Always) => return SgrMode::Full,
-        Some(ColourDirective::Never) => return SgrMode::Formats,
+        Some(ColourDirective::Always) => return Sgr::Full,
+        Some(ColourDirective::Never) => return Sgr::Formats,
         _ => {}
     }
     match directive_from_env(env, "MDVIEW_COLOR", warn) {
-        Some(ColourDirective::Always) => return SgrMode::Full,
-        Some(ColourDirective::Never) => return SgrMode::Formats,
+        Some(ColourDirective::Always) => return Sgr::Full,
+        Some(ColourDirective::Never) => return Sgr::Formats,
         _ => {}
     }
     if env.contains_key("NO_COLOR") {
-        return SgrMode::None;
+        return Sgr::None;
     }
     match parse_force_color(env.get("FORCE_COLOR").map(String::as_str)) {
-        Some(ColourDirective::Always) => return SgrMode::Full,
-        Some(ColourDirective::Never) => return SgrMode::None,
+        Some(ColourDirective::Always) => return Sgr::Full,
+        Some(ColourDirective::Never) => return Sgr::None,
         _ => {}
     }
     match input.config {
-        Some(ColourDirective::Always) => return SgrMode::Full,
-        Some(ColourDirective::Never) => return SgrMode::Formats,
+        Some(ColourDirective::Always) => return Sgr::Full,
+        Some(ColourDirective::Never) => return Sgr::Formats,
         _ => {}
     }
     if input.is_tty == Some(true) {
-        SgrMode::Full
+        Sgr::Full
     } else {
-        SgrMode::None
+        Sgr::None
     }
 }
 
@@ -232,9 +239,9 @@ pub fn resolve_tmux(env: &Env) -> bool {
 }
 
 /// `resolveColourPolicy`.
-pub fn resolve_colour_policy(input: &ColourPolicyInput<'_>) -> ColourPolicy {
+pub fn resolve_colour_policy(input: &ColourPolicyInput<'_>) -> Policy {
     let empty = Env::new();
-    ColourPolicy {
+    Policy {
         sgr: resolve_color(input),
         hyperlinks: resolve_hyperlinks(&HyperlinkInput {
             env: input.env,
@@ -266,7 +273,7 @@ mod tests {
         config: Option<ColourDirective>,
         e: &Env,
         tty: bool,
-    ) -> SgrMode {
+    ) -> Sgr {
         resolve_color(&ColourPolicyInput {
             flag,
             config,
@@ -305,13 +312,13 @@ mod tests {
     #[test]
     fn colour_precedence_matrix() {
         let e = Env::new();
-        assert_eq!(color(None, None, &e, false), SgrMode::None);
-        assert_eq!(color(None, None, &e, true), SgrMode::Full);
+        assert_eq!(color(None, None, &e, false), Sgr::None);
+        assert_eq!(color(None, None, &e, true), Sgr::Full);
         assert_eq!(
             color(Some(Always), None, &env(&[("NO_COLOR", "1")]), false),
-            SgrMode::Full
+            Sgr::Full
         );
-        assert_eq!(color(Some(Never), None, &e, true), SgrMode::Formats);
+        assert_eq!(color(Some(Never), None, &e, true), Sgr::Formats);
         assert_eq!(
             color(
                 None,
@@ -319,7 +326,7 @@ mod tests {
                 &env(&[("MDVIEW_COLOR", "never"), ("FORCE_COLOR", "3")]),
                 true
             ),
-            SgrMode::Formats
+            Sgr::Formats
         );
         assert_eq!(
             color(
@@ -328,22 +335,22 @@ mod tests {
                 &env(&[("NO_COLOR", ""), ("FORCE_COLOR", "3")]),
                 true
             ),
-            SgrMode::None
+            Sgr::None
         );
         assert_eq!(
             color(None, None, &env(&[("FORCE_COLOR", "0")]), true),
-            SgrMode::None
+            Sgr::None
         );
         assert_eq!(
             color(None, None, &env(&[("FORCE_COLOR", "1")]), false),
-            SgrMode::Full
+            Sgr::Full
         );
-        assert_eq!(color(None, Some(Never), &e, true), SgrMode::Formats);
+        assert_eq!(color(None, Some(Never), &e, true), Sgr::Formats);
         assert_eq!(
             color(None, Some(Always), &env(&[("FORCE_COLOR", "0")]), false),
-            SgrMode::None
+            Sgr::None
         );
-        assert_eq!(color(None, Some(Auto), &e, true), SgrMode::Full);
+        assert_eq!(color(None, Some(Auto), &e, true), Sgr::Full);
     }
 
     #[test]
@@ -357,7 +364,7 @@ mod tests {
             warn: Some(&warn),
             ..Default::default()
         });
-        assert_eq!(got, SgrMode::Full);
+        assert_eq!(got, Sgr::Full);
         assert_eq!(
             warnings.borrow().as_slice(),
             [
@@ -476,8 +483,8 @@ mod tests {
         });
         assert_eq!(
             p,
-            ColourPolicy {
-                sgr: SgrMode::Full,
+            Policy {
+                sgr: Sgr::Full,
                 hyperlinks: false,
                 tmux: true
             }

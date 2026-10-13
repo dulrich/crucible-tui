@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::glyphs::GlyphSet;
 use crate::lang::FenceLanguageResolver;
-use crate::style::SgrMode;
+use crate::style::Sgr;
 use crate::width::Measure;
 
 /// Where a `[[slug]]` (with an optional `#fragment`) points, if anywhere.
@@ -53,7 +53,7 @@ pub struct LayoutContextInit {
     pub resolve_fence_language: FenceLanguageResolver,
     pub resolve_wiki_link: Option<WikiLinkResolver>,
     pub emoji: bool,
-    pub sgr: SgrMode,
+    pub sgr: Sgr,
     pub hyperlinks: Option<bool>,
     pub tmux: Option<bool>,
 }
@@ -67,7 +67,7 @@ pub struct LayoutContext {
     pub resolve_fence_language: FenceLanguageResolver,
     pub resolve_wiki_link: Option<WikiLinkResolver>,
     pub emoji: bool,
-    pub sgr: SgrMode,
+    pub sgr: Sgr,
     pub color: bool,
     pub hyperlinks: bool,
     pub tmux: bool,
@@ -85,40 +85,51 @@ impl LayoutContext {
             resolve_wiki_link: init.resolve_wiki_link,
             emoji: init.emoji,
             sgr: init.sgr,
-            color: init.sgr != SgrMode::None,
+            color: init.sgr != Sgr::None,
             hyperlinks: init.hyperlinks.unwrap_or(false),
             tmux: init.tmux.unwrap_or(false),
         }
     }
 }
 
+/// The shared test fixture: Unicode glyphs, narrow measure, built-in fence aliases, no wiki-link
+/// resolver, emoji on, and hyperlinks/tmux unset. Vary anything else with struct-update syntax
+/// over [`test_init`].
+#[cfg(test)]
+pub(crate) fn test_init(width: usize, sgr: Sgr) -> LayoutContextInit {
+    LayoutContextInit {
+        width,
+        glyphs: &crate::glyphs::UNICODE_GLYPHS,
+        measure: crate::width::NARROW_MEASURE,
+        resolve_fence_language: FenceLanguageResolver::builtin(),
+        resolve_wiki_link: None,
+        emoji: true,
+        sgr,
+        hyperlinks: None,
+        tmux: None,
+    }
+}
+
+/// [`test_init`], built.
+#[cfg(test)]
+pub(crate) fn test_ctx(width: usize, sgr: Sgr) -> LayoutContext {
+    LayoutContext::new(test_init(width, sgr))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::glyphs::UNICODE_GLYPHS;
-    use crate::lang::AliasOnlySupport;
-    use crate::width::NARROW_MEASURE;
 
-    fn ctx(sgr: SgrMode) -> LayoutContext {
-        LayoutContext::new(LayoutContextInit {
-            width: 80,
-            glyphs: &UNICODE_GLYPHS,
-            measure: NARROW_MEASURE,
-            resolve_fence_language: FenceLanguageResolver::builtin(Rc::new(AliasOnlySupport)),
-            resolve_wiki_link: None,
-            emoji: true,
-            sgr,
-            hyperlinks: None,
-            tmux: None,
-        })
+    fn ctx(sgr: Sgr) -> LayoutContext {
+        test_ctx(80, sgr)
     }
 
     #[test]
     fn color_is_derived_and_flags_default_off() {
-        assert!(ctx(SgrMode::Formats).color);
-        assert!(ctx(SgrMode::Full).color);
-        assert!(!ctx(SgrMode::None).color);
-        let c = ctx(SgrMode::Full);
+        assert!(ctx(Sgr::Formats).color);
+        assert!(ctx(Sgr::Full).color);
+        assert!(!ctx(Sgr::None).color);
+        let c = ctx(Sgr::Full);
         assert!(!c.hyperlinks && !c.tmux);
         assert_eq!(
             c.resolve_fence_language
@@ -130,7 +141,7 @@ mod tests {
 
     #[test]
     fn prefix_stack_sums_and_counts() {
-        let c = ctx(SgrMode::None);
+        let c = ctx(Sgr::None);
         assert_eq!(c.prefix.width(), 0);
         c.prefix.push(PrefixEntry {
             columns: 4,

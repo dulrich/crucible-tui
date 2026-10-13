@@ -32,8 +32,7 @@ use syntect::easy::ScopeRangeIterator;
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
-use crate::lang::LanguageSupport;
-use crate::style::{SgrMode, StyleName, apply_style_chain};
+use crate::style::{Sgr, StyleName, apply_style_chain};
 
 use StyleName::{Blue, Bold, Cyan, Dim, Gray, Green, Italic, Red, Underline, Yellow};
 
@@ -194,16 +193,6 @@ pub fn supports_language(name: &str) -> bool {
     plaintext(&lower) || (!lower.is_empty() && find_syntax(&lower).is_some())
 }
 
-/// The fence-language support oracle `lang.rs`'s resolver asks: [`supports_language`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SyntectSupport;
-
-impl LanguageSupport for SyntectSupport {
-    fn supports(&self, language: &str) -> bool {
-        supports_language(language)
-    }
-}
-
 /// The auto branch's candidates (`highlightAuto` tries every registered grammar; syntect has
 /// no relevance score, so this is a bounded list of the corpus's common fence languages).
 const AUTO_CANDIDATES: &[&str] = &[
@@ -299,7 +288,7 @@ fn pick_runs(code: &str, language: Option<&str>) -> Option<Vec<Run>> {
     best.map(|(_, r)| r)
 }
 
-fn push_styled(out: &mut String, sgr: SgrMode, chain: &[StyleName], text: &str) {
+fn push_styled(out: &mut String, sgr: Sgr, chain: &[StyleName], text: &str) {
     for (i, part) in text.split('\n').enumerate() {
         if i > 0 {
             out.push('\n');
@@ -318,7 +307,7 @@ fn push_styled(out: &mut String, sgr: SgrMode, chain: &[StyleName], text: &str) 
 /// `highlightToAnsi(ctx, code, language)`. Never fails: a grammar error degrades the rest of
 /// the fence to plain text rather than throwing (the TS `catch` path is unreachable here,
 /// because `resolveFenceLanguage` only hands over a supported name or `plaintext`).
-pub fn highlight_to_ansi(sgr: SgrMode, code: &str, language: Option<&str>) -> String {
+pub fn highlight_to_ansi(sgr: Sgr, code: &str, language: Option<&str>) -> String {
     let text = normalize_text(code);
     let Some(runs) = pick_runs(&text, language) else {
         return text;
@@ -353,14 +342,14 @@ mod tests {
             ("x", Some("")),
             ("plain", Some("plaintext")),
         ] {
-            let out = highlight_to_ansi(SgrMode::Full, code, lang);
+            let out = highlight_to_ansi(Sgr::Full, code, lang);
             assert_eq!(strip_ansi(&out), code, "{lang:?}");
         }
     }
 
     #[test]
     fn colour_is_applied_for_a_known_language() {
-        let out = highlight_to_ansi(SgrMode::Full, "let x = 1; // hi", Some("javascript"));
+        let out = highlight_to_ansi(Sgr::Full, "let x = 1; // hi", Some("javascript"));
         assert!(out.contains("\u{1b}[34m"), "{out:?}");
         assert!(out.contains("\u{1b}[32m"), "{out:?}");
     }
@@ -369,7 +358,7 @@ mod tests {
     fn vendored_powershell_grammar_highlights() {
         let code = "# greet\n$Name = 'World'\nWrite-Host \"Hello, $Name\"";
         for lang in ["powershell", "ps", "ps1"] {
-            let out = highlight_to_ansi(SgrMode::Full, code, Some(lang));
+            let out = highlight_to_ansi(Sgr::Full, code, Some(lang));
             assert!(out.contains('\u{1b}'), "{lang}: {out:?}");
             assert_eq!(crate::list_lines::strip_ansi(&out), code, "{lang}");
         }
@@ -378,11 +367,11 @@ mod tests {
     #[test]
     fn plaintext_and_off_are_plain() {
         assert_eq!(
-            highlight_to_ansi(SgrMode::Full, "let x", Some("plaintext")),
+            highlight_to_ansi(Sgr::Full, "let x", Some("plaintext")),
             "let x"
         );
         assert_eq!(
-            highlight_to_ansi(SgrMode::None, "let x = 1;", Some("rust")),
+            highlight_to_ansi(Sgr::None, "let x = 1;", Some("rust")),
             "let x = 1;"
         );
     }
@@ -391,14 +380,14 @@ mod tests {
     fn carriage_returns_normalize_and_nul_drops() {
         assert_eq!(normalize_text("a\r\nb\rc\u{0}d"), "a\nb\ncd");
         assert_eq!(
-            strip_ansi(&highlight_to_ansi(SgrMode::Full, "a\r\nb", Some("rust"))),
+            strip_ansi(&highlight_to_ansi(Sgr::Full, "a\r\nb", Some("rust"))),
             "a\nb"
         );
     }
 
     #[test]
     fn no_span_straddles_a_newline() {
-        let out = highlight_to_ansi(SgrMode::Full, "/* a\nb */", Some("c"));
+        let out = highlight_to_ansi(Sgr::Full, "/* a\nb */", Some("c"));
         for line in out.split('\n') {
             assert!(!line.ends_with('\u{1b}'));
         }

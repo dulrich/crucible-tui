@@ -24,8 +24,14 @@ use std::sync::LazyLock;
 use regex::Regex;
 use unicode_segmentation::UnicodeSegmentation;
 
-pub use crate::render::Ambiguous as AmbiguousWidth;
 use crate::text::utf16_len;
+
+/// East Asian Ambiguous width (mirrors `TS_BASELINE` `src/width.ts`'s `AmbiguousWidth`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ambiguous {
+    Narrow,
+    Wide,
+}
 
 /// `ansi-regex@6.2.2`'s pattern, which both `TS_BASELINE` `src/width.ts`'s `ANSI_SEQUENCE` and
 /// `strip-ansi` use. `\d` is spelled `[0-9]` (the `regex` crate's `\d` is Unicode).
@@ -219,7 +225,7 @@ thread_local! {
 /// A display-width ruler with its ambiguous mode attached (`TS_BASELINE` `src/width.ts`'s `Measure`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Measure {
-    pub ambiguous: AmbiguousWidth,
+    pub ambiguous: Ambiguous,
 }
 
 impl Measure {
@@ -231,8 +237,8 @@ impl Measure {
     /// `{ambiguousIsNarrow: false}`.
     pub fn width(&self, text: &str) -> usize {
         let plain = strip_ansi_regex(text);
-        let slot = usize::from(self.ambiguous == AmbiguousWidth::Wide);
-        let narrow = self.ambiguous == AmbiguousWidth::Narrow;
+        let slot = usize::from(self.ambiguous == Ambiguous::Wide);
+        let narrow = self.ambiguous == Ambiguous::Narrow;
         CACHES.with(|caches| {
             let mut caches = caches.borrow_mut();
             let cache = &mut caches[slot];
@@ -255,22 +261,22 @@ impl Measure {
 }
 
 pub const NARROW_MEASURE: Measure = Measure {
-    ambiguous: AmbiguousWidth::Narrow,
+    ambiguous: Ambiguous::Narrow,
 };
 pub const WIDE_MEASURE: Measure = Measure {
-    ambiguous: AmbiguousWidth::Wide,
+    ambiguous: Ambiguous::Wide,
 };
 
 /// `measureFor`.
-pub fn measure_for(ambiguous: AmbiguousWidth) -> Measure {
+pub fn measure_for(ambiguous: Ambiguous) -> Measure {
     Measure { ambiguous }
 }
 
 /// `parseAmbiguousWidth`: exactly `narrow` or `wide`, anything else `None`.
-pub fn parse_ambiguous_width(value: Option<&str>) -> Option<AmbiguousWidth> {
+pub fn parse_ambiguous_width(value: Option<&str>) -> Option<Ambiguous> {
     match value {
-        Some("narrow") => Some(AmbiguousWidth::Narrow),
-        Some("wide") => Some(AmbiguousWidth::Wide),
+        Some("narrow") => Some(Ambiguous::Narrow),
+        Some("wide") => Some(Ambiguous::Wide),
         _ => None,
     }
 }
@@ -361,16 +367,13 @@ mod tests {
 
     #[test]
     fn parse_ambiguous_width_is_exact() {
-        assert_eq!(
-            parse_ambiguous_width(Some("wide")),
-            Some(AmbiguousWidth::Wide)
-        );
+        assert_eq!(parse_ambiguous_width(Some("wide")), Some(Ambiguous::Wide));
         assert_eq!(
             parse_ambiguous_width(Some("narrow")),
-            Some(AmbiguousWidth::Narrow)
+            Some(Ambiguous::Narrow)
         );
         assert_eq!(parse_ambiguous_width(Some("WIDE")), None);
         assert_eq!(parse_ambiguous_width(None), None);
-        assert_eq!(measure_for(AmbiguousWidth::Wide), WIDE_MEASURE);
+        assert_eq!(measure_for(Ambiguous::Wide), WIDE_MEASURE);
     }
 }

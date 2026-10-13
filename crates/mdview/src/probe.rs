@@ -26,7 +26,7 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::colour::Env;
-use crate::width::{AmbiguousWidth, Measure, NARROW_MEASURE, measure_for, parse_ambiguous_width};
+use crate::width::{Ambiguous, Measure, NARROW_MEASURE, measure_for, parse_ambiguous_width};
 
 /// The test glyph: EM DASH, East Asian Ambiguous.
 pub const PROBE_GLYPH: &str = "—";
@@ -128,14 +128,14 @@ pub fn terminal_identity(env: &Env) -> String {
 /// A cached answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedAnswer {
-    pub ambiguous: AmbiguousWidth,
+    pub ambiguous: Ambiguous,
     pub probed_at: String,
 }
 
-fn ambiguous_str(a: AmbiguousWidth) -> &'static str {
+fn ambiguous_str(a: Ambiguous) -> &'static str {
     match a {
-        AmbiguousWidth::Narrow => "narrow",
-        AmbiguousWidth::Wide => "wide",
+        Ambiguous::Narrow => "narrow",
+        Ambiguous::Wide => "wide",
     }
 }
 
@@ -196,11 +196,7 @@ fn iso_from_millis(ms: i64) -> String {
 }
 
 /// `writeCachedAmbiguousWidth`: merge one entry, write atomically; `false` on any I/O failure.
-pub fn write_cached_ambiguous_width(
-    identity: &str,
-    ambiguous: AmbiguousWidth,
-    path: &Path,
-) -> bool {
+pub fn write_cached_ambiguous_width(identity: &str, ambiguous: Ambiguous, path: &Path) -> bool {
     let mut entries = Map::new();
     if let Ok(raw) = std::fs::read_to_string(path)
         && let Ok(Value::Object(parsed)) = serde_json::from_str::<Value>(&raw)
@@ -242,7 +238,7 @@ pub fn write_cached_ambiguous_width(
 /// One probe's full report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeReport {
-    pub ambiguous: Option<AmbiguousWidth>,
+    pub ambiguous: Option<Ambiguous>,
     pub detail: String,
     pub reply: Option<String>,
     pub columns: Option<(u32, u32)>,
@@ -399,11 +395,11 @@ pub fn probe_ambiguous_width(term: &mut dyn ProbeTerminal, timeout_ms: u64) -> P
     let glyph_columns = i64::from(after.column) - i64::from(before.column);
     let (ambiguous, detail) = match glyph_columns {
         1 => (
-            Some(AmbiguousWidth::Narrow),
+            Some(Ambiguous::Narrow),
             format!("the terminal rendered {PROBE_GLYPH} in 1 column"),
         ),
         2 => (
-            Some(AmbiguousWidth::Wide),
+            Some(Ambiguous::Wide),
             format!("the terminal rendered {PROBE_GLYPH} in 2 columns"),
         ),
         n => (
@@ -509,7 +505,7 @@ pub enum AmbiguousSource {
 /// `resolveAmbiguousWidth`'s result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AmbiguousResolution {
-    pub ambiguous: AmbiguousWidth,
+    pub ambiguous: Ambiguous,
     pub measure: Measure,
     pub source: AmbiguousSource,
     pub detail: String,
@@ -545,7 +541,7 @@ pub fn resolve_ambiguous_width(options: ResolveAmbiguousOptions<'_>) -> Ambiguou
     let cache_path = options
         .cache_path
         .unwrap_or_else(|| resolve_ambiguous_cache_path(env));
-    let make = |ambiguous: AmbiguousWidth, source, detail: String, probe| AmbiguousResolution {
+    let make = |ambiguous: Ambiguous, source, detail: String, probe| AmbiguousResolution {
         ambiguous,
         measure: measure_for(ambiguous),
         source,
@@ -594,7 +590,7 @@ pub fn resolve_ambiguous_width(options: ResolveAmbiguousOptions<'_>) -> Ambiguou
         }
         let detail = format!("{}; falling back to narrow", report.detail);
         let mut r = make(
-            AmbiguousWidth::Narrow,
+            Ambiguous::Narrow,
             AmbiguousSource::Default,
             detail,
             Some(report),
@@ -603,7 +599,7 @@ pub fn resolve_ambiguous_width(options: ResolveAmbiguousOptions<'_>) -> Ambiguou
         return r;
     }
     make(
-        AmbiguousWidth::Narrow,
+        Ambiguous::Narrow,
         AmbiguousSource::Default,
         "no override, no cached answer, and no live probe (a probe needs both stdin and stdout to be TTYs, and never runs under --check or the sweep) — narrow is what Unicode TR11 recommends when the context cannot be established".into(),
         None,
@@ -674,7 +670,7 @@ mod tests {
     fn narrow_and_wide_terminals() {
         let mut f = Fake::new(&[Some("\u{1b}[5;1R"), Some("\u{1b}[5;2R")]);
         let r = probe_ambiguous_width(&mut f, 50);
-        assert_eq!(r.ambiguous, Some(AmbiguousWidth::Narrow));
+        assert_eq!(r.ambiguous, Some(Ambiguous::Narrow));
         assert_eq!(r.columns, Some((1, 2)));
         assert_eq!(r.reply.as_deref(), Some("\\e[5;2R"));
         assert_eq!(
@@ -685,7 +681,7 @@ mod tests {
         let mut f = Fake::new(&[Some("\u{1b}[5;1R"), Some("\u{1b}[5;3R")]);
         assert_eq!(
             probe_ambiguous_width(&mut f, 50).ambiguous,
-            Some(AmbiguousWidth::Wide)
+            Some(Ambiguous::Wide)
         );
         let mut f = Fake::new(&[Some("\u{1b}[5;1R"), Some("\u{1b}[5;5R")]);
         let r = probe_ambiguous_width(&mut f, 50);
@@ -779,19 +775,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mdview-probe-test-{}", std::process::id()));
         let path = dir.join("nested").join("ambiguous-width.json");
         assert_eq!(read_cached_ambiguous_width("id", &path), None);
-        assert!(write_cached_ambiguous_width(
-            "id",
-            AmbiguousWidth::Wide,
-            &path
-        ));
+        assert!(write_cached_ambiguous_width("id", Ambiguous::Wide, &path));
         assert!(write_cached_ambiguous_width(
             "other",
-            AmbiguousWidth::Narrow,
+            Ambiguous::Narrow,
             &path
         ));
         assert_eq!(
             read_cached_ambiguous_width("id", &path).map(|c| c.ambiguous),
-            Some(AmbiguousWidth::Wide)
+            Some(Ambiguous::Wide)
         );
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -802,7 +794,7 @@ mod tests {
 
         let e = env(&[]);
         let id = terminal_identity(&e);
-        write_cached_ambiguous_width(&id, AmbiguousWidth::Wide, &path);
+        write_cached_ambiguous_width(&id, Ambiguous::Wide, &path);
         let r = resolve_ambiguous_width(ResolveAmbiguousOptions {
             env: Some(&e),
             cache_path: Some(path.clone()),
@@ -810,7 +802,7 @@ mod tests {
         });
         assert_eq!(
             (r.source, r.ambiguous),
-            (AmbiguousSource::Cache, AmbiguousWidth::Wide)
+            (AmbiguousSource::Cache, Ambiguous::Wide)
         );
         let ov = env(&[("MDVIEW_AMBIGUOUS", "narrow")]);
         let r = resolve_ambiguous_width(ResolveAmbiguousOptions {
@@ -831,7 +823,7 @@ mod tests {
         });
         assert_eq!(
             (r.source, r.ambiguous),
-            (AmbiguousSource::Default, AmbiguousWidth::Narrow)
+            (AmbiguousSource::Default, Ambiguous::Narrow)
         );
         assert!(r.detail.ends_with("; falling back to narrow"));
         std::fs::write(&path, "{not json").unwrap();

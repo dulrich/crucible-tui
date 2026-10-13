@@ -106,12 +106,27 @@ pub fn split_token(token: &str, width: usize, measure: Measure) -> Vec<String> {
 }
 
 /// Which side of a cell the slack goes on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// Serialized lowercase (`"left"`/`"center"`/`"right"`), the parity wire spelling. On
+/// deserialization any unrecognised string is `Left` — marked's `?? "left"` fallback — never an
+/// error (audit E1 of `plans/rust-port-code-quality-remediation.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Align {
     #[default]
     Left,
     Center,
     Right,
+}
+
+impl<'de> serde::Deserialize<'de> for Align {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "center" => Align::Center,
+            "right" => Align::Right,
+            _ => Align::Left,
+        })
+    }
 }
 
 /// Pad `text` out to `width` display columns; never truncates. Centre splits an odd
@@ -140,6 +155,24 @@ pub fn pad_left(text: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::width::WIDE_MEASURE;
+
+    #[test]
+    fn align_round_trips_lowercase_and_falls_back_to_left() {
+        let parsed: Vec<Option<Align>> =
+            serde_json::from_str(r#"[null, "left", "center", "right", "justify"]"#).expect("ok");
+        assert_eq!(
+            parsed,
+            [
+                None,
+                Some(Align::Left),
+                Some(Align::Center),
+                Some(Align::Right),
+                Some(Align::Left)
+            ]
+        );
+        let spelled = serde_json::to_string(&[None, Some(Align::Center), Some(Align::Right)]);
+        assert_eq!(spelled.expect("ok"), r#"[null,"center","right"]"#);
+    }
 
     #[test]
     fn js_trim_includes_bom_and_excludes_nel() {

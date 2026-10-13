@@ -508,7 +508,7 @@ mod tests {
 
     use super::*;
     use crate::glyphs::{ASCII_GLYPHS, UNICODE_GLYPHS};
-    use crate::render::{Ambiguous, Policy, RenderOptions, RenderOutput, Sgr, Tier, render};
+    use crate::render::{Policy, RenderOptions, RenderOutput, Sgr, Tier, render};
     use crate::width::NARROW_MEASURE;
 
     const S: char = '\0';
@@ -525,17 +525,13 @@ mod tests {
 
     fn doc(source: &str, width: usize, tier: Tier, sgr: Sgr) -> RenderOutput {
         let options = RenderOptions {
-            width,
             tier,
-            ambiguous: Ambiguous::Narrow,
             policy: Policy {
                 sgr,
                 hyperlinks: false,
                 tmux: false,
             },
-            emoji: None,
-            path: None,
-            highlight_as: Default::default(),
+            ..RenderOptions::plain(width)
         };
         render(source, None, &options).expect("renders")
     }

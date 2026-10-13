@@ -130,34 +130,6 @@ fn load_allowlist() -> std::collections::HashMap<String, String> {
         .collect()
 }
 
-fn options_of(record: &Value) -> mdview::render::RenderOptions {
-    use mdview::render::{Ambiguous, Policy, RenderOptions, Sgr, Tier};
-    let policy = &record["policy"];
-    RenderOptions {
-        width: usize::try_from(record["width"].as_u64().expect("width")).expect("width fits"),
-        tier: match record["tier"].as_str() {
-            Some("ascii") => Tier::Ascii,
-            _ => Tier::Unicode,
-        },
-        ambiguous: match record["ambiguous"].as_str() {
-            Some("wide") => Ambiguous::Wide,
-            _ => Ambiguous::Narrow,
-        },
-        policy: Policy {
-            sgr: match policy["sgr"].as_str() {
-                Some("full") => Sgr::Full,
-                Some("formats") => Sgr::Formats,
-                _ => Sgr::None,
-            },
-            hyperlinks: policy["hyperlinks"].as_bool().unwrap_or(false),
-            tmux: policy["tmux"].as_bool().unwrap_or(false),
-        },
-        emoji: record["emoji"].as_bool(),
-        path: None,
-        highlight_as: Default::default(),
-    }
-}
-
 /// D-C (WP-6a): colour-on fenced output is judged with SGR stripped. Same line count; every
 /// line outside a code range byte-identical; every line inside one equal once SGR is stripped.
 fn dc_equal(want: &str, got: &str, ranges: &[(usize, usize)]) -> bool {
@@ -184,7 +156,8 @@ fn golden_render_replay() {
     let mut failures = Vec::new();
     for record in &golden.records {
         let source = record["source"].as_str().expect("source");
-        let options = options_of(record);
+        let options = mdview::parity::parse_options(record)
+            .unwrap_or_else(|e| panic!("malformed golden record: {e}: {record}"));
         let hash = source_hash(source);
         match mdview::render::render(source, None, &options) {
             Err(e) => failures.push(format!("{hash} error {e}")),
