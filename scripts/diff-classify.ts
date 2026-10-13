@@ -8,7 +8,8 @@
  *
  * **WP-1 of `plans/mdview-rust-port.md`** added the policy and emoji axes, D-C's channels for
  * P2–P4 (`proseSha`, `echoSha`, `fenceStrippedSha`, the pairwise `fencePrefixOk`,
- * `sgrVocabOk`; a `textSha`/`codeContentSha`-only diff there is `allowedDC`, never a failure),
+ * `sgrVocabOk`; under `--expect b` a `textSha`/`codeContentSha`-only diff there is `allowedDC`,
+ * never a failure; under `--expect a` it is `disallowed` like any other diff),
  * and the non-vacuity counters with their `requireNonzero` gate. `computeComboRecord` is async
  * now and measures through a `Measurer` it is handed — the current checkout's measurement
  * code — rather than through the revision handle.
@@ -20,7 +21,6 @@
  * `./revision`; neither imports it back.
  */
 import { sha256Hex } from "./hash";
-import { CODE_CONTENT_CLAIMS } from "./divergences";
 import {
   emojiOf,
   policyOf,
@@ -336,16 +336,11 @@ export interface ClassificationSummary {
   allowedB: ComboDiff[];
   /**
    * P2–P4 only: diffs confined to `textSha`/`codeContentSha` while every D-C channel agrees —
-   * highlighter SGR inside fences and nothing else (D-C, `plans/mdview-rust-port.md`). Never a
-   * failure, always counted and printed.
+   * highlighter SGR inside fences and nothing else (D-C, `plans/mdview-rust-port.md`). Under
+   * `--expect b` only — under `--expect a` such a pair is `disallowed`. Never a failure, always
+   * counted and printed.
    */
   allowedDC: ComboDiff[];
-  /**
-   * Diffs a ratified `scripts/divergences.ts` entry claimed (`ComboRecord.attributed`, set
-   * pairwise by `scripts/render-diff.ts`). Never a failure; counted per id and printed. Class C
-   * is decided first and is never attributed away.
-   */
-  attributed: ComboDiff[];
   /** `expect === "b"` only: `(width, tier, ambiguous)` groups where overflow rose. */
   overflowRegressions: OverflowRegression[];
   /**
@@ -464,7 +459,6 @@ export function classifyDiffs(
       disallowed: [],
       allowedB: [],
       allowedDC: [],
-      attributed: [],
       overflowRegressions: [],
       detectorRegressions: [],
       emptyComparison: true,
@@ -481,7 +475,6 @@ export function classifyDiffs(
   const disallowed: ComboDiff[] = [];
   const allowedB: ComboDiff[] = [];
   const allowedDC: ComboDiff[] = [];
-  const attributed: ComboDiff[] = [];
   let diffedCombos = 0;
 
   for (const { before, after } of pairs) {
@@ -497,13 +490,6 @@ export function classifyDiffs(
       emoji: emojiOf(before),
     };
     const diff: ComboDiff = { key, channels, before, after };
-    if (after.attributed !== undefined && CODE_CONTENT_CLAIMS.has(after.attributed)) {
-      // The one exception to "class C is decided first": a ratified entry whose spec is a TS
-      // defect *inside* code output (`CODE_CONTENT_CLAIMS`, `scripts/divergences.ts`) — today
-      // `hljs-prototype-key`, whose predicate itself requires every other line to agree.
-      attributed.push(diff);
-      continue;
-    }
     if (isDcPolicy(policyOf(before))) {
       // D-C: the code-content analogue is the echo/fence-stripped/prefix/vocabulary channels;
       // a diff in textSha/codeContentSha alone is highlighter SGR and is allowed.
@@ -511,18 +497,13 @@ export function classifyDiffs(
         classC.push(diff);
         continue;
       }
-      if (channels.every((channel) => channel === "textSha" || channel === "codeContentSha")) {
+      // Under `--expect a` nothing may differ, so the D-C allowance applies to `--expect b` only.
+      if (expect === "b" && channels.every((channel) => channel === "textSha" || channel === "codeContentSha")) {
         allowedDC.push(diff);
         continue;
       }
     } else if (channels.includes("codeContentSha")) {
       classC.push(diff);
-      continue;
-    }
-    if (after.attributed !== undefined) {
-      // A ratified registry entry (`scripts/divergences.ts`) claimed the pair while both
-      // outputs were in hand — D-A, today. Class C above still wins over it.
-      attributed.push(diff);
       continue;
     }
     if (expect === "a") {
@@ -606,7 +587,6 @@ export function classifyDiffs(
     disallowed,
     allowedB,
     allowedDC,
-    attributed,
     overflowRegressions,
     detectorRegressions,
     emptyComparison,

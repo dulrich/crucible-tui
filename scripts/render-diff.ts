@@ -131,10 +131,8 @@ import {
   type GlyphTierName,
   type Measurer,
   type PolicyName,
-  type RenderOutput,
   type RevisionHandle,
 } from "./revision";
-import { attribute, type RenderSide, type RenderSite } from "./divergences";
 import { DEFAULT_WIDTHS, parseWidths } from "./sweep-options";
 
 // --- Baseline artifact ------------------------------------------------------------
@@ -634,10 +632,6 @@ async function renderPaired(
           );
           b.record.fencePrefixOk = fencePrefixesOk(a.output, b.output, echoCount, measurer);
         }
-        if (a.record && b.record && a.output && b.output) {
-          const id = attributeOutputs(a.output, b.output, { path: visit.file, tier: combo.tier, policy: combo.policy });
-          if (id !== null) b.record.attributed = id;
-        }
         return [a, b] as const;
       }),
     );
@@ -647,33 +641,6 @@ async function renderPaired(
     }
   });
   return { before, after, errorsA, errorsB, skippedRequireFree };
-}
-
-/**
- * Attribute one differing pair through the divergence registry (`scripts/divergences.ts`):
- * build its `RenderSite` from both outputs — text, `codeRanges` and each side's own
- * frontmatter facts — and return the registry id when a **ratified** entry claims it. `null`
- * when the outputs agree on text and `codeRanges`, when no entry matches, or when the matching
- * entry is unratified; the combo then classifies exactly as it did before attribution existed.
- * The bodies are in hand only here, for the one pair, and are never stored.
- */
-export function attributeOutputs(
-  a: RenderOutput,
-  b: RenderOutput,
-  context: { path: string; tier: GlyphTierName; policy: PolicyName },
-): string | null {
-  const sameRanges =
-    a.codeRanges.length === b.codeRanges.length &&
-    a.codeRanges.every(([start, end], i) => b.codeRanges[i]?.[0] === start && b.codeRanges[i]?.[1] === end);
-  if (a.text === b.text && sameRanges) return null;
-  const side = (output: RenderOutput): RenderSide => ({
-    text: output.text,
-    codeRanges: output.codeRanges,
-    ...(output.frontmatter !== undefined ? { frontmatter: output.frontmatter } : {}),
-  });
-  const site: RenderSite = { kind: "render", path: context.path, tier: context.tier, policy: context.policy, ts: side(a), rust: side(b) };
-  const attribution = attribute(site);
-  return "id" in attribution ? attribution.id : null;
 }
 
 export interface PairRecordsResult {
@@ -725,17 +692,6 @@ export function formatNonvacuity(before: NonvacuityCounters, after: NonvacuityCo
   ).join(" ")}`;
 }
 
-/** `render-diff: attributed <id>=N ...` (or `attributed none`) — printed on every run. */
-export function formatAttributed(diffs: ComboDiff[]): string {
-  const counts = new Map<string, number>();
-  for (const diff of diffs) {
-    const id = diff.after.attributed ?? "?";
-    counts.set(id, (counts.get(id) ?? 0) + 1);
-  }
-  const parts = [...counts].sort(([x], [y]) => x.localeCompare(y)).map(([id, n]) => `${id}=${n}`);
-  return `render-diff: attributed ${parts.length > 0 ? parts.join(" ") : "none"}`;
-}
-
 function printClassification(
   summary: ClassificationSummary,
   errorsBefore: number,
@@ -757,7 +713,6 @@ function printClassification(
       `detectorRegressions=${summary.detectorRegressions.length} errorsA=${errorsBefore} errorsB=${errorsAfter} ` +
       `unpairedA=${unpairedBefore} unpairedB=${unpairedAfter} ok=${summary.ok}`,
   );
-  console.log(formatAttributed(summary.attributed));
   for (const failure of summary.nonvacuityFailures) console.log(`  NON-VACUITY FAILURE: ${failure}`);
   if (unpairedBefore > 0 || unpairedAfter > 0) {
     console.log(

@@ -156,7 +156,7 @@ const steps: Step[] = [
   {
     // The Rust-vs-Rust regression differential over the T0 gate corpus, every policy: the
     // working tree against `HEAD`, both built with `parity-tokens` into the parity cache.
-    // Class-A identical, or a registry-attributed diff, or the step fails.
+    // Every combo class-A identical (`--expect a`), or the step fails.
     name: "render diff (T0, rust:HEAD vs rust:.)",
     run: () =>
       sh(["bun", "run", "scripts/render-diff.ts", "--rev-a", "rust:HEAD", "--rev-b", "rust:.", "--policy", "P0,P1,P2,P3,P4", "--require-nonzero", "sgr,fences"]),

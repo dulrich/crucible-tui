@@ -77,11 +77,17 @@ describe("non-vacuity requirement", () => {
 });
 
 describe("D-C classification", () => {
-  test("under P2–P4 a textSha/codeContentSha-only diff is allowedDC; P0 keeps codeContentSha class C", () => {
-    const dc = classifyDiffs([{ before: record(), after: record({ textSha: "t2", codeContentSha: "c2" }) }], "a");
+  test("under P2–P4 a textSha/codeContentSha-only diff is allowedDC under expect=b, disallowed under expect=a; P0 keeps codeContentSha class C", () => {
+    const pair = { before: record(), after: record({ textSha: "t2", codeContentSha: "c2" }) };
+    const strict = classifyDiffs([pair], "a");
+    expect(strict.disallowed).toHaveLength(1);
+    expect(strict.allowedDC).toHaveLength(0);
+    expect(strict.classC).toHaveLength(0);
+    expect(strict.ok).toBe(false);
+    const dc = classifyDiffs([pair], "b");
     expect(dc.allowedDC).toHaveLength(1);
     expect(dc.classC).toHaveLength(0);
-    expect(dc.ok).toBe(true);
+    expect(dc.disallowed).toHaveLength(0);
     const p0 = classifyDiffs([{ before: record({ policy: "P0" }), after: record({ policy: "P0", codeContentSha: "c2" }) }], "a");
     expect(p0.classC).toHaveLength(1);
     expect(p0.ok).toBe(false);
