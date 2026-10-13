@@ -20,16 +20,16 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::ansi::strip_sequences;
+use crate::ansi::{has_sequences, strip_sequences};
 use crate::blocks;
 use crate::context::{CounterGuard, LayoutContext, PrefixEntry};
 use crate::inline::HARD_RETURN;
 use crate::list_lines::{
-    MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, continuation_marks, hang, is_guard_shaped_line,
-    line_prefix, map_fenced_lines, wrap_after_prefix, wrap_guard_narrow,
+    Fence, MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, RenderedLine, continuation_marks,
+    is_guard_shaped_line, wrap_after_prefix, wrap_guard_narrow,
 };
 use crate::lists;
-use crate::text::{js_regex, js_trim, js_trim_end, js_trim_start};
+use crate::text::{is_js_whitespace, js_regex, js_trim, js_trim_end, js_trim_start};
 use crate::token::{ListItem, Token};
 use crate::walk::{self, R, Visitors};
 use crate::width::Measure;
@@ -103,33 +103,71 @@ pub fn current_list_budget(depth: usize, target_width: usize, quote_columns: usi
 /// `rewrapListBody` (`list-layout.ts:301-349`): wrap the composed body's over-budget lines,
 /// sparing any line that starts inside a fence or carries a sentinel, and guarding an on-grid
 /// continuation that would read as a marker.
+///
+/// Typed (WP-R10): the hanging prefix is read from the line's fields rather than split by
+/// `LIST_LINE_PREFIX` — indent, marker and one gap character when the indent is literal
+/// whitespace, otherwise the indent's literal whitespace lead (the regex's `^\s*` stops at a
+/// sequence). The head keeps its marker; continuations are marker-less lines at the hang.
 pub fn rewrap_list_body(
-    body: &str,
+    lines: Vec<RenderedLine>,
     depth: usize,
     target_width: usize,
     quote_columns: usize,
     measure: Measure,
-    sentinel: char,
-) -> String {
+) -> Vec<RenderedLine> {
     let budget = signed(current_list_budget(depth, target_width, quote_columns));
-    map_fenced_lines(body, sentinel, |fence| {
-        let line = fence.line;
-        if fence.touches_fence() || signed(measure.width(line)) <= budget {
-            return line.to_owned();
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let text = line.emit("*");
+        if line.fence.touches() || signed(measure.width(&text)) <= budget {
+            out.push(line);
+            continue;
         }
-        let split = line_prefix(line);
-        let on_grid = measure
-            .width(split.prefix)
-            .is_multiple_of(LIST_INDENT_PER_LEVEL);
+        let head = line.indent.len() + line.marker_text().len();
+        let gap = line.body.chars().next().filter(|c| is_js_whitespace(*c));
+        let prefix_len = match gap {
+            Some(gap) if line.marker.is_some() && !has_sequences(&line.indent) => {
+                head + gap.len_utf8()
+            }
+            _ => line.indent.len() - js_trim_start(&line.indent).len(),
+        };
+        let (prefix, rest) = text.split_at(prefix_len);
+        let on_grid = measure.width(prefix).is_multiple_of(LIST_INDENT_PER_LEVEL);
         let marks = |visible: &str| on_grid && MARKER_SHAPED_LINE.is_match(visible);
         let wrapped = wrap_guard_narrow(
-            |width| wrap_after_prefix(split.prefix, split.rest, width, measure),
+            |width| wrap_after_prefix(prefix, rest, width, measure),
             budget,
             &marks,
             |_| false,
         );
-        hang(split.prefix, &wrapped, measure)
-    })
+        let continuation = " ".repeat(measure.width(prefix));
+        for (i, piece) in wrapped.into_iter().enumerate() {
+            let first = format!("{prefix}{piece}");
+            out.push(match &text[..head.max(prefix_len)] {
+                kept if i == 0 && first.starts_with(kept) => RenderedLine {
+                    fence: Fence::Prose,
+                    indent: line.indent.clone(),
+                    marker: line.marker.clone(),
+                    body: first[head..].to_owned(),
+                },
+                // A wrapped head that no longer starts with its own marker bytes: the wrap
+                // never rewrites a row's leading bytes, so this arm is defensive only.
+                _ if i == 0 => RenderedLine {
+                    fence: Fence::Prose,
+                    indent: String::new(),
+                    marker: None,
+                    body: first,
+                },
+                _ => RenderedLine {
+                    fence: Fence::Prose,
+                    indent: continuation.clone(),
+                    marker: None,
+                    body: piece,
+                },
+            });
+        }
+    }
+    out
 }
 
 /// The per-render layout state and its five visitors (`ListTextLayout`).
@@ -192,20 +230,19 @@ impl ListTextLayout<'_> {
         depth: usize,
     ) -> R {
         let parse = |tokens: &[Token], top: bool| walk::parse(host, tokens, top);
-        let result = lists::render_list(self.layout, ordered, items, &parse, self.sentinel)?;
+        let lines = lists::render_list(self.layout, ordered, items, &parse, self.sentinel)?;
         let rewrapped = rewrap_list_body(
-            &result,
+            lines,
             depth,
             self.layout.width,
             self.quote_columns.get(),
             self.layout.measure,
-            self.sentinel,
         );
-        Ok(if depth == 1 {
-            lists::substitute_bullets(&rewrapped, self.layout.glyphs, self.sentinel)
-        } else {
-            rewrapped
-        })
+        // The pipeline's one exit to bytes; a nested list goes back up the walk as a `String`.
+        Ok(lists::emit_list(
+            &rewrapped,
+            (depth == 1).then_some(self.layout.glyphs),
+        ))
     }
 
     /// `wrappedText` (`list-layout.ts:500-729`): a block or inline `text`/`escape` token. `raw`

@@ -1,6 +1,7 @@
 //! Rendered-line primitives shared by render and the detectors, ported from
 //! `TS_BASELINE` `src/list-lines.ts`: the marker regexes and `track_list_line`, plus the fence walk,
-//! the hanging-indent wrap and the marker guard every list pass shares.
+//! the hanging-indent wrap and the marker guard every list pass shares, and the typed
+//! `RenderedLine` the list pipeline carries from composition to emission (WP-R10).
 //!
 //! Every TS `\s`/`\S` here is ECMAScript whitespace (`text::js_regex`), and `\d` is ASCII.
 
@@ -8,27 +9,18 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::ansi::strip_sequences;
-use crate::text::{js_regex as js, js_trim, js_trim_start};
+use crate::ansi::{SpanKind, scan_narrow, strip_sequences};
+use crate::text::{is_js_whitespace, js_regex as js, js_trim, js_trim_start};
 use crate::width::Measure;
 use crate::wrap::wrap_ansi;
 
-/// One line of a fence-aware walk: the line, whether it started inside a fenced block, and
-/// whether it carries a sentinel (opens or closes one). A pass that rewrites whole lines must
-/// skip [`FenceLine::touches_fence`]; a pass that only rewrites a leading marker needs only
-/// `started_inside` (`crates/mdview/AGENTS.md`, "Why a sentinel walk exists at all").
+/// One step of a fence-aware walk: whether the line started inside a fenced block, and whether
+/// it carries a sentinel (opens or closes one). The list pipeline keeps it on each line as a
+/// [`Fence`] (`crates/mdview/AGENTS.md`, "Why a sentinel walk exists at all").
 #[derive(Debug, Clone, Copy)]
-pub struct FenceLine<'a> {
-    pub line: &'a str,
+pub struct FenceLine {
     pub started_inside: bool,
     pub carries_sentinel: bool,
-}
-
-impl FenceLine<'_> {
-    /// Started inside a fence, or opens/closes one on this line.
-    pub fn touches_fence(&self) -> bool {
-        self.started_inside || self.carries_sentinel
-    }
 }
 
 /// The per-line sentinel walk every pass over rendered output shares: each sentinel occurrence
@@ -41,14 +33,16 @@ pub struct FenceWalk {
 
 impl FenceWalk {
     pub fn new(sentinel: char) -> Self {
-        FenceWalk {
-            sentinel,
-            inside: false,
-        }
+        Self::resume(sentinel, false)
+    }
+
+    /// A walk that starts inside a fence when `inside` (the later pieces of a split line).
+    pub fn resume(sentinel: char, inside: bool) -> Self {
+        FenceWalk { sentinel, inside }
     }
 
     /// Advance over one line.
-    pub fn step<'a>(&mut self, line: &'a str) -> FenceLine<'a> {
+    pub fn step(&mut self, line: &str) -> FenceLine {
         let started_inside = self.inside;
         let mut carries_sentinel = false;
         for ch in line.chars() {
@@ -58,26 +52,150 @@ impl FenceWalk {
             }
         }
         FenceLine {
-            line,
             started_inside,
             carries_sentinel,
         }
     }
 }
 
+/// `visibleMap()` (`lists.ts:146-160`): the visible text, plus the raw byte offset every visible
+/// byte came from and a final end-of-string entry.
+pub fn visible_map(text: &str) -> (String, Vec<usize>) {
+    let mut visible = String::new();
+    let mut raw_offsets = Vec::new();
+    let mut raw_index = 0;
+    for span in scan_narrow(text).spans {
+        if span.kind == SpanKind::Text {
+            raw_offsets.extend(raw_index..raw_index + span.raw.len());
+            visible.push_str(span.raw);
+        }
+        raw_index += span.raw.len();
+    }
+    raw_offsets.push(raw_index);
+    (visible, raw_offsets)
+}
+
+/// Where a composed list line sits relative to a fenced block: the [`FenceLine`] facts as one
+/// field, so a typed pass reads them instead of re-walking sentinels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fence {
+    /// Started inside a fence (whether or not it also closes it).
+    Inside,
+    /// Started outside one, and carries a sentinel (opens, or opens and closes, a fence).
+    Carries,
+    Prose,
+}
+
+impl Fence {
+    pub fn of(line: &FenceLine) -> Self {
+        if line.started_inside {
+            Fence::Inside
+        } else if line.carries_sentinel {
+            Fence::Carries
+        } else {
+            Fence::Prose
+        }
+    }
+
+    /// Started inside a fence, or opens/closes one on this line: a pass that rewrites whole
+    /// lines skips these; one that only rewrites a leading marker skips only [`Fence::Inside`].
+    pub fn touches(self) -> bool {
+        self != Fence::Prose
+    }
+}
+
+/// A list marker, carried as a property of the line rather than as bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Marker {
+    /// The unordered `*`, spelled at emission as `*` or as the depth's bullet glyph.
+    Bullet,
+    /// An ordered marker, spelled as it stands (`12.`).
+    Ordered(String),
+}
+
+/// One composed list line (`docs/agents/list-pipeline.md`, "The typed rendered line").
+///
+/// `indent` is the raw lead up to the first visible non-whitespace character — literal
+/// whitespace plus any sequence sitting before the marker (`"    \x1b[0m* x"`) — so bytes
+/// round-trip. `marker` is set only for a visible `*` or `\d+.` followed by whitespace, its
+/// bytes contiguous; `body` is everything after it, the gap included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedLine {
+    pub fence: Fence,
+    pub indent: String,
+    pub marker: Option<Marker>,
+    pub body: String,
+}
+
+impl RenderedLine {
+    /// The one re-type from bytes: split `line` into its indent, marker and body.
+    pub fn type_line(line: &str, fence: Fence) -> Self {
+        let (visible, raw) = visible_map(line);
+        let lead = visible.len() - js_trim_start(&visible).len();
+        let rest = &visible[lead..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let width = if rest.starts_with('*') {
+            1
+        } else if digits > 0 && rest[digits..].starts_with('.') {
+            digits + 1
+        } else {
+            0
+        };
+        let at = raw[lead];
+        let marked = width > 0
+            && raw[lead + width - 1] - at == width - 1
+            && rest[width..].chars().next().is_some_and(is_js_whitespace);
+        let spelled = &line[at..at + if marked { width } else { 0 }];
+        let marker = match spelled {
+            "" => None,
+            "*" => Some(Marker::Bullet),
+            _ => Some(Marker::Ordered(spelled.to_owned())),
+        };
+        RenderedLine {
+            fence,
+            indent: line[..at].to_owned(),
+            marker,
+            body: line[at + spelled.len()..].to_owned(),
+        }
+    }
+
+    /// The one emission to bytes, spelling a [`Marker::Bullet`] as `bullet`.
+    pub fn emit(&self, bullet: &str) -> String {
+        let marker = match &self.marker {
+            Some(Marker::Bullet) => bullet,
+            _ => self.marker_text(),
+        };
+        format!("{}{marker}{}", self.indent, self.body)
+    }
+
+    /// The marker as composed (`*` for a bullet); empty without one.
+    pub fn marker_text(&self) -> &str {
+        match &self.marker {
+            None => "",
+            Some(Marker::Bullet) => "*",
+            Some(Marker::Ordered(spelled)) => spelled,
+        }
+    }
+
+    /// A byte body typed line by line under a fence walk, as the pipeline's entry types it: the
+    /// unit tests' way into the typed passes.
+    #[cfg(test)]
+    pub fn typed_body(text: &str, sentinel: char) -> Vec<RenderedLine> {
+        let mut walk = FenceWalk::new(sentinel);
+        text.split('\n')
+            .map(|line| RenderedLine::type_line(line, Fence::of(&walk.step(line))))
+            .collect()
+    }
+
+    /// The indent's visible text.
+    pub fn visible_indent(&self) -> String {
+        strip_sequences(&self.indent).into_owned()
+    }
+}
+
 /// `text.split("\n").map(f).join("\n")`.
 pub fn map_lines(text: &str, f: impl FnMut(&str) -> String) -> String {
     text.split('\n').map(f).collect::<Vec<_>>().join("\n")
-}
-
-/// [`map_lines`] under a [`FenceWalk`]: `f` sees each line with its fence state.
-pub fn map_fenced_lines(
-    text: &str,
-    sentinel: char,
-    mut f: impl FnMut(FenceLine<'_>) -> String,
-) -> String {
-    let mut walk = FenceWalk::new(sentinel);
-    map_lines(text, |line| f(walk.step(line)))
 }
 
 /// `LIST_LINE_PREFIX = /^(\s*)((?:\*|\d+\.)\s)?/` (`list-layout.ts:253`; `blocks.ts`'s HTML wrap

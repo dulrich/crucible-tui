@@ -44,7 +44,9 @@ fn indent_lines_skips_empty_lines_and_js_line_terminators() {
         ("a\n\n  b\n", "    a\n\n      b\n"),
     ];
     for (input, want) in rows {
-        assert_eq!(indent_lines(TAB, input), *want, "{input:?}");
+        let mut lines = RenderedLine::typed_body(input, S);
+        indent_lines(TAB, &mut lines);
+        assert_eq!(emit_list(&lines, None), *want, "{input:?}");
     }
 }
 
@@ -78,7 +80,8 @@ fn fix_nested_lists_splits_joins_on_visible_text() {
         ("\u{1b}[0mα    * β", "\u{1b}[0mα\n        * β"),
     ];
     for (input, want) in rows {
-        assert_eq!(fix_nested_lists(input), *want, "{input:?}");
+        let lines = fix_nested_lists(RenderedLine::typed_body(input, S), S);
+        assert_eq!(emit_list(&lines, None), *want, "{input:?}");
     }
 }
 
@@ -179,8 +182,9 @@ fn composers_pad_unclaimed_lines_and_number_per_item() {
     ];
     for (groups, unordered, ordered) in rows {
         let groups: Vec<Vec<&str>> = groups.iter().map(|g| g.to_vec()).collect();
-        assert_eq!(compose_unordered(&groups, S), *unordered, "{groups:?}");
-        assert_eq!(compose_ordered(&groups, S), *ordered, "{groups:?}");
+        let emit = |lines: Vec<RenderedLine>| lines.iter().map(|l| l.emit("*")).collect::<Vec<_>>();
+        assert_eq!(emit(compose(&groups, S, false)), *unordered, "{groups:?}");
+        assert_eq!(emit(compose(&groups, S, true)), *ordered, "{groups:?}");
     }
 }
 
@@ -218,11 +222,9 @@ fn realign_pulls_embedded_continuations_back_like_the_reference() {
         ("plain\n      indented", "plain\n      indented"),
     ];
     for (input, want) in rows {
-        assert_eq!(
-            realign_embedded_continuations(input, NARROW_MEASURE, S),
-            *want,
-            "{input:?}"
-        );
+        let mut lines = RenderedLine::typed_body(input, S);
+        realign_embedded_continuations(&mut lines, NARROW_MEASURE);
+        assert_eq!(emit_list(&lines, None), *want, "{input:?}");
     }
 }
 
@@ -261,16 +263,13 @@ fn substitute_bullets_rewrites_grid_markers_outside_fences() {
         ),
     ];
     for (input, unicode, ascii) in rows {
+        let lines = RenderedLine::typed_body(input, S);
         assert_eq!(
-            substitute_bullets(input, &UNICODE_GLYPHS, S),
+            emit_list(&lines, Some(&UNICODE_GLYPHS)),
             *unicode,
             "{input:?}"
         );
-        assert_eq!(
-            substitute_bullets(input, &ASCII_GLYPHS, S),
-            *ascii,
-            "{input:?}"
-        );
+        assert_eq!(emit_list(&lines, Some(&ASCII_GLYPHS)), *ascii, "{input:?}");
     }
 }
 
