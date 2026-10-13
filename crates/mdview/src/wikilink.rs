@@ -1,6 +1,6 @@
 //! The wiki-link visitor — `styleWikiLabel` and `followWikiLink`, ported from
 //! `TS_BASELINE` `src/wikilink.ts` (WP-3 of `plans/mdview-rust-port.md`). Recognition is lexer-side
-//! (`lex.rs`); the resolver itself is `wikiresolve.rs`'s, wired in by WP-6.
+//! (`lex/`); the resolver itself is `wikiresolve.rs`'s, wired in by WP-6.
 
 use crate::ansi;
 use crate::context::LayoutContext;

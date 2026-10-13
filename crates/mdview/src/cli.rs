@@ -21,7 +21,7 @@
 //!
 //! **Leading BOM (D-D):** `readFile(path, "utf8")` keeps U+FEFF and replaces invalid UTF-8
 //! with U+FFFD; `String::from_utf8_lossy` does the same (same maximal-subpart replacement),
-//! and nothing here strips the BOM; what the lexer does with it is `lex.rs`'s concern.
+//! and nothing here strips the BOM; what the lexer does with it is `lex/`'s concern.
 //!
 //! Departures, named: a `BrokenPipe` on stdout is quiet exit 0 (TS crashes with exit 1); a
 //! `--width` and `probe --timeout` accept a plain unsigned decimal integer only (TS took any
