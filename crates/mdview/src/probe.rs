@@ -17,7 +17,7 @@
 //! mode and exit 130/143/129. Raw mode clears `ISIG`, so Ctrl-C arrives as a `0x03` byte the
 //! reader already aborts on; SIGTERM/SIGHUP during the ≤400 ms probe are not trapped here.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,46 +35,13 @@ pub const PROBE_GLYPH: &str = "—";
 pub const PROBE_TIMEOUT_MS: u64 = 200;
 const CACHE_VERSION: i64 = 1;
 
-/// `path.join` + `path.normalize` (POSIX): collapse `.`/`..`/duplicate separators.
-fn node_join(parts: &[&str]) -> PathBuf {
-    let joined = parts
-        .iter()
-        .filter(|p| !p.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join("/");
-    let absolute = joined.starts_with('/');
-    let mut out: Vec<&str> = Vec::new();
-    for c in Path::new(&joined).components() {
-        match c {
-            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
-            Component::ParentDir => {
-                if out.last().is_some_and(|l| *l != "..") {
-                    out.pop();
-                } else if !absolute {
-                    out.push("..");
-                }
-            }
-            Component::Normal(s) => out.push(s.to_str().unwrap_or("")),
-        }
-    }
-    let body = out.join("/");
-    PathBuf::from(match (absolute, body.is_empty()) {
-        (true, _) => format!("/{body}"),
-        (false, true) => ".".to_owned(),
-        (false, false) => body,
-    })
-}
-
 /// `resolveAmbiguousCachePath(env)`; `HOME` is read from the threaded `env`.
 pub fn resolve_ambiguous_cache_path(env: &Env) -> PathBuf {
     let cache_home = match env.get("XDG_CACHE_HOME") {
-        Some(x) if !x.is_empty() => x.clone(),
-        _ => node_join(&[&home_dir(env), ".cache"])
-            .to_string_lossy()
-            .into_owned(),
+        Some(x) if !x.is_empty() => PathBuf::from(x),
+        _ => Path::new(&home_dir(env)).join(".cache"),
     };
-    node_join(&[&cache_home, "mdview", "ambiguous-width.json"])
+    cache_home.join("mdview").join("ambiguous-width.json")
 }
 
 fn get<'a>(env: &'a Env, k: &str) -> Option<&'a str> {
@@ -837,7 +804,8 @@ mod tests {
         );
         assert_eq!(
             resolve_ambiguous_cache_path(&env(&[("XDG_CACHE_HOME", "/tmp/x/../c/")])),
-            PathBuf::from("/tmp/c/mdview/ambiguous-width.json")
+            // `PathBuf::join`, not Node's `path.normalize`: `..` is kept (WP-R9).
+            PathBuf::from("/tmp/x/../c/mdview/ambiguous-width.json")
         );
     }
 

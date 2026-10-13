@@ -65,7 +65,7 @@ fn missing_file_reports_node_wording() {
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "mdview: cannot read file: /nonexistent-mdview/x.md (ENOENT: no such file or directory, open '/nonexistent-mdview/x.md')\n"
+        "mdview: cannot read file: /nonexistent-mdview/x.md (No such file or directory (os error 2))\n"
     );
 }
 

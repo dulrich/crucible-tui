@@ -8,8 +8,8 @@
 //! Deliberate TS quirks reproduced (each cites `TS_BASELINE` `src/cli.ts`):
 //! - a bare `<file.md>` with no subcommand is the view path; `view`/`help`/`highlight-as`/
 //!   `probe` dispatch only when they are exactly `args[0]` (`main`);
-//! - `--width`'s value goes through JS `Number()` — `0x50`, `1e2`, ` 80 ` are all valid, an
-//!   empty value is "missing" (`!value`), and a following flag is consumed as the value;
+//! - `--width`'s value is an empty-is-missing (`!value`) slot, and a following flag is
+//!   consumed as the value;
 //! - `--ascii --ascii` is fine, `--ascii --unicode` throws; `--color`/`--hyperlinks` repeat
 //!   last-wins, `--no-color` is `--color=never`;
 //! - an empty-string file argument counts as missing (`!file`), but still occupies the slot
@@ -18,16 +18,15 @@
 //! - `probe --timeout` with no value reports `got: undefined`;
 //! - `highlight-as` checks `--help` anywhere first, then the first `-` argument, then the
 //!   positional count;
-//! - the read error text is Node's `fs` wording: `ENOENT: no such file or directory, open
-//!   '<path>'` for an open failure, `EISDIR: illegal operation on a directory, read` for a
-//!   read failure — no path on the second, as in Node.
 //!
 //! **Leading BOM (D-D):** `readFile(path, "utf8")` keeps U+FEFF and replaces invalid UTF-8
 //! with U+FFFD; `String::from_utf8_lossy` does the same (same maximal-subpart replacement),
 //! and nothing here strips the BOM; what the lexer does with it is `lex.rs`'s concern.
 //!
 //! Departures, named: a `BrokenPipe` on stdout is quiet exit 0 (TS crashes with exit 1); a
-//! fractional `--width` is floored for the renderer (TS hands the fraction to layout);
+//! `--width` and `probe --timeout` accept a plain unsigned decimal integer only (TS took any
+//! JS `Number()` spelling — hex, exponent, fraction, padding); a read error carries
+//! `io::Error`'s own text (TS printed Node's `fs` errno wording) — WP-R9, ruling (a);
 //! `highlight-as` validates against the syntect language set the renderer highlights with.
 
 pub const USAGE: &str = r#"usage: mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--probe] [--help] [--licenses]
@@ -222,80 +221,11 @@ impl Process {
     }
 }
 
-/// JS `Number(string)`: trimmed; empty is 0; decimal, `0x`/`0o`/`0b`, `±Infinity`; else NaN.
-pub fn js_number(raw: &str) -> f64 {
-    let s = crate::text::js_trim(raw);
-    if s.is_empty() {
-        return 0.0;
-    }
-    for (prefix, radix) in [
-        ("0x", 16),
-        ("0X", 16),
-        ("0o", 8),
-        ("0O", 8),
-        ("0b", 2),
-        ("0B", 2),
-    ] {
-        if let Some(digits) = s.strip_prefix(prefix) {
-            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
-                return f64::NAN;
-            }
-            return digits.chars().fold(0.0, |acc, c| {
-                acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
-            });
-        }
-    }
-    let unsigned = s.strip_prefix(['+', '-']).unwrap_or(s);
-    if unsigned == "Infinity" {
-        return if s.starts_with('-') {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        };
-    }
-    let bytes = unsigned.as_bytes();
-    let mut i = 0;
-    let digits = |i: &mut usize| {
-        let start = *i;
-        while *i < bytes.len() && bytes[*i].is_ascii_digit() {
-            *i += 1;
-        }
-        *i - start
-    };
-    let int = digits(&mut i);
-    let mut frac = 0;
-    if i < bytes.len() && bytes[i] == b'.' {
-        i += 1;
-        frac = digits(&mut i);
-    }
-    if int + frac == 0 {
-        return f64::NAN;
-    }
-    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-        i += 1;
-        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-            i += 1;
-        }
-        if digits(&mut i) == 0 {
-            return f64::NAN;
-        }
-    }
-    if i != bytes.len() {
-        return f64::NAN;
-    }
-    s.parse::<f64>().unwrap_or(f64::NAN)
-}
-
-/// JS `String(number)`.
-pub fn js_number_string(n: f64) -> String {
-    ryu_js::Buffer::new().format(n).to_owned()
-}
-
 /// `CliOptions`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CliOptions {
     pub file: String,
-    pub width: Option<f64>,
+    pub width: Option<usize>,
     pub no_pager: bool,
     pub check: bool,
     pub help: bool,
@@ -308,13 +238,13 @@ pub struct CliOptions {
 }
 
 /// `resolveWidth(explicit, columns)`.
-pub fn resolve_width(explicit: Option<f64>, columns: Option<u32>) -> f64 {
+pub fn resolve_width(explicit: Option<usize>, columns: Option<u32>) -> usize {
     if let Some(w) = explicit {
         return w;
     }
     match columns {
-        Some(c) if c > 0 => f64::from(c),
-        _ => 100.0,
+        Some(c) if c > 0 => c as usize,
+        _ => 100,
     }
 }
 
@@ -362,11 +292,12 @@ pub fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                 if value.is_empty() {
                     return Err("missing value for --width".into());
                 }
-                let parsed = js_number(value);
-                if !parsed.is_finite() || parsed <= 0.0 {
-                    return Err(format!("--width must be a positive number, got: {value}"));
+                match parse_positive_int(value) {
+                    Some(n) => o.width = Some(n),
+                    None => {
+                        return Err(format!("--width must be a positive number, got: {value}"));
+                    }
                 }
-                o.width = Some(parsed);
                 index += 1;
             }
             _ => {
@@ -392,35 +323,24 @@ pub fn parse_args(args: &[String]) -> Result<CliOptions, String> {
     Ok(o)
 }
 
-/// Node's `fs` error text for a failed `readFile`.
-fn node_fs_error(e: &std::io::Error, syscall: &str, path: Option<&str>) -> String {
-    let (code, text) = match e.raw_os_error() {
-        Some(2) => ("ENOENT", "no such file or directory"),
-        Some(13) => ("EACCES", "permission denied"),
-        Some(21) => ("EISDIR", "illegal operation on a directory"),
-        Some(20) => ("ENOTDIR", "not a directory"),
-        Some(40) => ("ELOOP", "too many symbolic links encountered"),
-        Some(36) => ("ENAMETOOLONG", "name too long"),
-        Some(1) => ("EPERM", "operation not permitted"),
-        Some(6) => ("ENXIO", "no such device or address"),
-        _ => return e.to_string(),
-    };
-    match path {
-        Some(p) => format!("{code}: {text}, {syscall} '{p}'"),
-        None => format!("{code}: {text}, {syscall}"),
+/// A plain unsigned decimal integer greater than zero (`usize::from_str` also takes a
+/// leading `+`, which is refused here so the spelling stays digits only).
+fn parse_positive_int<T: std::str::FromStr + Default + PartialOrd>(raw: &str) -> Option<T> {
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
     }
+    raw.parse::<T>().ok().filter(|n| *n > T::default())
 }
 
 /// `readFile(file, "utf8")`: BOM kept, invalid UTF-8 replaced (D-D).
 fn read_source(file: &str) -> Result<String, String> {
     use std::io::Read;
     let wrap = |reason: String| format!("cannot read file: {file} ({reason})");
-    let mut handle =
-        std::fs::File::open(file).map_err(|e| wrap(node_fs_error(&e, "open", Some(file))))?;
+    let mut handle = std::fs::File::open(file).map_err(|e| wrap(e.to_string()))?;
     let mut bytes = Vec::new();
     handle
         .read_to_end(&mut bytes)
-        .map_err(|e| wrap(node_fs_error(&e, "read", None)))?;
+        .map_err(|e| wrap(e.to_string()))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -486,7 +406,7 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
         .then(|| crate::wikiresolve::resolve(&p.cwd, &options.file));
 
     let render_options = RenderOptions {
-        width: target_width as usize,
+        width: target_width,
         tier: glyphs.tier,
         ambiguous: ambiguous.ambiguous,
         policy,
@@ -501,15 +421,13 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
     if options.check {
         if let Some(hit) = find_first_overflow(
             &output,
-            target_width as usize,
+            target_width,
             &rendered.code_ranges,
             ambiguous.measure,
         ) {
             return Err(format!(
                 "line {} exceeds target width {} (measured {})",
-                hit.line,
-                js_number_string(target_width),
-                hit.width
+                hit.line, target_width, hit.width
             )
             .into());
         }
@@ -577,15 +495,14 @@ fn run_probe(args: &[String], p: &Process) -> CliResult {
             "--no-cache" => no_cache = true,
             "--timeout" => {
                 let value = args.get(index);
-                let parsed = value.map_or(f64::NAN, |v| js_number(v));
-                if !parsed.is_finite() || parsed <= 0.0 {
+                let Some(parsed) = value.and_then(|v| parse_positive_int::<u64>(v)) else {
                     return Err(format!(
                         "probe: --timeout must be a positive number of milliseconds, got: {}",
                         value.map_or("undefined", String::as_str)
                     )
                     .into());
-                }
-                timeout_ms = Some(parsed.ceil() as u64);
+                };
+                timeout_ms = Some(parsed);
                 index += 1;
             }
             _ => {
@@ -651,43 +568,32 @@ mod tests {
     }
 
     #[test]
-    fn js_number_matches_number_constructor() {
-        for (s, n) in [
-            ("80", 80.0),
-            (" 80 ", 80.0),
-            ("0x50", 80.0),
-            ("1e2", 100.0),
-            (".5", 0.5),
-            ("5.", 5.0),
-            ("", 0.0),
-            ("+3", 3.0),
+    fn numeric_flags_are_plain_integers() {
+        assert_eq!(
+            parse_args(&a(&["f", "--width", "80"])).unwrap().width,
+            Some(80)
+        );
+        for bad in [
+            "0x50", "1e2", "80.5", "abc", " 80 ", "+80", "-1", "Infinity",
         ] {
-            assert_eq!(js_number(s), n, "{s}");
+            assert_eq!(
+                err(&["f", "--width", bad]),
+                format!("--width must be a positive number, got: {bad}"),
+                "{bad}"
+            );
         }
-        for s in [
-            "abc",
-            "1e",
-            "inf",
-            "nan",
-            "0x",
-            "-0x5",
-            "1_0",
-            "Infinityx",
-            "e5",
-        ] {
-            assert!(js_number(s).is_nan(), "{s}");
+        assert_eq!(parse_positive_int::<u64>("250"), Some(250));
+        for bad in ["0x50", "1e2", "80.5", "abc", "0", ""] {
+            assert_eq!(parse_positive_int::<u64>(bad), None, "{bad}");
         }
-        assert_eq!(js_number("-Infinity"), f64::NEG_INFINITY);
-        assert_eq!(js_number_string(80.0), "80");
-        assert_eq!(js_number_string(80.5), "80.5");
     }
 
     #[test]
     fn width_resolution() {
-        assert_eq!(resolve_width(Some(42.0), Some(90)), 42.0);
-        assert_eq!(resolve_width(None, Some(90)), 90.0);
-        assert_eq!(resolve_width(None, Some(0)), 100.0);
-        assert_eq!(resolve_width(None, None), 100.0);
+        assert_eq!(resolve_width(Some(42), Some(90)), 42);
+        assert_eq!(resolve_width(None, Some(90)), 90);
+        assert_eq!(resolve_width(None, Some(0)), 100);
+        assert_eq!(resolve_width(None, None), 100);
     }
 
     #[test]
@@ -695,7 +601,7 @@ mod tests {
         let o = parse_args(&a(&[
             "f.md",
             "--width",
-            "0x50",
+            "80",
             "--check",
             "--no-pager",
             "--ascii",
@@ -705,7 +611,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (o.file.as_str(), o.width, o.check, o.no_pager, o.plain),
-            ("f.md", Some(80.0), true, true, true)
+            ("f.md", Some(80), true, true, true)
         );
         assert_eq!(o.glyph_tier, Some(Tier::Ascii));
         let o = parse_args(&a(&[
@@ -758,17 +664,14 @@ mod tests {
     }
 
     #[test]
-    fn read_errors_use_node_wording() {
+    fn read_errors_carry_io_error_text() {
         let e = read_source("/nonexistent-mdview-dir/x.md").unwrap_err();
         assert_eq!(
             e,
-            "cannot read file: /nonexistent-mdview-dir/x.md (ENOENT: no such file or directory, open '/nonexistent-mdview-dir/x.md')"
+            "cannot read file: /nonexistent-mdview-dir/x.md (No such file or directory (os error 2))"
         );
         let e = read_source("/").unwrap_err();
-        assert_eq!(
-            e,
-            "cannot read file: / (EISDIR: illegal operation on a directory, read)"
-        );
+        assert_eq!(e, "cannot read file: / (Is a directory (os error 21))");
     }
 
     #[test]
