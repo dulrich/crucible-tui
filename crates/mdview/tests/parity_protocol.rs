@@ -56,3 +56,30 @@ fn only_the_parity_subcommand_reaches_the_server() {
     assert!(mdview::run(&["__parity".into(), "nope".into()]).is_err());
     assert!(mdview::run(&["file.md".into()]).is_err());
 }
+
+/// Audit E1 of `plans/rust-port-code-quality-remediation.md`: an unrecognised table alignment
+/// string in injected tokens renders as left (marked's `?? "left"`), never an `{error}`, and
+/// `null` stays left too. Token injection needs the `parity-tokens` feature (render-diff's
+/// build): `cargo test -p mdview --features parity-tokens --test parity_protocol`.
+#[cfg(feature = "parity-tokens")]
+#[test]
+fn an_unknown_table_alignment_renders_as_left() {
+    let source = "| a | b |\n|---|---:|\n| 1 | 2 |\n";
+    let lexed = parse(&mdview::parity::handle_lex(
+        &serde_json::json!({ "body": source, "tier": "unicode" }).to_string(),
+    ));
+    let mut tokens = lexed["tokens"].clone();
+    assert_eq!(tokens[0]["type"], "table");
+    assert_eq!(tokens[0]["align"], serde_json::json!([null, "right"]));
+    tokens[0]["align"] = serde_json::json!([null, "justify"]);
+    let mut request: Value = serde_json::from_str(REQUEST).expect("request");
+    request["source"] = source.into();
+    request["tokens"] = tokens;
+    let response = parse(&mdview::parity::handle_render(&request.to_string()));
+    assert!(response.get("error").is_none(), "{response}");
+    let mut left: Value = serde_json::from_str(REQUEST).expect("request");
+    left["source"] = "| a | b |\n|---|---|\n| 1 | 2 |\n".into();
+    let left = parse(&mdview::parity::handle_render(&left.to_string()));
+    assert!(left["text"].as_str().is_some_and(|t| !t.is_empty()));
+    assert_eq!(response["text"], left["text"]);
+}

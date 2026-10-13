@@ -13,6 +13,7 @@
 //! (and an inline-only one reached by `parse`) is the unknown-token error, not a render.
 
 use crate::render::RenderError;
+use crate::text::Align;
 use crate::token::{ListItem, TableCell, Token};
 
 pub type R = Result<String, RenderError>;
@@ -23,7 +24,7 @@ pub trait Visitors {
     fn hr(&self) -> R;
     fn heading(&self, depth: u8, tokens: &[Token]) -> R;
     fn code(&self, lang: Option<&str>, text: &str) -> R;
-    fn table(&self, header: &[TableCell], rows: &[Vec<TableCell>], align: &[Option<String>]) -> R;
+    fn table(&self, header: &[TableCell], rows: &[Vec<TableCell>], align: &[Option<Align>]) -> R;
     fn blockquote(&self, tokens: &[Token]) -> R;
     fn list(&self, ordered: bool, items: &[ListItem]) -> R;
     fn html(&self, text: &str) -> R;
@@ -181,7 +182,7 @@ mod tests {
         fn code(&self, _l: Option<&str>, t: &str) -> R {
             Ok(format!("<code>{t}"))
         }
-        fn table(&self, _h: &[TableCell], _r: &[Vec<TableCell>], _a: &[Option<String>]) -> R {
+        fn table(&self, _h: &[TableCell], _r: &[Vec<TableCell>], _a: &[Option<Align>]) -> R {
             Ok("<table>".into())
         }
         fn blockquote(&self, t: &[Token]) -> R {

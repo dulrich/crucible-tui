@@ -12,7 +12,13 @@
 
 use std::rc::Rc;
 
-pub use crate::render::Sgr as SgrMode;
+/// How much SGR a render emits (mirrors `TS_BASELINE` `src/colour.ts`'s `SgrMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sgr {
+    Full,
+    Formats,
+    None,
+}
 
 /// A committed style name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -163,7 +169,7 @@ pub fn style_table_json() -> String {
                 "open": c.open,
                 "close": c.close,
                 // `emitsUnder(name, "formats")` — the colour axis's G3 `formats` arm.
-                "formats": emits_under(*style, SgrMode::Formats),
+                "formats": emits_under(*style, Sgr::Formats),
             }),
         );
     }
@@ -171,11 +177,11 @@ pub fn style_table_json() -> String {
 }
 
 /// Whether one committed style emits at all under one mode.
-pub fn emits_under(name: StyleName, sgr: SgrMode) -> bool {
+pub fn emits_under(name: StyleName, sgr: Sgr) -> bool {
     match sgr {
-        SgrMode::None => false,
-        SgrMode::Full => true,
-        SgrMode::Formats => name.class() != StyleClass::Hue,
+        Sgr::None => false,
+        Sgr::Full => true,
+        Sgr::Formats => name.class() != StyleClass::Hue,
     }
 }
 
@@ -220,11 +226,11 @@ pub fn chain(names: &[StyleName]) -> Option<Rc<Styler>> {
 }
 
 /// The chain a mode actually emits (`None`: emits nothing).
-fn filter_chain(chain_in: &Rc<Styler>, sgr: SgrMode) -> Option<Rc<Styler>> {
+fn filter_chain(chain_in: &Rc<Styler>, sgr: Sgr) -> Option<Rc<Styler>> {
     match sgr {
-        SgrMode::None => None,
-        SgrMode::Full => Some(Rc::clone(chain_in)),
-        SgrMode::Formats => {
+        Sgr::None => None,
+        Sgr::Full => Some(Rc::clone(chain_in)),
+        Sgr::Formats => {
             let mut names = Vec::new();
             let mut link = Some(chain_in);
             while let Some(l) = link {
@@ -287,8 +293,8 @@ fn string_encase_crlf_with_first_index(
 }
 
 /// Apply a style chain, reproducing `chalk`'s `applyStyle` exactly, over the filtered chain.
-pub fn apply_style(sgr: SgrMode, chain_in: &Rc<Styler>, input: &str) -> String {
-    if sgr == SgrMode::None || input.is_empty() {
+pub fn apply_style(sgr: Sgr, chain_in: &Rc<Styler>, input: &str) -> String {
+    if sgr == Sgr::None || input.is_empty() {
         return input.to_owned();
     }
     let Some(filtered) = filter_chain(chain_in, sgr) else {
@@ -314,7 +320,7 @@ pub fn apply_style(sgr: SgrMode, chain_in: &Rc<Styler>, input: &str) -> String {
 }
 
 /// `applyStyleChain`: fold names into a chain, then `apply_style`.
-pub fn apply_style_chain(sgr: SgrMode, styles: &[StyleName], input: &str) -> String {
+pub fn apply_style_chain(sgr: Sgr, styles: &[StyleName], input: &str) -> String {
     match chain(styles) {
         None => input.to_owned(),
         Some(c) => apply_style(sgr, &c, input),
@@ -322,8 +328,8 @@ pub fn apply_style_chain(sgr: SgrMode, styles: &[StyleName], input: &str) -> Str
 }
 
 /// The plain wrap: open, text, close. No empty-string guard, on purpose.
-pub fn style_span(sgr: SgrMode, chain_in: &Rc<Styler>, input: &str) -> String {
-    if sgr == SgrMode::None {
+pub fn style_span(sgr: Sgr, chain_in: &Rc<Styler>, input: &str) -> String {
+    if sgr == Sgr::None {
         return input.to_owned();
     }
     match filter_chain(chain_in, sgr) {
@@ -359,11 +365,11 @@ mod tests {
 
     #[test]
     fn emits_under_is_the_mode_rule() {
-        assert!(!emits_under(Bold, SgrMode::None));
-        assert!(emits_under(Red, SgrMode::Full));
-        assert!(!emits_under(Red, SgrMode::Formats));
-        assert!(emits_under(Dim, SgrMode::Formats));
-        assert!(emits_under(Reset, SgrMode::Formats));
+        assert!(!emits_under(Bold, Sgr::None));
+        assert!(emits_under(Red, Sgr::Full));
+        assert!(!emits_under(Red, Sgr::Formats));
+        assert!(emits_under(Dim, Sgr::Formats));
+        assert!(emits_under(Reset, Sgr::Formats));
     }
 
     #[test]
@@ -378,7 +384,7 @@ mod tests {
         let blue = chain(&[Blue]).unwrap();
         let inner = format!("{E}[34m{E}[4mhref{E}[24m{E}[39m");
         assert_eq!(
-            apply_style(SgrMode::Full, &blue, &inner),
+            apply_style(Sgr::Full, &blue, &inner),
             format!("{E}[34m{E}[34m{E}[4mhref{E}[24m{E}[39m{E}[34m{E}[39m")
         );
     }
@@ -387,15 +393,15 @@ mod tests {
     fn apply_style_encases_line_breaks() {
         let bold = chain(&[Bold]).unwrap();
         assert_eq!(
-            apply_style(SgrMode::Full, &bold, "a\nb"),
+            apply_style(Sgr::Full, &bold, "a\nb"),
             format!("{E}[1ma{E}[22m\n{E}[1mb{E}[22m")
         );
         assert_eq!(
-            apply_style(SgrMode::Full, &bold, "a\r\nb"),
+            apply_style(Sgr::Full, &bold, "a\r\nb"),
             format!("{E}[1ma{E}[22m\r\n{E}[1mb{E}[22m")
         );
         assert_eq!(
-            apply_style(SgrMode::Full, &bold, "\nb"),
+            apply_style(Sgr::Full, &bold, "\nb"),
             format!("{E}[1m{E}[22m\n{E}[1mb{E}[22m")
         );
     }
@@ -403,19 +409,19 @@ mod tests {
     #[test]
     fn apply_style_guards_and_filters() {
         let bold = chain(&[Bold]).unwrap();
-        assert_eq!(apply_style(SgrMode::Full, &bold, ""), "");
-        assert_eq!(apply_style(SgrMode::None, &bold, "x"), "x");
+        assert_eq!(apply_style(Sgr::Full, &bold, ""), "");
+        assert_eq!(apply_style(Sgr::None, &bold, "x"), "x");
         let cyan = chain(&[Cyan]).unwrap();
-        assert_eq!(apply_style(SgrMode::Formats, &cyan, "x"), "x");
+        assert_eq!(apply_style(Sgr::Formats, &cyan, "x"), "x");
         assert_eq!(
-            apply_style_chain(SgrMode::Formats, &[Cyan, Underline], "x"),
+            apply_style_chain(Sgr::Formats, &[Cyan, Underline], "x"),
             format!("{E}[4mx{E}[24m")
         );
-        assert_eq!(apply_style_chain(SgrMode::Full, &[], "x"), "x");
+        assert_eq!(apply_style_chain(Sgr::Full, &[], "x"), "x");
         // Under formats the encasing re-opens only the surviving links.
         let yb = chain(&[Yellow, Bold]).unwrap();
         assert_eq!(
-            apply_style(SgrMode::Formats, &yb, "a\nb"),
+            apply_style(Sgr::Formats, &yb, "a\nb"),
             format!("{E}[1ma{E}[22m\n{E}[1mb{E}[22m")
         );
     }
@@ -423,19 +429,13 @@ mod tests {
     #[test]
     fn style_span_is_a_plain_wrap_with_no_empty_guard() {
         let dim = chain(&[Dim]).unwrap();
+        assert_eq!(style_span(Sgr::Full, &dim, ""), format!("{E}[2m{E}[22m"));
         assert_eq!(
-            style_span(SgrMode::Full, &dim, ""),
-            format!("{E}[2m{E}[22m")
-        );
-        assert_eq!(
-            style_span(SgrMode::Formats, &dim, "a\nb"),
+            style_span(Sgr::Formats, &dim, "a\nb"),
             format!("{E}[2ma\nb{E}[22m")
         );
-        assert_eq!(style_span(SgrMode::None, &dim, "a"), "a");
-        assert_eq!(
-            style_span(SgrMode::Formats, &chain(&[Gray]).unwrap(), "a"),
-            "a"
-        );
+        assert_eq!(style_span(Sgr::None, &dim, "a"), "a");
+        assert_eq!(style_span(Sgr::Formats, &chain(&[Gray]).unwrap(), "a"), "a");
     }
 
     #[test]

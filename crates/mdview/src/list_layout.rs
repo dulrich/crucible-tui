@@ -411,29 +411,18 @@ mod tests {
     //! `createListTextLayout(...).text` called with a `parseInline` that joins its tokens'
     //! text (`br` → `HARD_RETURN`), which is what this crate's renderer does for plain text
     //! and `br` tokens under an inline walk.
-    use std::rc::Rc;
+    use crate::width::NARROW_MEASURE;
 
     use super::*;
-    use crate::context::LayoutContextInit;
-    use crate::glyphs::UNICODE_GLYPHS;
-    use crate::lang::{AliasOnlySupport, FenceLanguageResolver};
-    use crate::render::{Ambiguous, Policy, RenderOptions, Renderer, SENTINEL, Sgr, Tier, render};
-    use crate::style::SgrMode;
-    use crate::width::NARROW_MEASURE;
+    use crate::context::{LayoutContextInit, test_init};
+    use crate::render::{RenderOptions, Renderer, SENTINEL, Sgr, render};
 
     const S: char = SENTINEL;
 
     fn ctx(width: usize) -> LayoutContext {
         LayoutContext::new(LayoutContextInit {
-            width,
-            glyphs: &UNICODE_GLYPHS,
-            measure: NARROW_MEASURE,
-            resolve_fence_language: FenceLanguageResolver::builtin(Rc::new(AliasOnlySupport)),
-            resolve_wiki_link: None,
             emoji: false,
-            sgr: SgrMode::None,
-            hyperlinks: None,
-            tmux: None,
+            ..test_init(width, Sgr::None)
         })
     }
 
@@ -934,19 +923,7 @@ mod tests {
     }
 
     fn doc(source: &str, width: usize) -> String {
-        let options = RenderOptions {
-            width,
-            tier: Tier::Unicode,
-            ambiguous: Ambiguous::Narrow,
-            policy: Policy {
-                sgr: Sgr::None,
-                hyperlinks: false,
-                tmux: false,
-            },
-            emoji: None,
-            path: None,
-            highlight_as: Default::default(),
-        };
+        let options = RenderOptions::plain(width);
         render(source, None, &options).expect("renders").text
     }
 

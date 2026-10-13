@@ -7,7 +7,7 @@
 use mdview::frontmatter::{format_meta_block_detailed, split_frontmatter};
 use mdview::list_lines::strip_ansi;
 use mdview::overflow::find_first_overflow;
-use mdview::render::{Ambiguous, Policy, RenderOptions, Sgr, Tier};
+use mdview::render::{Policy, RenderOptions, Sgr};
 use mdview::width::NARROW_MEASURE;
 
 fn fixture(name: &str) -> String {
@@ -35,19 +35,7 @@ fn meta_block(meta: &str, width: usize) -> (String, Vec<(usize, usize)>) {
 
 /// `renderDocumentDetailed(source, width)`: unicode, narrow, no colour, no hyperlinks.
 fn render(source: &str, width: usize) -> mdview::RenderOutput {
-    let options = RenderOptions {
-        width,
-        tier: Tier::Unicode,
-        ambiguous: Ambiguous::Narrow,
-        policy: Policy {
-            sgr: Sgr::None,
-            hyperlinks: false,
-            tmux: false,
-        },
-        emoji: None,
-        path: None,
-        highlight_as: Default::default(),
-    };
+    let options = RenderOptions::plain(width);
     mdview::render(source, None, &options).expect("renders")
 }
 
@@ -255,17 +243,12 @@ fn cjk_excerpt_is_still_caught_by_the_gate() {
 
 fn render_with(source: &str, width: usize, sgr: Sgr) -> String {
     let options = RenderOptions {
-        width,
-        tier: Tier::Unicode,
-        ambiguous: Ambiguous::Narrow,
         policy: Policy {
             sgr,
             hyperlinks: false,
             tmux: false,
         },
-        emoji: None,
-        path: None,
-        highlight_as: Default::default(),
+        ..RenderOptions::plain(width)
     };
     mdview::render(source, None, &options)
         .expect("renders")

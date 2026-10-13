@@ -14,7 +14,7 @@ use crate::context::LayoutContext;
 use crate::highlight::highlight_to_ansi;
 use crate::inline::{COLON_REPLACER, emojify, fix_hard_return};
 use crate::list_lines::strip_ansi;
-use crate::style::{SgrMode, StyleName, apply_style_chain};
+use crate::style::{Sgr, StyleName, apply_style_chain};
 use crate::text::{JS_WS_CLASS, is_js_whitespace, js_trim_end};
 use crate::wrap::wrap_ansi;
 
@@ -53,7 +53,7 @@ fn style(ctx: &LayoutContext, names: &[StyleName], text: &str) -> String {
 /// `highlightCode`: off unless `full` (`blocks.ts:192`), and `fixHardReturn` runs first. The
 /// TS `catch` (flat yellow) is unreachable: `highlight_to_ansi` never throws.
 fn highlight_code(ctx: &LayoutContext, code: &str, language: Option<&str>) -> String {
-    if ctx.sgr != SgrMode::Full {
+    if ctx.sgr != Sgr::Full {
         return code.to_owned();
     }
     highlight_to_ansi(ctx.sgr, &fix_hard_return(code), language)
@@ -221,53 +221,39 @@ pub fn render_blockquote(ctx: &LayoutContext, body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::LayoutContextInit;
-    use crate::glyphs::UNICODE_GLYPHS;
-    use crate::lang::{AliasOnlySupport, FenceLanguageResolver};
-    use crate::width::NARROW_MEASURE;
-    use std::rc::Rc;
+    use crate::context::test_ctx;
 
-    fn ctx(sgr: SgrMode) -> LayoutContext {
-        LayoutContext::new(LayoutContextInit {
-            width: 80,
-            glyphs: &UNICODE_GLYPHS,
-            measure: NARROW_MEASURE,
-            resolve_fence_language: FenceLanguageResolver::builtin(Rc::new(AliasOnlySupport)),
-            resolve_wiki_link: None,
-            emoji: true,
-            sgr,
-            hyperlinks: None,
-            tmux: None,
-        })
+    fn ctx(sgr: Sgr) -> LayoutContext {
+        test_ctx(80, sgr)
     }
 
     #[test]
     fn code_indents_by_four_and_closes_a_section() {
-        let c = ctx(SgrMode::None);
+        let c = ctx(Sgr::None);
         assert_eq!(render_code(&c, None, "a\nb"), "    a\n    b\n\n");
         assert_eq!(render_code(&c, None, ""), "\n\n");
         assert_eq!(
-            render_code(&ctx(SgrMode::Formats), Some("rust"), "x"),
+            render_code(&ctx(Sgr::Formats), Some("rust"), "x"),
             "    x\n\n"
         );
         assert_eq!(
-            strip_ansi(&render_code(&ctx(SgrMode::Full), None, "x")),
+            strip_ansi(&render_code(&ctx(Sgr::Full), None, "x")),
             "    x\n\n"
         );
     }
 
     #[test]
     fn transform_order_is_emojify_unescape_undo_colon() {
-        let c = ctx(SgrMode::None);
+        let c = ctx(Sgr::None);
         assert_eq!(transform(&c, "&amp;lt; :rocket:"), "< \u{1f680} ");
         assert_eq!(transform(&c, "a*#COLON|*rocket*#COLON|*"), "a:rocket:");
     }
 
     #[test]
     fn heading_prefixes_hashes_and_styles_by_depth() {
-        let c = ctx(SgrMode::None);
+        let c = ctx(Sgr::None);
         assert_eq!(render_heading(&c, 2, "Hi", 80), "## Hi\n\n");
-        let f = ctx(SgrMode::Full);
+        let f = ctx(Sgr::Full);
         assert_eq!(
             render_heading(&f, 1, "Hi", 80),
             "\u{1b}[35m\u{1b}[4m\u{1b}[1m# Hi\u{1b}[22m\u{1b}[24m\u{1b}[39m\n\n"
@@ -276,13 +262,13 @@ mod tests {
 
     #[test]
     fn paragraph_splits_on_hard_returns_and_br() {
-        let c = ctx(SgrMode::None);
+        let c = ctx(Sgr::None);
         assert_eq!(render_paragraph(&c, "a\rb<br />c", 80), "a\nb\nc\n\n");
     }
 
     #[test]
     fn blockquote_keeps_a_space_only_first_indent() {
-        let c = ctx(SgrMode::None);
+        let c = ctx(Sgr::None);
         assert_eq!(render_blockquote(&c, "x\n\n"), "    x\n\n");
         assert_eq!(render_blockquote(&c, "\n  x\n"), "      x\n\n");
         assert_eq!(render_blockquote(&c, "\n\tx"), "    x\n\n");
@@ -290,7 +276,7 @@ mod tests {
 
     #[test]
     fn html_wraps_indented_lines_under_their_prefix() {
-        let c = ctx(SgrMode::None);
+        let c = ctx(Sgr::None);
         assert_eq!(render_html(&c, "<div>", 80), "<div>");
         assert_eq!(render_html(&c, "  aaa bbb", 6), "  aaa\n  bbb");
     }

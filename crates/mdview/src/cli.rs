@@ -146,14 +146,13 @@ everything, including the cache.
 "#;
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::colour::{
-    ColourDirective, ColourPolicy, ColourPolicyInput, Env, SgrMode, parse_colour_directive,
-    resolve_colour_policy, resolve_tmux,
+    ColourDirective, ColourPolicyInput, Env, Policy, parse_colour_directive, resolve_colour_policy,
+    resolve_tmux,
 };
 use crate::config::{load_config, resolve_config_path, write_highlight_alias};
-use crate::glyphs::{GlyphTier, resolve_glyphs, wide_forces_ascii};
+use crate::glyphs::{Tier, resolve_glyphs, wide_forces_ascii};
 use crate::lang::FenceLanguageResolver;
 use crate::overflow::find_first_overflow;
 use crate::pager::{page, should_page, write_stdout};
@@ -162,7 +161,8 @@ use crate::probe::{
     resolve_ambiguous_width,
 };
 use crate::render::RenderOptions;
-use crate::width::AmbiguousWidth;
+use crate::style::Sgr;
+use crate::width::Ambiguous;
 
 /// `--licenses`: the same file TS embeds, so the bytes match by construction.
 pub const LICENSE_NOTICES: &str = include_str!("../../../THIRD-PARTY-LICENSES.txt");
@@ -305,7 +305,7 @@ pub struct CliOptions {
     pub help: bool,
     pub licenses: bool,
     pub probe: bool,
-    pub glyph_tier: Option<GlyphTier>,
+    pub glyph_tier: Option<Tier>,
     pub color: Option<ColourDirective>,
     pub hyperlinks: Option<ColourDirective>,
     pub plain: bool,
@@ -350,9 +350,9 @@ pub fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             "--check" => o.check = true,
             "--ascii" | "--unicode" => {
                 let requested = if arg == "--ascii" {
-                    GlyphTier::Ascii
+                    Tier::Ascii
                 } else {
-                    GlyphTier::Unicode
+                    Tier::Unicode
                 };
                 if o.glyph_tier.is_some_and(|t| t != requested) {
                     return Err("--ascii and --unicode are mutually exclusive".into());
@@ -466,8 +466,8 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
         );
     }
     let policy = if options.plain {
-        ColourPolicy {
-            sgr: SgrMode::None,
+        Policy {
+            sgr: Sgr::None,
             hyperlinks: false,
             tmux: resolve_tmux(&p.env),
         }
@@ -549,7 +549,7 @@ fn run_highlight_as(args: &[String], p: &Process) -> CliResult {
     }
     let (fence, language) = (&args[0], &args[1]);
     // Validated against the same language set `render.rs` highlights with (D-C).
-    let validator = FenceLanguageResolver::builtin(Rc::new(crate::highlight::SyntectSupport));
+    let validator = FenceLanguageResolver::builtin();
     if !validator.is_supported(language) {
         return Err(format!(
             "highlight-as: unsupported language \"{language}\" — the highlighter does not recognize it, so the fence would render unhighlighted rather than mysteriously plain later. Common valid targets: javascript, typescript, python, bash, sql, json, yaml, plaintext (\"plaintext\" is always accepted, if the fence should just not be highlighted)."
@@ -638,8 +638,8 @@ pub fn format_probe_report(r: &AmbiguousResolution, env: &Env, p: &Process) -> S
         lines.push("  not run          no live probe was needed or permitted on this run".into());
     }
     let ambiguous = match r.ambiguous {
-        AmbiguousWidth::Narrow => "narrow",
-        AmbiguousWidth::Wide => "wide",
+        Ambiguous::Narrow => "narrow",
+        Ambiguous::Wide => "wide",
     };
     let cache_note = if r.source == AmbiguousSource::Cache {
         " (NOT a live probe)"
@@ -813,7 +813,7 @@ mod tests {
             (o.file.as_str(), o.width, o.check, o.no_pager, o.plain),
             ("f.md", Some(80.0), true, true, true)
         );
-        assert_eq!(o.glyph_tier, Some(GlyphTier::Ascii));
+        assert_eq!(o.glyph_tier, Some(Tier::Ascii));
         let o = parse_args(&a(&[
             "f",
             "--color",

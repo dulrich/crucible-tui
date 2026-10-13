@@ -129,24 +129,14 @@ pub fn render_image(href: &str, title: Option<&str>, text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::LayoutContextInit;
-    use crate::glyphs::UNICODE_GLYPHS;
-    use crate::lang::{AliasOnlySupport, FenceLanguageResolver};
-    use crate::style::SgrMode;
-    use crate::width::NARROW_MEASURE;
-    use std::rc::Rc;
+    use crate::context::{LayoutContextInit, test_init};
+    use crate::style::Sgr;
 
-    fn ctx(sgr: SgrMode, emoji: bool, hyperlinks: bool) -> LayoutContext {
+    fn ctx(sgr: Sgr, emoji: bool, hyperlinks: bool) -> LayoutContext {
         LayoutContext::new(LayoutContextInit {
-            width: 80,
-            glyphs: &UNICODE_GLYPHS,
-            measure: NARROW_MEASURE,
-            resolve_fence_language: FenceLanguageResolver::builtin(Rc::new(AliasOnlySupport)),
-            resolve_wiki_link: None,
             emoji,
-            sgr,
             hyperlinks: Some(hyperlinks),
-            tmux: None,
+            ..test_init(80, sgr)
         })
     }
 
@@ -158,32 +148,32 @@ mod tests {
 
     #[test]
     fn emoji_shortcodes_substitute_with_a_trailing_space() {
-        let c = ctx(SgrMode::None, true, false);
+        let c = ctx(Sgr::None, true, false);
         assert_eq!(emojify(&c, "a :rocket: b"), "a \u{1f680}  b");
         assert_eq!(emojify(&c, ":nope_not_real:"), ":nope_not_real:");
         assert_eq!(emojify(&c, ":+1:"), "\u{1f44d} ");
-        let off = ctx(SgrMode::None, false, false);
+        let off = ctx(Sgr::None, false, false);
         assert_eq!(emojify(&off, ":rocket:"), ":rocket:");
     }
 
     #[test]
     fn codespan_hides_colons_and_styles_yellow() {
-        let c = ctx(SgrMode::Full, true, false);
+        let c = ctx(Sgr::Full, true, false);
         assert_eq!(
             render_codespan(&c, "a:b"),
             "\u{1b}[33ma*#COLON|*b\u{1b}[39m"
         );
-        let plain = ctx(SgrMode::None, true, false);
+        let plain = ctx(Sgr::None, true, false);
         assert_eq!(render_codespan(&plain, "x"), "x");
     }
 
     #[test]
     fn link_text_and_href_forms() {
-        let c = ctx(SgrMode::None, true, false);
+        let c = ctx(Sgr::None, true, false);
         assert_eq!(render_link(&c, "http://x", "label"), "label (http://x)");
         assert_eq!(render_link(&c, "http://x", "http://x"), "http://x");
         assert_eq!(render_link(&c, "http://x", ""), "http://x");
-        let h = ctx(SgrMode::None, true, true);
+        let h = ctx(Sgr::None, true, true);
         assert_eq!(
             render_link(&h, "a+b", "t"),
             "\u{1b}]8;;a%20b\u{7}t\u{1b}]8;;\u{7}"
@@ -199,7 +189,7 @@ mod tests {
 
     #[test]
     fn del_and_em_styles() {
-        let c = ctx(SgrMode::Full, true, false);
+        let c = ctx(Sgr::Full, true, false);
         assert_eq!(
             render_del(&c, "x"),
             "\u{1b}[2m\u{1b}[90m\u{1b}[9mx\u{1b}[29m\u{1b}[39m\u{1b}[22m"

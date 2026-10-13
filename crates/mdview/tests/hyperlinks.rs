@@ -3,7 +3,7 @@
 //! `renderDocument` with `createWikiLinkResolver(<vault>/doc.md)` over the same synthetic vault
 //! (`.obsidian` marker, a `note` file under `sub`, `doc.md`), with the vault path substituted.
 
-use mdview::render::{Ambiguous, Policy, Sgr, Tier};
+use mdview::render::{Policy, Sgr};
 use mdview::{RenderOptions, render};
 use std::path::PathBuf;
 
@@ -22,17 +22,13 @@ fn vault(name: &str) -> PathBuf {
 
 fn opts(path: Option<String>, sgr: Sgr, hyperlinks: bool, tmux: bool) -> RenderOptions {
     RenderOptions {
-        width: 80,
-        tier: Tier::Unicode,
-        ambiguous: Ambiguous::Narrow,
+        path,
         policy: Policy {
             sgr,
             hyperlinks,
             tmux,
         },
-        emoji: None,
-        path,
-        highlight_as: Default::default(),
+        ..RenderOptions::plain(80)
     }
 }
 

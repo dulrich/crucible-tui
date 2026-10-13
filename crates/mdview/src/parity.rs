@@ -122,7 +122,8 @@ fn env_policy() -> Policy {
     })
 }
 
-fn parse_options(request: &Value) -> Result<RenderOptions, String> {
+/// A `serve` request's render options; also the golden replay's, so a malformed record fails.
+pub fn parse_options(request: &Value) -> Result<RenderOptions, String> {
     let width = field(request, "width")?
         .as_u64()
         .and_then(|w| usize::try_from(w).ok())

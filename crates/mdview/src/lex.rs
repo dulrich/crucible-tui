@@ -1297,12 +1297,12 @@ impl<'s> Lexer<'s> {
 
     fn table(&mut self, n: N, chain: &[Container], aligns: &[TableAlignment]) -> Token {
         let rows: Vec<N> = n.children().collect();
-        let align: Vec<Option<String>> = aligns
+        let align: Vec<Option<crate::text::Align>> = aligns
             .iter()
             .map(|a| match a {
-                TableAlignment::Left => Some("left".to_string()),
-                TableAlignment::Right => Some("right".to_string()),
-                TableAlignment::Center => Some("center".to_string()),
+                TableAlignment::Left => Some(crate::text::Align::Left),
+                TableAlignment::Right => Some(crate::text::Align::Right),
+                TableAlignment::Center => Some(crate::text::Align::Center),
                 TableAlignment::None => None,
             })
             .collect();
@@ -2769,7 +2769,7 @@ mod tests {
             panic!("{t:?}")
         };
         assert_eq!(header[1].text, "b | c");
-        assert_eq!(align, &vec![None, Some("center".to_string())]);
+        assert_eq!(align, &vec![None, Some(crate::text::Align::Center)]);
         assert_eq!(rows[0][1].text, "");
     }
 

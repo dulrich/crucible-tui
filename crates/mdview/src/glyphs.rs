@@ -10,13 +10,19 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::colour::Env;
-pub use crate::render::Tier as GlyphTier;
-use crate::width::AmbiguousWidth;
+use crate::width::Ambiguous;
+
+/// Glyph capability tier (mirrors `TS_BASELINE` `src/glyphs.ts`'s `GlyphTier`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Unicode,
+    Ascii,
+}
 
 /// One tier's glyphs.
 #[derive(Debug, PartialEq, Eq)]
 pub struct GlyphSet {
-    pub tier: GlyphTier,
+    pub tier: Tier,
     pub bullets: &'static [&'static str],
     pub rule: &'static str,
     /// `cli-table3`-named border characters, in `TS_BASELINE` `src/glyphs.ts`'s order; `None` = box drawing.
@@ -35,7 +41,7 @@ impl GlyphSet {
 }
 
 pub static UNICODE_GLYPHS: GlyphSet = GlyphSet {
-    tier: GlyphTier::Unicode,
+    tier: Tier::Unicode,
     bullets: &["•", "◦", "‣"],
     rule: "─",
     table_chars: None,
@@ -61,7 +67,7 @@ const ASCII_TABLE_CHARS: &[(&str, &str)] = &[
 ];
 
 pub static ASCII_GLYPHS: GlyphSet = GlyphSet {
-    tier: GlyphTier::Ascii,
+    tier: Tier::Ascii,
     bullets: &["-"],
     rule: "-",
     table_chars: Some(ASCII_TABLE_CHARS),
@@ -69,10 +75,10 @@ pub static ASCII_GLYPHS: GlyphSet = GlyphSet {
 };
 
 /// The set for a tier.
-pub fn glyphs_for(tier: GlyphTier) -> &'static GlyphSet {
+pub fn glyphs_for(tier: Tier) -> &'static GlyphSet {
     match tier {
-        GlyphTier::Unicode => &UNICODE_GLYPHS,
-        GlyphTier::Ascii => &ASCII_GLYPHS,
+        Tier::Unicode => &UNICODE_GLYPHS,
+        Tier::Ascii => &ASCII_GLYPHS,
     }
 }
 
@@ -92,25 +98,25 @@ fn has_utf8_locale(env: &Env) -> bool {
     UTF8.is_match(locale)
 }
 
-fn detect_tier(env: &Env) -> GlyphTier {
+fn detect_tier(env: &Env) -> Tier {
     let term = env.get("TERM").map(String::as_str).unwrap_or("");
     if DUMB_TERMS.contains(&term) {
-        return GlyphTier::Ascii;
+        return Tier::Ascii;
     }
     if has_utf8_locale(env) {
-        GlyphTier::Unicode
+        Tier::Unicode
     } else {
-        GlyphTier::Ascii
+        Tier::Ascii
     }
 }
 
 /// `resolveGlyphs(env, override, ambiguous)`.
 pub fn resolve_glyphs(
     env: &Env,
-    override_tier: Option<GlyphTier>,
-    ambiguous: Option<AmbiguousWidth>,
+    override_tier: Option<Tier>,
+    ambiguous: Option<Ambiguous>,
 ) -> &'static GlyphSet {
-    if ambiguous == Some(AmbiguousWidth::Wide) {
+    if ambiguous == Some(Ambiguous::Wide) {
         return &ASCII_GLYPHS;
     }
     if let Some(tier) = override_tier {
@@ -125,8 +131,8 @@ pub fn resolve_glyphs(
 }
 
 /// `wideForcesAscii`: whether an explicit `--unicode` is being overridden by `wide`.
-pub fn wide_forces_ascii(override_tier: Option<GlyphTier>, ambiguous: AmbiguousWidth) -> bool {
-    ambiguous == AmbiguousWidth::Wide && override_tier == Some(GlyphTier::Unicode)
+pub fn wide_forces_ascii(override_tier: Option<Tier>, ambiguous: Ambiguous) -> bool {
+    ambiguous == Ambiguous::Wide && override_tier == Some(Tier::Unicode)
 }
 
 #[cfg(test)]
@@ -145,70 +151,61 @@ mod tests {
     fn detection_by_term_and_locale() {
         assert_eq!(
             resolve_glyphs(&env(&[("LANG", "en_US.UTF-8")]), None, None).tier,
-            GlyphTier::Unicode
+            Tier::Unicode
         );
         assert_eq!(
             resolve_glyphs(&env(&[("LANG", "en_US.utf8")]), None, None).tier,
-            GlyphTier::Unicode
+            Tier::Unicode
         );
         assert_eq!(
             resolve_glyphs(&env(&[("LANG", "C")]), None, None).tier,
-            GlyphTier::Ascii
+            Tier::Ascii
         );
-        assert_eq!(
-            resolve_glyphs(&Env::new(), None, None).tier,
-            GlyphTier::Ascii
-        );
+        assert_eq!(resolve_glyphs(&Env::new(), None, None).tier, Tier::Ascii);
         for term in DUMB_TERMS {
             assert_eq!(
                 resolve_glyphs(&env(&[("TERM", term), ("LANG", "en_US.UTF-8")]), None, None).tier,
-                GlyphTier::Ascii
+                Tier::Ascii
             );
         }
         // An empty LC_ALL falls through to LANG (`||`, not `??`).
         assert_eq!(
             resolve_glyphs(&env(&[("LC_ALL", ""), ("LANG", "x.UTF-8")]), None, None).tier,
-            GlyphTier::Unicode
+            Tier::Unicode
         );
         assert_eq!(
             resolve_glyphs(&env(&[("LC_ALL", "C"), ("LANG", "x.UTF-8")]), None, None).tier,
-            GlyphTier::Ascii
+            Tier::Ascii
         );
     }
 
     #[test]
     fn precedence_wide_then_override_then_env() {
         let utf = env(&[("LANG", "en_US.UTF-8"), ("MDVIEW_GLYPHS", "ascii")]);
-        assert_eq!(resolve_glyphs(&utf, None, None).tier, GlyphTier::Ascii);
+        assert_eq!(resolve_glyphs(&utf, None, None).tier, Tier::Ascii);
         assert_eq!(
-            resolve_glyphs(&utf, Some(GlyphTier::Unicode), None).tier,
-            GlyphTier::Unicode
+            resolve_glyphs(&utf, Some(Tier::Unicode), None).tier,
+            Tier::Unicode
         );
         assert_eq!(
-            resolve_glyphs(&utf, Some(GlyphTier::Unicode), Some(AmbiguousWidth::Wide)).tier,
-            GlyphTier::Ascii
+            resolve_glyphs(&utf, Some(Tier::Unicode), Some(Ambiguous::Wide)).tier,
+            Tier::Ascii
         );
         assert_eq!(
             resolve_glyphs(&env(&[("MDVIEW_GLYPHS", "unicode")]), None, None).tier,
-            GlyphTier::Unicode
+            Tier::Unicode
         );
         assert_eq!(
             resolve_glyphs(&env(&[("MDVIEW_GLYPHS", "UNICODE")]), None, None).tier,
-            GlyphTier::Ascii
+            Tier::Ascii
         );
     }
 
     #[test]
     fn wide_forces_ascii_only_for_an_explicit_unicode() {
-        assert!(wide_forces_ascii(
-            Some(GlyphTier::Unicode),
-            AmbiguousWidth::Wide
-        ));
-        assert!(!wide_forces_ascii(None, AmbiguousWidth::Wide));
-        assert!(!wide_forces_ascii(
-            Some(GlyphTier::Unicode),
-            AmbiguousWidth::Narrow
-        ));
+        assert!(wide_forces_ascii(Some(Tier::Unicode), Ambiguous::Wide));
+        assert!(!wide_forces_ascii(None, Ambiguous::Wide));
+        assert!(!wide_forces_ascii(Some(Tier::Unicode), Ambiguous::Narrow));
     }
 
     #[test]
