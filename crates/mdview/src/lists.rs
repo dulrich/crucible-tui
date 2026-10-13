@@ -179,33 +179,49 @@ fn numbered_point(n: usize) -> String {
     format!("{n}. ")
 }
 
-/// `TASK_GLYPHS` (`lists.ts:252-276`).
+/// `TASK_GLYPHS` (`lists.ts:252-276`), the Unicode tier's task-state table — the one table
+/// both composition ([`task_glyph`]) and the lexer's pre-pass ([`task_glyph_char`]) read.
+const TASK_GLYPHS: &[(char, &str)] = &[
+    (' ', "○"),
+    ('x', "✓"),
+    ('X', "✓"),
+    ('/', "◐"),
+    ('-', "✗"),
+    ('>', "➤"),
+    ('<', "◷"),
+    ('?', "?"),
+    ('!', "!"),
+    ('*', "★"),
+    ('"', "❝"),
+    ('l', "📍"),
+    ('b', "🔖"),
+    ('i', "ℹ"),
+    ('S', "🐖"),
+    ('I', "💡"),
+    ('p', "👍"),
+    ('c', "👎"),
+    ('f', "🔥"),
+    ('k', "🔑"),
+    ('w', "🏆"),
+    ('u', "⬆"),
+    ('d', "⬇"),
+];
+
+/// The glyph for a task-state character, if the table has one.
+pub fn task_glyph_char(state: char) -> Option<&'static str> {
+    TASK_GLYPHS
+        .iter()
+        .find(|(c, _)| *c == state)
+        .map(|(_, g)| *g)
+}
+
+/// The glyph for a task state, if it is exactly one character the table has.
 pub fn task_glyph(state: &str) -> Option<&'static str> {
-    Some(match state {
-        " " => "○",
-        "x" | "X" => "✓",
-        "/" => "◐",
-        "-" => "✗",
-        ">" => "➤",
-        "<" => "◷",
-        "?" => "?",
-        "!" => "!",
-        "*" => "★",
-        "\"" => "❝",
-        "l" => "📍",
-        "b" => "🔖",
-        "i" => "ℹ",
-        "S" => "🐖",
-        "I" => "💡",
-        "p" => "👍",
-        "c" => "👎",
-        "f" => "🔥",
-        "k" => "🔑",
-        "w" => "🏆",
-        "u" => "⬆",
-        "d" => "⬇",
-        _ => return None,
-    })
+    let mut chars = state.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => task_glyph_char(c),
+        _ => None,
+    }
 }
 
 /// `renderTaskState()` (`lists.ts:371-398`). TS mutates the item's tokens in place; here the

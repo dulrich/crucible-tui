@@ -28,7 +28,7 @@ A second command, `jsonedit`, now ships from this repo (`crates/jsonedit/`, `pla
 
 ## Stack
 
-- **The renderer is Rust** — `crates/mdview/`, a static musl binary built with `cargo auditable` beside `crates/jsonedit/` in one Cargo workspace (`Cargo.toml`, `members = ["crates/*"]`, toolchain pinned by `rust-toolchain.toml` to 1.98.1). `comrak` lexes, and `crates/mdview/src/lex.rs` adapts its tree into the marked-shaped tokens this repo's own walk and visitors read; `syntect` + `two-face` highlight.
+- **The renderer is Rust** — `crates/mdview/`, a static musl binary built with `cargo auditable` beside `crates/jsonedit/` in one Cargo workspace (`Cargo.toml`, `members = ["crates/*"]`, toolchain pinned by `rust-toolchain.toml` to 1.98.1). `comrak` lexes, and `crates/mdview/src/lex/` adapts its tree into the marked-shaped tokens this repo's own walk and visitors read; `syntect` + `two-face` highlight.
 - **Bun + TypeScript remain, for the scripts and instruments only** (`scripts/`, `tests/`): the corpus sweep, the colour axis, the render differential, the generators and `verify`. They drive the built binary through its hidden `mdview __parity` subcommand and never render in-process.
 - **The Bun/TypeScript-over-Rust override is closed.** The scaffolding skill's Gate 2 default is Rust, and this repo recorded a justified exception for the original build (`marked@^14` pinned across the sibling tools, the wiki-link logic already in TypeScript, a prototype measured first). `plans/mdview-rust-port.md` ported the renderer behaviour for behaviour under byte-parity gates, and WP-9 deleted the TypeScript renderer. **`TS_BASELINE` = `c097c66`** is the last commit carrying it; every fact below that needs the TypeScript renderer cites that sha.
 - What the TypeScript renderer had to own, and why — `marked-terminal` replaced method by method, `cli-table3`'s emitter, the walk taken from marked's `Parser` — is history now, carried in `crates/mdview/AGENTS.md` (the port's behavioural spec, moved from `src/AGENTS.md`) and `docs/agents/dependency-history.md`. Its `src/*.ts` citations name `TS_BASELINE`'s tree.
@@ -45,7 +45,7 @@ crates/mdview/src/  the renderer (each module's header names the TS_BASELINE src
   config.rs         XDG config load, color/hyperlinks directives, highlight-as write
   probe.rs          the East Asian Ambiguous probe and its cache
   render.rs         render entry: frontmatter, lex, context, visitors, walk, post-pass
-  lex.rs            comrak tree -> marked-shaped tokens (token.rs is the schema)
+  lex/              comrak tree -> marked-shaped tokens (token.rs is the schema)
   walk.rs           the owned token walk
   context.rs        the immutable per-render layout context
   list_layout.rs    the list/text layout state machine
