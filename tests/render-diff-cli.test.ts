@@ -2,9 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-// WP-1 of `plans/mdview-rust-port.md`: the differential's new axes and kinds — the policy/emoji
-// axes, D-C's channels, the non-vacuity requirement, the `ts-server:` transport and the stub
-// `rust:` side — plus the byte-neutral `lexBody` extraction the `--input tokens` mode reads.
+// The differential's CLI-level surface: the policy/emoji axes, D-C's channels, the non-vacuity
+// requirement, flag parsing (shards, `--require-free`) and the JSONL transport to the `rust:`
+// side. Was `tests/render-diff-port.test.ts` (WP-1 of `plans/mdview-rust-port.md`); renamed and
+// its `--input tokens` assertions removed at WP-2 of `plans/retire-ts-parity-residue.md`.
 import {
   classifyDiffs,
   computeComboRecord,
@@ -123,14 +124,12 @@ describe("D-C classification", () => {
 });
 
 describe("render-diff flags", () => {
-  test("--policy/--emoji/--input/--shard/--require-free/--require-nonzero parse, and bad values throw", () => {
+  test("--policy/--emoji/--shard/--require-free/--require-nonzero parse, and bad values throw", () => {
     const options = parseArgs([
       "--policy",
       "P0,P3",
       "--emoji",
       "on,off",
-      "--input",
-      "tokens",
       "--shard",
       "2/3",
       "--require-free",
@@ -140,7 +139,6 @@ describe("render-diff flags", () => {
     ]);
     expect(options.policies).toEqual(["P0", "P3"]);
     expect(options.emojis).toEqual(["on", "off"]);
-    expect(options.input).toBe("tokens");
     expect(options.shard).toEqual({ index: 2, count: 3 });
     expect(options.requireFree).toEqual(["list", "table"]);
     expect(options.requireNonzero).toEqual(["sgr", "dcs"]);

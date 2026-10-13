@@ -99,28 +99,6 @@ const LIST_MARKER_PREFIX = /^(\s{2,}(?:[•*\-◦‣+]|\d+\.)\s+)/;
 export const MARKER_SHAPED_LINE = /^(?:\*|\d+\.)/;
 
 /**
- * The strictly narrower half of the shape above: a column-0 line `substituteBullets` will
- * actually **rewrite** — its `UNORDERED_MARKER_LINE` (`TS_BASELINE` `src/lists.ts`) with the indent group
- * stripped off, exactly as `MARKER_SHAPED_LINE` is `isPointedLine` with the indent group
- * stripped off.
- *
- * **Two shapes, because two passes claim different things, and conflating them costs
- * width.** `MARKER_SHAPED_LINE` is what the *composer* mistakes for a marker — grid-blind,
- * no space required after it — and every marker-shaped continuation still needs its guard
- * space to escape that. This one is what the *bullet substitution* rewrites: a literal `*`
- * followed by whitespace, on the four-column grid. The gap between them is real content:
- * `12. release notes` (claimed by the composer, rewritten by nothing afterwards) and
- * `*#COLON|*root`, the escaped-colon spelling `undoColon` decodes during composition, whose
- * `*` is glued to its next character.
- *
- * Added in WP-1 of `plans/renderer-deferred-work.md`, in this module rather than at its one
- * call site, for the reason the module exists: `TS_BASELINE` `src/render.ts`'s coalesced seam has to widen
- * its guard for exactly the lines this predicate claims, and a second hand-spelled copy of a
- * marker shape is the drift this repo has already paid for once.
- */
-export const REWRITABLE_MARKER_LINE = /^\*\s/;
-
-/**
  * A rendered list marker sitting at **column 0** — the same marker shapes `LIST_BULLET`
  * recognizes, both glyph tiers, but with no indent in front of them at all.
  *

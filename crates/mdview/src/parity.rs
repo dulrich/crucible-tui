@@ -18,7 +18,6 @@ use std::io::{BufRead, Write};
 use serde_json::{Value, json};
 
 use crate::render::{Ambiguous, Policy, RenderOptions, Sgr, Tier, render};
-use crate::token::Token;
 
 /// Run `__parity <sub>` over stdin/stdout.
 pub fn run(args: &[String]) -> Result<i32, String> {
@@ -192,27 +191,16 @@ pub fn parse_options(request: &Value) -> Result<RenderOptions, String> {
     })
 }
 
-#[cfg(feature = "parity-tokens")]
-fn parse_tokens(value: &Value) -> Result<Vec<Token>, String> {
-    serde_json::from_value(value.clone()).map_err(|e| format!("bad tokens: {e}"))
-}
-
-#[cfg(not(feature = "parity-tokens"))]
-fn parse_tokens(_value: &Value) -> Result<Vec<Token>, String> {
-    Err("token input requires a build with the parity-tokens feature".into())
-}
-
 /// One `serve` request line in, one response line out.
 pub fn handle_render(line: &str) -> String {
     let result = (|| -> Result<String, String> {
         let request: Value = serde_json::from_str(line).map_err(|e| format!("bad request: {e}"))?;
         let source = field(&request, "source")?.as_str().ok_or("bad source")?;
         let options = parse_options(&request)?;
-        let tokens = match request.get("tokens") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(parse_tokens(value)?),
-        };
-        let output = render(source, tokens.as_deref(), &options).map_err(|e| e.to_string())?;
+        if !matches!(request.get("tokens"), None | Some(Value::Null)) {
+            return Err("token input was removed (plans/retire-ts-parity-residue.md WP-2)".into());
+        }
+        let output = render(source, None, &options).map_err(|e| e.to_string())?;
         let ranges: Vec<[usize; 2]> = output.code_ranges.iter().map(|&(a, b)| [a, b]).collect();
         let mut response = json!({ "text": output.text, "codeRanges": ranges });
         // The frontmatter facts D-A's predicate reads (`scripts/divergences.ts`, `RenderSide`).

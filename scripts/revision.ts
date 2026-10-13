@@ -14,7 +14,7 @@
  * **One revision kind since WP-9 of `plans/mdview-rust-port.md`.** The TypeScript kinds — the
  * in-process `<dir|ref>` and `ts-server:<dir|ref>` behind `scripts/parity-ts-server.ts` — were
  * deleted with the TypeScript renderer; they exist at `TS_BASELINE` (`c097c66`). A `rust:`
- * side is `crates/mdview` built with `--features parity-tokens` into a cache outside every
+ * side is `crates/mdview` built (release, no extra features) into a cache outside every
  * checkout, so `--rev-a rust:<ref> --rev-b rust:.` is a Rust-vs-Rust regression differential.
  *
  * **Measurement is not the handle's.** Detector counts, overflow and the escape scan come from
@@ -127,8 +127,6 @@ export interface RenderRequest {
   ambiguous: AmbiguousModeName;
   policy: PolicyName;
   emoji: EmojiAxis;
-  /** `--input tokens`: census-normalized `lexBody` tokens (rev-B only; a TS side ignores them). */
-  tokens?: unknown[];
 }
 
 /**
@@ -174,7 +172,6 @@ export interface WireRequest {
   ambiguous: AmbiguousModeName;
   policy: WirePolicy | "env";
   emoji?: boolean | null;
-  tokens?: unknown[];
 }
 
 export function toWireRequest(req: RenderRequest): WireRequest {
@@ -187,7 +184,6 @@ export function toWireRequest(req: RenderRequest): WireRequest {
     emoji: req.emoji === "on" ? true : req.emoji === "off" ? false : null,
   };
   if (req.path !== undefined) wire.path = req.path;
-  if (req.tokens !== undefined) wire.tokens = req.tokens;
   return wire;
 }
 
@@ -383,17 +379,17 @@ const CARGO_TREE_PATHS = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "cr
 
 async function cargoBuild(root: string, targetDir: string): Promise<void> {
   const proc = Bun.spawn(
-    ["cargo", "build", "--release", "--locked", "-p", "mdview", "--features", "parity-tokens"],
+    ["cargo", "build", "--release", "--locked", "-p", "mdview"],
     { cwd: root, env: { ...process.env, CARGO_TARGET_DIR: targetDir }, stdout: "pipe", stderr: "pipe" },
   );
   const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
   if (code !== 0) {
-    throw new Error(`render-diff: cargo build of mdview (parity-tokens) in ${root} failed (exit ${code}):\n${stderr.trim().slice(-4000)}`);
+    throw new Error(`render-diff: cargo build of mdview in ${root} failed (exit ${code}):\n${stderr.trim().slice(-4000)}`);
   }
 }
 
 /**
- * Build (or reuse) a `parity-tokens` mdview for `spec`. A ref is exported into
+ * Build (or reuse) a release mdview for `spec`. A ref is exported into
  * `<cache>/<sha>/tree` and built into `<cache>/<sha>/target`, and the build is skipped when
  * that binary already exists — a sha's binary never changes. A directory is built in place
  * with `CARGO_TARGET_DIR=<cache>/dir-<path hash>/target`, every time (cargo is incremental).

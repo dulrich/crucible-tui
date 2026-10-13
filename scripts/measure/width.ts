@@ -197,10 +197,3 @@ export const WIDE_MEASURE: Measure = makeMeasure("wide");
 export function measureFor(ambiguous: AmbiguousWidth): Measure {
   return ambiguous === "wide" ? WIDE_MEASURE : NARROW_MEASURE;
 }
-
-/** Parse an `MDVIEW_AMBIGUOUS`-shaped value; anything unrecognized is `undefined`. */
-export function parseAmbiguousWidth(value: string | undefined): AmbiguousWidth | undefined {
-  if (value === "narrow") return "narrow";
-  if (value === "wide") return "wide";
-  return undefined;
-}
