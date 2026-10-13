@@ -1,8 +1,8 @@
 //! Fence-language aliases and the supported-language fallback, ported from `TS_BASELINE` `src/lang.ts`.
 //!
-//! `supportsLanguage` is the highlighter's (highlight.js in TS, syntect at WP-6), so it is a
-//! parameter here: [`LanguageSupport`]. Until WP-6 fills it, [`AliasOnlySupport`] answers
-//! from the alias map alone (its targets, plus `plaintext`).
+//! `supportsLanguage` is the highlighter's (syntect, `highlight.rs`'s `SyntectSupport`), so it
+//! is a parameter here: [`LanguageSupport`]. [`AliasOnlySupport`] answers from the alias map
+//! alone (its targets, plus `plaintext`), for tests that need no grammar set.
 //!
 //! **One TS quirk not reproduced:** `aliases[lower]` is a plain-object lookup, so a fence
 //! language spelled like an `Object.prototype` key (`constructor`, `__proto__`) reads the

@@ -26,8 +26,7 @@ fn meta_of(source: &str) -> String {
 
 /// `formatMetaBlockDetailed(meta, width)`: narrow ruler, no colour.
 fn meta_block(meta: &str, width: usize) -> (String, Vec<(usize, usize)>) {
-    let result =
-        format_meta_block_detailed(meta, width, NARROW_MEASURE, Sgr::None).expect("formats");
+    let result = format_meta_block_detailed(meta, width, NARROW_MEASURE, Sgr::None);
     (
         strip_ansi(&result.text).into_owned(),
         result.verbatim_ranges,

@@ -14,7 +14,6 @@ use crate::context::LayoutContext;
 use crate::highlight::highlight_to_ansi;
 use crate::inline::{COLON_REPLACER, emojify, fix_hard_return};
 use crate::list_lines::strip_ansi;
-use crate::render::RenderError;
 use crate::style::{SgrMode, StyleName, apply_style_chain};
 use crate::text::{JS_WS_CLASS, is_js_whitespace, js_trim_end};
 use crate::wrap::wrap_ansi;
@@ -61,16 +60,12 @@ fn highlight_code(ctx: &LayoutContext, code: &str, language: Option<&str>) -> St
 }
 
 /// `renderCode`: the language resolved through `ctx.resolveFenceLanguage`, then highlighted.
-pub fn render_code(
-    ctx: &LayoutContext,
-    lang: Option<&str>,
-    text: &str,
-) -> Result<String, RenderError> {
+pub fn render_code(ctx: &LayoutContext, lang: Option<&str>, text: &str) -> String {
     let language = ctx.resolve_fence_language.resolve(lang);
-    Ok(section(&indentify(
+    section(&indentify(
         TAB,
         &highlight_code(ctx, text, language.as_deref()),
-    )))
+    ))
 }
 
 /// `renderHr`.
@@ -249,14 +244,14 @@ mod tests {
     #[test]
     fn code_indents_by_four_and_closes_a_section() {
         let c = ctx(SgrMode::None);
-        assert_eq!(render_code(&c, None, "a\nb").unwrap(), "    a\n    b\n\n");
-        assert_eq!(render_code(&c, None, "").unwrap(), "\n\n");
+        assert_eq!(render_code(&c, None, "a\nb"), "    a\n    b\n\n");
+        assert_eq!(render_code(&c, None, ""), "\n\n");
         assert_eq!(
-            render_code(&ctx(SgrMode::Formats), Some("rust"), "x").unwrap(),
+            render_code(&ctx(SgrMode::Formats), Some("rust"), "x"),
             "    x\n\n"
         );
         assert_eq!(
-            strip_ansi(&render_code(&ctx(SgrMode::Full), None, "x").unwrap()),
+            strip_ansi(&render_code(&ctx(SgrMode::Full), None, "x")),
             "    x\n\n"
         );
     }

@@ -2,9 +2,8 @@
 //! the code sentinel, `wrapCode`, the code-range walk, the post-compose passes and
 //! `renderDocumentDetailed`'s orchestration.
 //!
-//! A feature a later work package owns — lists (WP-4), tables (WP-5), the highlighter (WP-6) —
-//! returns `RenderError::Missing(feature)`, never a panic and never a partial render, so the
-//! parity server reports `unimplemented: <feature>` and `render-diff` counts it as an error.
+//! The one error a render can return is `RenderError::UnknownToken`: a token reached the walk
+//! it does not belong to, never a panic and never a partial render.
 //!
 //! Five visitors — `list`, `text`, `paragraph`, `heading`, `blockquote` — share one render's
 //! layout state and live in `list_layout.rs` (`TS_BASELINE` `src/list-layout.ts`); the renderer object here
@@ -24,7 +23,7 @@ use crate::inline;
 use crate::lang::FenceLanguageResolver;
 use crate::lex;
 use crate::list_layout::{ListTextLayout, create_list_text_layout};
-use crate::token::Token;
+use crate::token::{ListItem, TableCell, Token};
 use crate::walk::{self, R, Visitors};
 use crate::width::{Measure, measure_for};
 use crate::wikilink;
@@ -74,20 +73,32 @@ pub struct RenderOptions {
     pub highlight_as: std::collections::BTreeMap<String, String>,
 }
 
-/// What a render returns: the text and its 1-based inclusive code ranges.
+/// What a render returns: the text, its 1-based inclusive code ranges, and — when the source
+/// has frontmatter — what the frontmatter formatter knew about its own block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderOutput {
     pub text: String,
     pub code_ranges: Vec<(usize, usize)>,
+    pub frontmatter: Option<FrontmatterFacts>,
+}
+
+/// What the frontmatter formatter knows about its own block, for the R-gate's D-A attribution
+/// (`scripts/divergences.ts`'s `RenderSide.frontmatter`), computed once by [`render`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontmatterFacts {
+    /// Whether the block parsed.
+    pub parsed: bool,
+    /// Only on a failed parse: the 0-based half-open line span `[start, end)` of the diagnostic
+    /// within the rendered text. The meta block opens the document, and a failed parse's echo
+    /// range starts on the line after the diagnostic, so the span is `[0, echo_start - 1)`.
+    pub diagnostic: Option<(usize, usize)>,
+    /// How many of `code_ranges`' leading entries are frontmatter-echo ranges.
+    pub echo_ranges: usize,
 }
 
 /// Why a render did not produce output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderError {
-    /// The renderer as a whole is not available.
-    Unimplemented,
-    /// A feature a later work package owns: `list`, `table` or `highlight`.
-    Missing(&'static str),
     /// `walk.ts`'s `Token with "…" type was not found.`: a token reached the wrong walk.
     UnknownToken(&'static str),
 }
@@ -95,8 +106,6 @@ pub enum RenderError {
 impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RenderError::Unimplemented => f.write_str("unimplemented"),
-            RenderError::Missing(feature) => write!(f, "unimplemented: {feature}"),
             RenderError::UnknownToken(t) => write!(f, "Token with \"{t}\" type was not found."),
         }
     }
@@ -141,7 +150,11 @@ fn extract_code_ranges(rendered: &str) -> RenderOutput {
             line += 1;
         }
     }
-    RenderOutput { text, code_ranges }
+    RenderOutput {
+        text,
+        code_ranges,
+        frontmatter: None,
+    }
 }
 
 /// `EMOJI_TRAILING_SPACE`; the pass runs per line, so `$` is the line's end.
@@ -215,19 +228,11 @@ impl Visitors for Renderer<'_> {
     }
 
     fn code(&self, lang: Option<&str>, text: &str) -> R {
-        Ok(wrap_code(&blocks::render_code(self.layout, lang, text)?))
+        Ok(wrap_code(&blocks::render_code(self.layout, lang, text)))
     }
 
-    fn table(&self, token: &Token) -> R {
+    fn table(&self, header: &[TableCell], rows: &[Vec<TableCell>], align: &[Option<String>]) -> R {
         // `TS_BASELINE` `src/render.ts:813`: the budget is `max(1, targetWidth - prefix.width())`.
-        let Token::Table {
-            header,
-            rows,
-            align,
-        } = token
-        else {
-            return Err(RenderError::Missing("table"));
-        };
         let l = self.layout;
         Ok(crate::table::render_table(
             header,
@@ -244,8 +249,8 @@ impl Visitors for Renderer<'_> {
         self.list_text.blockquote(self, tokens)
     }
 
-    fn list(&self, token: &Token) -> R {
-        self.list_text.list(self, token)
+    fn list(&self, ordered: bool, items: &[ListItem]) -> R {
+        self.list_text.list(self, ordered, items)
     }
 
     fn html(&self, text: &str) -> R {
@@ -304,34 +309,6 @@ impl Visitors for Renderer<'_> {
     }
 }
 
-/// `(parsed, diagnostic)`: whether the block parsed, and on failure the diagnostic's 0-based
-/// half-open line span within the rendered text.
-pub type FrontmatterFacts = (bool, Option<(usize, usize)>);
-
-/// What the frontmatter formatter knows about its own block, for the R-gate's D-A attribution
-/// (`scripts/divergences.ts`'s `RenderSide.frontmatter`): `None` without frontmatter, else
-/// whether it parsed and — only on failure — the 0-based half-open line span `[start, end)` of
-/// the diagnostic within the rendered text. The meta block opens the document, and a failed
-/// parse's echo range starts on the line after the diagnostic, so the span is
-/// `[0, echo_start - 1)`.
-pub fn frontmatter_facts(
-    source: &str,
-    options: &RenderOptions,
-) -> Result<Option<FrontmatterFacts>, RenderError> {
-    let (meta, _) = frontmatter::split_frontmatter(source);
-    let Some(meta) = meta else { return Ok(None) };
-    let result = frontmatter::format_meta_block_detailed(
-        &meta,
-        options.width,
-        measure_for(options.ambiguous),
-        options.policy.sgr,
-    )?;
-    Ok(Some(match result.verbatim_ranges.first() {
-        Some(&(start, _)) if start > 1 => (false, Some((0, start - 1))),
-        _ => (true, None),
-    }))
-}
-
 /// Render `source` (`renderDocumentDetailed`). `tokens`, when given, replaces the adapter's lex
 /// of the body (the R-gate); they are marked's own, already pre-processed by `lexBody`.
 pub fn render(
@@ -347,8 +324,18 @@ pub fn render(
     let (meta, body) = frontmatter::split_frontmatter(source);
     let meta_result = meta
         .as_deref()
-        .map(|m| frontmatter::format_meta_block_detailed(m, target_width, measure, sgr))
-        .transpose()?;
+        .map(|m| frontmatter::format_meta_block_detailed(m, target_width, measure, sgr));
+    let frontmatter = meta_result.as_ref().map(|r| {
+        let diagnostic = match r.verbatim_ranges.first() {
+            Some(&(start, _)) if start > 1 => Some((0, start - 1)),
+            _ => None,
+        };
+        FrontmatterFacts {
+            parsed: diagnostic.is_none(),
+            diagnostic,
+            echo_ranges: r.verbatim_ranges.len(),
+        }
+    });
     let meta_block = match &meta_result {
         Some(r) => format!(
             "{}\n{}\n\n",
@@ -393,6 +380,7 @@ pub fn render(
     let RenderOutput {
         text: stripped_body,
         code_ranges: body_ranges,
+        ..
     } = extract_code_ranges(&rendered_body);
     let cleaned_body: String = stripped_body
         .chars()
@@ -411,6 +399,7 @@ pub fn render(
     Ok(RenderOutput {
         text: format!("{meta_block}{emoji_cleaned}"),
         code_ranges,
+        frontmatter,
     })
 }
 
@@ -493,21 +482,6 @@ mod tests {
         assert_eq!(
             strip_emoji_trailing_space("\u{1f680} ", &[(1, 1)]),
             "\u{1f680} "
-        );
-    }
-
-    #[test]
-    fn tables_and_full_colour_fences_are_unimplemented_not_partial() {
-        // A list renders since WP-4b.
-        assert_eq!(
-            render("- a\n", None, &opts(80, Tier::Unicode, Sgr::None))
-                .unwrap()
-                .text,
-            "    • a\n\n"
-        );
-        assert_eq!(
-            RenderError::Missing("list").to_string(),
-            "unimplemented: list"
         );
     }
 

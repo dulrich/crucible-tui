@@ -171,7 +171,7 @@ fn dc_equal(want: &str, got: &str, ranges: &[(usize, usize)]) -> bool {
 }
 
 /// WP-3's golden replay: every `render.jsonl` record either matches `text` and `codeRanges`
-/// exactly, returns `Missing(feature)` (counted per feature), or is allowlisted by source hash
+/// exactly or is allowlisted by source hash
 /// against a named registry entry. Nothing is skipped silently.
 #[test]
 fn golden_render_replay() {
@@ -181,16 +181,12 @@ fn golden_render_replay() {
     let mut dc_relaxed = 0usize;
     let mut allowlisted = 0usize;
     let mut used = std::collections::HashSet::new();
-    let mut missing: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut failures = Vec::new();
     for record in &golden.records {
         let source = record["source"].as_str().expect("source");
         let options = options_of(record);
         let hash = source_hash(source);
         match mdview::render::render(source, None, &options) {
-            Err(mdview::render::RenderError::Missing(feature)) => {
-                *missing.entry(feature.to_owned()).or_default() += 1;
-            }
             Err(e) => failures.push(format!("{hash} error {e}")),
             Ok(out) => {
                 let ranges: Vec<(usize, usize)> =
@@ -218,9 +214,8 @@ fn golden_render_replay() {
             }
         }
     }
-    let unimplemented: usize = missing.values().sum();
     println!(
-        "golden replay: records={} matched={matched} dc-relaxed={dc_relaxed} unimplemented={unimplemented} {missing:?} allowlisted={allowlisted} failed={}",
+        "golden replay: records={} matched={matched} dc-relaxed={dc_relaxed} allowlisted={allowlisted} failed={}",
         golden.records.len(),
         failures.len()
     );
