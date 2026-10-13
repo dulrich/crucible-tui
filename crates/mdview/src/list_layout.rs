@@ -22,14 +22,13 @@ use regex::Regex;
 
 use crate::blocks;
 use crate::context::{LayoutContext, PrefixEntry};
-use crate::glyphs::GlyphSet;
 use crate::inline::HARD_RETURN;
 use crate::list_lines::{
     MARKER_SHAPED_LINE, REWRITABLE_MARKER_LINE, is_guard_shaped_line, strip_ansi,
 };
 use crate::lists;
 use crate::text::{JS_WS_CLASS, js_trim, js_trim_end, js_trim_start};
-use crate::token::Token;
+use crate::token::{ListItem, Token};
 use crate::walk::{self, R, Visitors};
 use crate::width::Measure;
 use crate::wrap::wrap_ansi;
@@ -192,23 +191,6 @@ pub fn rewrap_list_body(
         .join("\n")
 }
 
-// ---- The two seams into list composition (`lists.rs`, WP-4b). ----
-
-/// `renderList(layout, token, parse, sentinel)` (`lists.ts:483`).
-fn render_list(
-    ctx: &LayoutContext,
-    token: &Token,
-    parse: &dyn Fn(&[Token], bool) -> R,
-    sentinel: char,
-) -> R {
-    lists::render_list(ctx, token, parse, sentinel)
-}
-
-/// `substituteBullets(body, glyphs, sentinel)` (`lists.ts:757`).
-fn substitute_bullets(body: &str, glyphs: &GlyphSet, sentinel: char) -> R {
-    Ok(lists::substitute_bullets(body, glyphs, sentinel))
-}
-
 /// The per-render layout state and its five visitors (`ListTextLayout`).
 pub struct ListTextLayout<'a> {
     layout: &'a LayoutContext,
@@ -254,20 +236,26 @@ impl ListTextLayout<'_> {
     }
 
     /// `ownedList` (`list-layout.ts:436-458`).
-    pub fn list<V: Visitors + ?Sized>(&self, host: &V, token: &Token) -> R {
+    pub fn list<V: Visitors + ?Sized>(&self, host: &V, ordered: bool, items: &[ListItem]) -> R {
         self.layout.prefix.push(PrefixEntry {
             columns: LIST_INDENT_PER_LEVEL,
             list: true,
         });
         let depth = self.layout.prefix.list_depth();
-        let out = self.list_body(host, token, depth);
+        let out = self.list_body(host, ordered, items, depth);
         self.layout.prefix.pop();
         out
     }
 
-    fn list_body<V: Visitors + ?Sized>(&self, host: &V, token: &Token, depth: usize) -> R {
+    fn list_body<V: Visitors + ?Sized>(
+        &self,
+        host: &V,
+        ordered: bool,
+        items: &[ListItem],
+        depth: usize,
+    ) -> R {
         let parse = |tokens: &[Token], top: bool| walk::parse(host, tokens, top);
-        let result = render_list(self.layout, token, &parse, self.sentinel)?;
+        let result = lists::render_list(self.layout, ordered, items, &parse, self.sentinel)?;
         let rewrapped = rewrap_list_body(
             &result,
             depth,
@@ -276,11 +264,11 @@ impl ListTextLayout<'_> {
             self.layout.measure,
             self.sentinel,
         );
-        if depth == 1 {
-            substitute_bullets(&rewrapped, self.layout.glyphs, self.sentinel)
+        Ok(if depth == 1 {
+            lists::substitute_bullets(&rewrapped, self.layout.glyphs, self.sentinel)
         } else {
-            Ok(rewrapped)
-        }
+            rewrapped
+        })
     }
 
     /// `wrappedText` (`list-layout.ts:500-729`): a block or inline `text`/`escape` token. `raw`
@@ -1000,18 +988,19 @@ mod tests {
         let r = Renderer::new(&c);
         // An inline-only token at block level makes the item's walk fail (WP-4b: the list seam
         // is open, so the error path is reached through composition).
+        let items = vec![crate::token::ListItem {
+            raw: "- x".into(),
+            task: false,
+            checked: None,
+            loose: false,
+            tokens: vec![Token::Br],
+        }];
         let list = Token::List {
             ordered: false,
-            items: vec![crate::token::ListItem {
-                raw: "- x".into(),
-                task: false,
-                checked: None,
-                loose: false,
-                tokens: vec![Token::Br],
-            }],
+            items: items.clone(),
         };
         assert_eq!(
-            r.list_text.list(&r, &list),
+            r.list_text.list(&r, false, &items),
             Err(RenderError::UnknownToken("br"))
         );
         assert_eq!((c.prefix.width(), c.prefix.list_depth()), (0, 0));

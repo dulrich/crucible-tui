@@ -1,9 +1,8 @@
-//! mdview — the Rust port of the terminal markdown viewer (`plans/mdview-rust-port.md`).
+//! mdview — the terminal markdown viewer (ported from TypeScript by `plans/mdview-rust-port.md`).
 //!
-//! WP-1 is the skeleton: every module the port needs is declared here, each a stub its owning
-//! work package fills, so parallel packages touch disjoint files and never collide in this
-//! file. `run` is the CLI entry (`main.rs` is the only place its error is caught); `render` is
-//! the library entry; `__parity` is the hidden instrument server.
+//! This file declares the modules and the two entries: `run` is the CLI entry (`main.rs` is the
+//! only place its error is caught) and dispatches the hidden `__parity` instrument server;
+//! `render` is the library entry.
 
 pub mod ansi;
 pub mod blocks;
@@ -50,12 +49,5 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     match cli::main(args) {
         Ok(code) => Ok(code),
         Err(cli::CliError::Message(message)) => Err(message),
-        // The incomplete renderer is not a user error: one line, exit 2, so `cli-diff` (deleted at WP-9; `TS_BASELINE` = `c097c66`)
-        // counts it as `pending-renderer` rather than a mismatch. Gone once WP-3..6 land.
-        Err(cli::CliError::Render(error)) => {
-            use std::io::Write;
-            let _ = writeln!(std::io::stderr(), "mdview: render: {error}");
-            Ok(2)
-        }
     }
 }

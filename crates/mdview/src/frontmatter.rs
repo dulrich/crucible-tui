@@ -18,7 +18,6 @@ use regex::Regex;
 use yaml_rust2::parser::{Event, Parser};
 use yaml_rust2::scanner::TScalarStyle;
 
-use crate::render::RenderError;
 use crate::style::{SgrMode, StyleName, create_styler, style_span};
 use crate::text::{JS_WS_CLASS, js_trim, js_trim_end, utf16_len};
 use crate::width::Measure;
@@ -726,13 +725,13 @@ fn line_span(block: &str, offset: usize) -> (usize, usize) {
     (offset + 1, offset + block.split('\n').count())
 }
 
-/// `formatMetaBlockDetailed`. Never fails; the `Result` keeps the render seam's shape.
+/// `formatMetaBlockDetailed`.
 pub fn format_meta_block_detailed(
     meta: &str,
     target_width: usize,
     measure: Measure,
     sgr: SgrMode,
-) -> Result<MetaBlockResult, RenderError> {
+) -> MetaBlockResult {
     let target = to_i64(target_width);
     match parse_frontmatter(meta) {
         Err(reason) => {
@@ -747,21 +746,21 @@ pub fn format_meta_block_detailed(
             let diagnostic = dim(&(wrapped.join("\n") + detail), sgr);
             let echo = dim(js_trim_end(meta), sgr);
             let offset = diagnostic.split('\n').count();
-            Ok(MetaBlockResult {
+            MetaBlockResult {
                 text: format!("{diagnostic}\n{echo}"),
                 verbatim_ranges: vec![line_span(&echo, offset)],
-            })
+            }
         }
-        Ok(JsValue::Obj(record)) => Ok(MetaBlockResult {
+        Ok(JsValue::Obj(record)) => MetaBlockResult {
             text: format_mapping(&record, target, 0, measure, sgr),
             verbatim_ranges: Vec::new(),
-        }),
+        },
         Ok(_) => {
             let echo = dim(js_trim_end(meta), sgr);
-            Ok(MetaBlockResult {
+            MetaBlockResult {
                 verbatim_ranges: vec![line_span(&echo, 0)],
                 text: echo,
-            })
+            }
         }
     }
 }
@@ -790,7 +789,6 @@ mod tests {
 
     fn fmt(meta: &str, width: usize) -> MetaBlockResult {
         format_meta_block_detailed(meta, width, crate::width::NARROW_MEASURE, SgrMode::None)
-            .expect("infallible")
     }
 
     #[test]
@@ -961,8 +959,7 @@ mod tests {
     #[test]
     fn dim_wraps_keys_and_echo_under_colour() {
         let r =
-            format_meta_block_detailed("a: 1", 80, crate::width::NARROW_MEASURE, SgrMode::Formats)
-                .expect("infallible");
+            format_meta_block_detailed("a: 1", 80, crate::width::NARROW_MEASURE, SgrMode::Formats);
         assert_eq!(r.text, "\u{1b}[2ma\u{1b}[22m: 1");
     }
 }

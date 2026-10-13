@@ -2129,7 +2129,6 @@ fn task_state_line(line: &str) -> Option<(usize, char)> {
     js_space(ws).then_some((bs, ch))
 }
 
-/// `/\n[ \t]*\n[ \t]*$/`.
 /// Where a last item's content ends: marked's `trimEnd`, over ASCII whitespace only. A
 /// non-ASCII JS-whitespace character (U+00A0, U+3000, …) is content to CommonMark (§2.1
 /// counts only spaces and tabs as blank, and §4.8 strips only those from a paragraph), and
@@ -2140,6 +2139,7 @@ fn content_end(s: &str) -> usize {
         .len()
 }
 
+/// `/\n[ \t]*\n[ \t]*$/`.
 fn raw_ends_blank(raw: &str) -> bool {
     let t = raw.trim_end_matches([' ', '\t']);
     let Some(t) = t.strip_suffix('\n') else {
@@ -2296,7 +2296,6 @@ fn parse_link(raw: &str) -> Option<(usize, Option<LinkDest>)> {
     Some((end, Some((unescape_punct(js_trim(&href)), title))))
 }
 
-/// The end of the code span opening at `v[s..]`: the next backtick run of the same length.
 /// A code span's token from its raw source (§6.3: newlines become spaces, and one space is
 /// stripped from each end when both ends have one and the content is not all spaces).
 fn codespan_token(raw: &str) -> Option<Token> {
@@ -2339,6 +2338,7 @@ fn find_gap_code_span(v: &str, from: usize, limit: usize) -> Option<(usize, usiz
     None
 }
 
+/// The end of the code span opening at `v[s..]`: the next backtick run of the same length.
 fn code_span_end(v: &str, s: usize, b: usize) -> Option<usize> {
     let t = &v[s..b];
     let n = t.len() - t.trim_start_matches('`').len();

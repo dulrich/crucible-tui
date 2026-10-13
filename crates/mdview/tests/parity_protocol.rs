@@ -1,6 +1,5 @@
-//! The `__parity` stub protocol (WP-1 of `plans/mdview-rust-port.md`): a request in yields
-//! exactly one response line out, and the stub renderer can never produce a response that
-//! reads as a match.
+//! The `__parity` JSONL protocol: a request in yields exactly one response line out, and a
+//! malformed request is an `{error}` line, never a response that reads as a match.
 
 use serde_json::Value;
 
@@ -12,7 +11,6 @@ fn parse(line: &str) -> Value {
 
 #[test]
 fn a_well_formed_render_request_gets_its_render() {
-    // A list rendered `unimplemented: list` until WP-4b ported composition.
     let response = parse(&mdview::parity::handle_render(REQUEST));
     assert!(response.get("error").is_none());
     assert_eq!(response["text"], "    • a list is WP-4's\n\n");

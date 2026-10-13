@@ -296,16 +296,14 @@ fn compose_item(
 /// `renderList()` (`lists.ts:483-516`).
 pub fn render_list(
     ctx: &LayoutContext,
-    token: &Token,
+    ordered: bool,
+    items: &[ListItem],
     parse: &dyn Fn(&[Token], bool) -> R,
     sentinel: char,
 ) -> R {
-    let Token::List { ordered, items } = token else {
-        unreachable!("render_list is dispatched only for a list token");
-    };
     let mut segments = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        let marker_width = if *ordered {
+        let marker_width = if ordered {
             numbered_point(index + 1).len()
         } else {
             BULLET_POINT.len()
@@ -330,7 +328,7 @@ pub fn render_list(
         })
         .collect();
 
-    let lines = if *ordered {
+    let lines = if ordered {
         compose_ordered(&groups, sentinel)
     } else {
         compose_unordered(&groups, sentinel)

@@ -27,12 +27,9 @@ fn main() {
             NARROW_MEASURE
         };
         let parsed = parse_frontmatter(&meta).is_ok();
-        let answer = match format_meta_block_detailed(&meta, width, measure, sgr) {
-            Ok(r) => {
-                serde_json::json!({"parsed": parsed, "text": r.text, "ranges": r.verbatim_ranges})
-            }
-            Err(e) => serde_json::json!({"parsed": parsed, "error": e.to_string()}),
-        };
+        let r = format_meta_block_detailed(&meta, width, measure, sgr);
+        let answer =
+            serde_json::json!({"parsed": parsed, "text": r.text, "ranges": r.verbatim_ranges});
         writeln!(out, "{answer}").expect("stdout");
     }
 }

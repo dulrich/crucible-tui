@@ -13,7 +13,7 @@
 //! (and an inline-only one reached by `parse`) is the unknown-token error, not a render.
 
 use crate::render::RenderError;
-use crate::token::Token;
+use crate::token::{ListItem, TableCell, Token};
 
 pub type R = Result<String, RenderError>;
 
@@ -23,9 +23,9 @@ pub trait Visitors {
     fn hr(&self) -> R;
     fn heading(&self, depth: u8, tokens: &[Token]) -> R;
     fn code(&self, lang: Option<&str>, text: &str) -> R;
-    fn table(&self, token: &Token) -> R;
+    fn table(&self, header: &[TableCell], rows: &[Vec<TableCell>], align: &[Option<String>]) -> R;
     fn blockquote(&self, tokens: &[Token]) -> R;
-    fn list(&self, token: &Token) -> R;
+    fn list(&self, ordered: bool, items: &[ListItem]) -> R;
     fn html(&self, text: &str) -> R;
     fn paragraph(&self, tokens: &[Token]) -> R;
     /// `text` for a `text` or `escape` token: `text` is its text, `tokens` its children if any.
@@ -79,9 +79,13 @@ pub fn parse<V: Visitors + ?Sized>(v: &V, tokens: &[Token], top: bool) -> R {
             Token::Hr => out.push_str(&v.hr()?),
             Token::Heading { depth, tokens } => out.push_str(&v.heading(*depth, tokens)?),
             Token::Code { lang, text } => out.push_str(&v.code(lang.as_deref(), text)?),
-            Token::Table { .. } => out.push_str(&v.table(token)?),
+            Token::Table {
+                header,
+                rows,
+                align,
+            } => out.push_str(&v.table(header, rows, align)?),
             Token::Blockquote { tokens } => out.push_str(&v.blockquote(tokens)?),
-            Token::List { .. } => out.push_str(&v.list(token)?),
+            Token::List { ordered, items } => out.push_str(&v.list(*ordered, items)?),
             Token::Html { text } => out.push_str(&v.html(text)?),
             Token::Paragraph { tokens } => out.push_str(&v.paragraph(tokens)?),
             Token::Text {
@@ -177,13 +181,13 @@ mod tests {
         fn code(&self, _l: Option<&str>, t: &str) -> R {
             Ok(format!("<code>{t}"))
         }
-        fn table(&self, _t: &Token) -> R {
+        fn table(&self, _h: &[TableCell], _r: &[Vec<TableCell>], _a: &[Option<String>]) -> R {
             Ok("<table>".into())
         }
         fn blockquote(&self, t: &[Token]) -> R {
             Ok(format!("<q>{}", parse(self, t, true)?))
         }
-        fn list(&self, _t: &Token) -> R {
+        fn list(&self, _o: bool, _i: &[ListItem]) -> R {
             Ok("<list>".into())
         }
         fn html(&self, t: &str) -> R {

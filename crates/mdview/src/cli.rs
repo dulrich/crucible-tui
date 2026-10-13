@@ -24,13 +24,11 @@
 //!
 //! **Leading BOM (D-D):** `readFile(path, "utf8")` keeps U+FEFF and replaces invalid UTF-8
 //! with U+FFFD; `String::from_utf8_lossy` does the same (same maximal-subpart replacement),
-//! and nothing here strips the BOM. Whether the lexer later does is WP-7's measurement.
+//! and nothing here strips the BOM; what the lexer does with it is `lex.rs`'s concern.
 //!
-//! Departures, named: a `BrokenPipe` on stdout is quiet exit 0 (TS crashes with exit 1); the
-//! renderer's `Unimplemented` surfaces as `render: unimplemented` with exit 2 (`lib.rs`), a
-//! state TS has no counterpart for; a fractional `--width` is floored for the renderer (TS
-//! hands the fraction to layout); `highlight-as` validates through `lang.rs`'s alias-only
-//! seam until WP-6 lands the syntect language set.
+//! Departures, named: a `BrokenPipe` on stdout is quiet exit 0 (TS crashes with exit 1); a
+//! fractional `--width` is floored for the renderer (TS hands the fraction to layout);
+//! `highlight-as` validates against the syntect language set the renderer highlights with.
 
 pub const USAGE: &str = r#"usage: mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--probe] [--help] [--licenses]
 
@@ -110,7 +108,7 @@ pub const HIGHLIGHT_AS_USAGE: &str = r#"usage: mdview highlight-as <fence> <lang
 
   <fence>       fence info-string language to alias (e.g. dataviewjs)
   <language>    highlighter language to render it as — validated against
-                highlight.js's supported list before anything is written
+                the highlighter's supported list before anything is written
   --help, -h    print this message and exit
 
 Records "<fence> -> <language>" into the user config
@@ -163,17 +161,16 @@ use crate::probe::{
     AmbiguousResolution, AmbiguousSource, PROBE_GLYPH, ResolveAmbiguousOptions,
     resolve_ambiguous_width,
 };
-use crate::render::{RenderError, RenderOptions};
+use crate::render::RenderOptions;
 use crate::width::AmbiguousWidth;
 
 /// `--licenses`: the same file TS embeds, so the bytes match by construction.
 pub const LICENSE_NOTICES: &str = include_str!("../../../THIRD-PARTY-LICENSES.txt");
 
-/// Why the CLI stopped: a user-facing message (exit 1) or an incomplete renderer (exit 2).
+/// Why the CLI stopped: a user-facing message (exit 1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliError {
     Message(String),
-    Render(RenderError),
 }
 
 impl From<String> for CliError {
@@ -502,7 +499,8 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
         path,
         highlight_as: config.highlight_as.clone().unwrap_or_default(),
     };
-    let rendered = crate::render(&source, None, &render_options).map_err(CliError::Render)?;
+    let rendered =
+        crate::render(&source, None, &render_options).map_err(|e| format!("render: {e}"))?;
     let output = rendered.text;
 
     if options.check {
@@ -554,7 +552,7 @@ fn run_highlight_as(args: &[String], p: &Process) -> CliResult {
     let validator = FenceLanguageResolver::builtin(Rc::new(crate::highlight::SyntectSupport));
     if !validator.is_supported(language) {
         return Err(format!(
-            "highlight-as: unsupported language \"{language}\" — highlight.js does not recognize it, so the fence would render unhighlighted rather than mysteriously plain later. Common valid targets: javascript, typescript, python, bash, sql, json, yaml, plaintext (\"plaintext\" is always accepted, if the fence should just not be highlighted)."
+            "highlight-as: unsupported language \"{language}\" — the highlighter does not recognize it, so the fence would render unhighlighted rather than mysteriously plain later. Common valid targets: javascript, typescript, python, bash, sql, json, yaml, plaintext (\"plaintext\" is always accepted, if the fence should just not be highlighted)."
         )
         .into());
     }

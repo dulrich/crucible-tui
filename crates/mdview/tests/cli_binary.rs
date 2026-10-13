@@ -70,17 +70,16 @@ fn missing_file_reports_node_wording() {
 }
 
 #[test]
-fn render_result_is_output_or_pending_exit_two_never_a_panic() {
+fn check_renders_the_wide_table_and_exits_zero() {
     let d = sandbox("render");
     let out = mdview(&d, &["--check", "--width", "80", &fixture("wide-table.md")]);
-    match out.status.code() {
-        Some(0) => assert!(!out.stdout.is_empty()),
-        Some(2) => assert!(out.stderr.starts_with(b"mdview: render: unimplemented")),
-        other => panic!(
-            "unexpected exit {other:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ),
-    }
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.stdout.is_empty());
 }
 
 #[test]
