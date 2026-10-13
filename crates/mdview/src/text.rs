@@ -1,5 +1,5 @@
 //! Grapheme splitting and display-width padding, ported from `TS_BASELINE` `src/text.ts`, plus the JS
-//! string-semantics primitives the port needs everywhere (Critical Files 8 of
+//! string-semantics primitives (the whitespace set is `ofm::js`, re-exported here) the port needs everywhere (Critical Files 8 of
 //! `plans/mdview-rust-port.md`).
 //!
 //! **JS whitespace is not Rust's.** ECMAScript `\s` and `String.prototype.trim` use
@@ -16,8 +16,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::width::{Measure, NARROW_MEASURE};
 
-/// ECMAScript `\s`, as the body of a `regex`-crate character class: `[` + this + `]`.
-pub const JS_WS_CLASS: &str = r"\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}";
+pub use ofm::js::{JS_WS_CLASS, is_js_whitespace, js_trim, js_trim_end, js_trim_start};
 
 /// A JS regex source compiled with JS class semantics: `\s` and `\S` are ECMAScript whitespace
 /// ([`JS_WS_CLASS`]) and its complement, `\d` is ASCII `[0-9]`. Inside a hand-written class,
@@ -33,36 +32,6 @@ pub fn js_regex(pattern: &str) -> regex::Regex {
             .replace(r"\d", "[0-9]"),
     )
     .expect("JS regex compiles")
-}
-
-/// ECMAScript `\s` membership (WhiteSpace ∪ LineTerminator).
-pub fn is_js_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200A}'
-                | '\u{2028}'
-                | '\u{2029}'
-                | '\u{202F}'
-                | '\u{205F}'
-                | '\u{3000}'
-                | '\u{FEFF}'
-    )
-}
-
-/// `String.prototype.trim`.
-pub fn js_trim(s: &str) -> &str {
-    s.trim_matches(is_js_whitespace)
-}
-
-/// `String.prototype.trimStart`.
-pub fn js_trim_start(s: &str) -> &str {
-    s.trim_start_matches(is_js_whitespace)
-}
-
-/// `String.prototype.trimEnd`.
-pub fn js_trim_end(s: &str) -> &str {
-    s.trim_end_matches(is_js_whitespace)
 }
 
 /// `s.length` in JS: UTF-16 code units.
@@ -188,14 +157,6 @@ mod tests {
         );
         let spelled = serde_json::to_string(&[None, Some(Align::Center), Some(Align::Right)]);
         assert_eq!(spelled.expect("ok"), r#"[null,"center","right"]"#);
-    }
-
-    #[test]
-    fn js_trim_includes_bom_and_excludes_nel() {
-        assert_eq!(js_trim("\u{FEFF} a \u{3000}"), "a");
-        assert_eq!(js_trim("\u{85}a\u{85}"), "\u{85}a\u{85}");
-        assert_eq!(js_trim_start("  a "), "a ");
-        assert_eq!(js_trim_end("  a "), "  a");
     }
 
     #[test]

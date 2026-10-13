@@ -8,8 +8,11 @@ use crate::style::{Sgr, StyleName, create_styler, style_span};
 use crate::text::{JS_WS_CLASS, js_trim, utf16_len};
 use crate::width::Measure;
 
-use super::js_value::*;
-use super::yaml::*;
+use ofm::frontmatter::{JsObject, JsValue, js_number_to_string, json_stringify};
+
+fn re(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("formatter regex compiles")
+}
 
 pub(super) fn dim(text: &str, sgr: Sgr) -> String {
     style_span(sgr, &create_styler(StyleName::Dim, None), text)

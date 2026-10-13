@@ -249,15 +249,14 @@ name = "mdview"
 version = "0.1.0"
 dependencies = [
  "comrak",
+ "ofm",
  "regex",
  "rustix",
- "ryu-js",
  "serde",
  "serde_json",
  "syntect",
  "two-face",
  "unicode-segmentation",
- "yaml-rust2",
 ]
 
 [[package]]
@@ -284,6 +283,16 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "ofm"
+version = "0.1.0"
+dependencies = [
+ "comrak",
+ "regex",
+ "ryu-js",
+ "yaml-rust2",
 ]
 
 [[package]]

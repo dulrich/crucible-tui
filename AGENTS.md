@@ -38,7 +38,7 @@ deleting it.
 
 ## Stack
 
-- **The renderer is Rust** — `crates/mdview/`, a static musl binary built with `cargo auditable` beside `crates/jsonedit/` in one Cargo workspace (`Cargo.toml`, `members = ["crates/*"]`, toolchain pinned by `rust-toolchain.toml` to 1.98.1). `comrak` lexes, and `crates/mdview/src/lex/` adapts its tree into the marked-shaped tokens this repo's own walk and visitors read; `syntect` + `two-face` highlight.
+- **The renderer is Rust** — `crates/mdview/`, a static musl binary built with `cargo auditable` beside `crates/jsonedit/` in one Cargo workspace (`Cargo.toml`, `members = ["crates/*"]`, toolchain pinned by `rust-toolchain.toml` to 1.98.1). `comrak` lexes, and `crates/mdview/src/lex/` adapts its tree into the marked-shaped tokens this repo's own walk and visitors read; `syntect` + `two-face` highlight. The pure OFM parse primitives (frontmatter split and YAML value, wiki-link grammar, comrak base options) live in `crates/ofm/`, a lib crate with no I/O or terminal deps that mdview re-exports and an out-of-repo path-dependency consumer shares.
 - **Bun + TypeScript remain, for the scripts and instruments only** (`scripts/`, `tests/`): the corpus sweep, the colour axis, the render differential, the generators and `verify`. They drive the built binary through its hidden `mdview __parity` subcommand and never render in-process.
 - **The Bun/TypeScript-over-Rust override is closed.** The scaffolding skill's Gate 2 default is Rust, and this repo recorded a justified exception for the original build (`marked@^14` pinned across the sibling tools, the wiki-link logic already in TypeScript, a prototype measured first). `plans/mdview-rust-port.md` ported the renderer behaviour for behaviour under byte-parity gates, and WP-9 deleted the TypeScript renderer. **`TS_BASELINE` = `c097c66`** is the last commit carrying it; every fact below that needs the TypeScript renderer cites that sha.
 - What the TypeScript renderer had to own, and why — `marked-terminal` replaced method by method, `cli-table3`'s emitter, the walk taken from marked's `Parser` — is history now, carried in `crates/mdview/AGENTS.md` (the port's behavioural spec, moved from `src/AGENTS.md`) and `docs/agents/dependency-history.md`. Its `src/*.ts` citations name `TS_BASELINE`'s tree.
@@ -76,6 +76,7 @@ crates/mdview/src/  the renderer (each module's header names the TS_BASELINE src
 crates/mdview/tests/  integration tests: witnesses, golden replay (golden/), protocol
 crates/mdview/notices/  vendored licence notices gen-licenses copies (see its README.md)
 crates/mdview/syntaxes/ vendored grammars compiled in by build.rs
+crates/ofm/         pure OFM parse primitives shared by mdview; contract in crates/ofm/AGENTS.md
 crates/jsonedit/    the jsonedit bin crate; its invariants are crates/jsonedit/AGENTS.md
 scripts/            the Bun instruments (module map and DAG: scripts/AGENTS.md)
 scripts/measure/    measurement-only modules moved out of src/ at WP-9: detectors,
@@ -96,6 +97,7 @@ This root file carries what a session needs whatever it touches: identity, the t
 | `crates/mdview/AGENTS.md` | the renderer's behavioural spec: what each visitor must do and the measured defect behind it, the parity classes, the sentinels, the task-state pre-pass, the colour-only-defect class, the glyph tier, the command-line surface, the rendering policy, the `emoji` re-decision — and the index to the reference files below |
 | `scripts/AGENTS.md` | the corpus sweep and its manifests, the corpus growth findings, the defect detectors, the colour axis, the render differential |
 | `tests/AGENTS.md` | the publication containment guard's rules and internals, and the width-sensitive fixture trap |
+| `crates/ofm/AGENTS.md` | the shared pure OFM primitives' rules: purity gate, one-grammar rule, pin parity, publication guard, module map |
 | `crates/jsonedit/AGENTS.md` | jsonedit's ten safe-edit invariants, the dialect and structural-check rules, the indent-dominance threshold, and the test approach |
 
 **The deep records live under `docs/agents/`, and are read on demand rather than loaded on every turn** — they deliberately have **no `CLAUDE.md` symlink** (WP-4 of `plans/docs-and-memory-curation.md`). Their `src/*.ts` citations are historical as of `TS_BASELINE`.

@@ -26,12 +26,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use comrak::nodes::{AstNode, ListType, NodeValue, TableAlignment};
-use comrak::{Arena, Options, ResolvedReference, parse_document};
+use comrak::{Arena, ResolvedReference, parse_document};
 
 use crate::glyphs::Tier;
 use crate::lists::task_glyph_char;
 use crate::text::{is_js_whitespace, js_trim};
 use crate::token::{ListItem, TableCell, Token};
+use ofm::wikilink::{Wiki, match_wikilink};
 
 mod autolink;
 mod blocks;
@@ -227,19 +228,6 @@ struct Lexer<'s> {
     tab_pad: RefCell<HashMap<usize, (usize, usize)>>,
 }
 
-/// Options per Decisions locked 2.
-fn options() -> Options<'static> {
-    let mut o = Options::default();
-    o.extension.table = true;
-    o.extension.strikethrough = true;
-    o.extension.tasklist = true;
-    o.extension.autolink = true;
-    o.extension.wikilinks_title_after_pipe = true;
-    o.parse.relaxed_tasklist_matching = true;
-    o.parse.escaped_char_spans = true;
-    o
-}
-
 /// Lex a body (frontmatter already split off) at a glyph tier.
 pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
     let src = normalize(body);
@@ -258,14 +246,14 @@ pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
         parsed.push('\n');
     }
     let arena = Arena::new();
-    let mut root = parse_document(&arena, &parsed, &options());
+    let mut root = parse_document(&arena, &parsed, &ofm::comrak_options());
     let refs = reference_definitions(root, &parsed);
     if !refs.is_empty() {
         // comrak caps the bytes of resolved references at min(input size, 100000) (a
         // quadratic-expansion guard cmark also has; no CommonMark rule). marked has no cap,
         // so every reference past it would stay unresolved: resolve the overflow from the
         // document's own definitions, as comrak itself parsed them.
-        let mut o = options();
+        let mut o = ofm::comrak_options();
         let map = Arc::new(refs);
         o.parse.broken_link_callback =
             Some(Arc::new(move |r: comrak::options::BrokenLinkReference| {

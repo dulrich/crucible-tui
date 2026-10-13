@@ -1,0 +1,17 @@
+[package]
+name = "ofm"
+version = "0.1.0"
+description = "Pure Obsidian-Flavored-Markdown parse primitives: frontmatter, wiki-link grammar, comrak base options"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Exact `=x.y.z` pins matching mdview's (root AGENTS.md, "Pins"). Pure: no I/O, no terminal deps.
+comrak = { version = "=0.56.0", default-features = false }
+yaml-rust2 = { version = "=0.13.0", default-features = false }
+regex = "=1.13.1"
+ryu-js = "=1.0.3"
+
+[lints]
+workspace = true
