@@ -29,7 +29,7 @@ fn doc(source: &str, width: usize, tier: Tier, sgr: Sgr) -> RenderOutput {
         },
         ..RenderOptions::plain(width)
     };
-    render(source, None, &options).expect("renders")
+    render(source, &options).expect("renders")
 }
 
 #[test]

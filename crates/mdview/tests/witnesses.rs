@@ -36,7 +36,7 @@ fn meta_block(meta: &str, width: usize) -> (String, Vec<(usize, usize)>) {
 /// `renderDocumentDetailed(source, width)`: unicode, narrow, no colour, no hyperlinks.
 fn render(source: &str, width: usize) -> mdview::RenderOutput {
     let options = RenderOptions::plain(width);
-    mdview::render(source, None, &options).expect("renders")
+    mdview::render(source, &options).expect("renders")
 }
 
 fn cols(line: &str) -> usize {
@@ -104,7 +104,7 @@ fn defect_1_the_fixture_is_a_real_yaml_parse_error() {
     );
     let flat = plain.replace('\n', " ");
     assert!(flat.contains("could not parse frontmatter"));
-    // The parser's own message text is D-A (`scripts/divergences.ts`, `yaml-diagnostic`): the TS
+    // The parser's own message text is D-A (`scripts/divergences.ts` at `a2ea0a1`, `yaml-diagnostic`): the TS
     // renderer's `yaml` said "Nested mappings are not allowed in compact mappings"; the port's
     // parser reports the same error in its own words.
     assert!(flat.contains("mapping values are not allowed"), "{flat}");
@@ -250,9 +250,7 @@ fn render_with(source: &str, width: usize, sgr: Sgr) -> String {
         },
         ..RenderOptions::plain(width)
     };
-    mdview::render(source, None, &options)
-        .expect("renders")
-        .text
+    mdview::render(source, &options).expect("renders").text
 }
 
 fn wp14(width: usize) -> String {

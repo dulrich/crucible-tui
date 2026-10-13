@@ -1,6 +1,6 @@
 # Golden replay allowlist (crates/mdview/tests/golden.rs, golden_render_replay).
 # One line per record source: <fnv1a-64 hex of the source> <registry id> <note>.
-# A registry id is a scripts/divergences.ts entry. `unregistered-lexer` marks a lexer
+# A registry id is a scripts/divergences.ts entry (registry retired; last at a2ea0a1 — the ids are now plain labels). `unregistered-lexer` marks a lexer
 # divergence (comrak adapter, lex.rs, WP-7's) that has no registry entry yet: each such line
 # must become a registry id or disappear when WP-7 fixes lex.rs.
 176a8b43ce699f1c yaml-diagnostic D-A: unparseable-frontmatter witness, diagnostic lines only

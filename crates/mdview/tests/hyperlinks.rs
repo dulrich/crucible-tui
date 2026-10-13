@@ -34,7 +34,7 @@ fn opts(path: Option<String>, sgr: Sgr, hyperlinks: bool, tmux: bool) -> RenderO
 
 fn run(source: &str, dir: &std::path::Path, sgr: Sgr, hyperlinks: bool, tmux: bool) -> String {
     let doc = dir.join("doc.md").to_string_lossy().into_owned();
-    render(source, None, &opts(Some(doc), sgr, hyperlinks, tmux))
+    render(source, &opts(Some(doc), sgr, hyperlinks, tmux))
         .expect("renders")
         .text
 }
@@ -100,12 +100,7 @@ fn hyperlinks_off_never_resolves() {
 
 #[test]
 fn no_path_means_no_resolver() {
-    let out = render(
-        "See [[note]] now.",
-        None,
-        &opts(None, Sgr::None, true, false),
-    )
-    .expect("renders");
+    let out = render("See [[note]] now.", &opts(None, Sgr::None, true, false)).expect("renders");
     assert_eq!(out.text, "See note now.\n\n");
 }
 

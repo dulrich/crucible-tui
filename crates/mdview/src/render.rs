@@ -77,7 +77,7 @@ pub struct RenderOutput {
 }
 
 /// What the frontmatter formatter knows about its own block, for the R-gate's D-A attribution
-/// (`scripts/divergences.ts`'s `RenderSide.frontmatter`), computed once by [`render`].
+/// (`scripts/divergences.ts`'s `RenderSide.frontmatter`, retired; at `a2ea0a1`), computed once by [`render`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrontmatterFacts {
     /// Whether the block parsed.
@@ -303,13 +303,8 @@ impl Visitors for Renderer<'_> {
     }
 }
 
-/// Render `source` (`renderDocumentDetailed`). `tokens`, when given, replaces the adapter's lex
-/// of the body (the R-gate); they are marked's own, already pre-processed by `lexBody`.
-pub fn render(
-    source: &str,
-    tokens: Option<&[Token]>,
-    options: &RenderOptions,
-) -> Result<RenderOutput, RenderError> {
+/// Render `source` (`renderDocumentDetailed`).
+pub fn render(source: &str, options: &RenderOptions) -> Result<RenderOutput, RenderError> {
     let target_width = options.width;
     let glyphs = glyphs_for(options.tier);
     let measure = measure_for(options.ambiguous);
@@ -359,15 +354,8 @@ pub fn render(
         tmux: Some(options.policy.tmux),
     });
 
-    let lexed;
-    let body_tokens = match tokens {
-        Some(t) => t,
-        None => {
-            lexed = lex::lex(body, options.tier);
-            &lexed
-        }
-    };
-    let rendered_body = walk::parse(&Renderer::new(&layout), body_tokens, true)?;
+    let body_tokens = lex::lex(body, options.tier);
+    let rendered_body = walk::parse(&Renderer::new(&layout), &body_tokens, true)?;
     let RenderOutput {
         text: stripped_body,
         code_ranges: body_ranges,
@@ -417,7 +405,7 @@ mod tests {
     }
 
     fn r(source: &str) -> RenderOutput {
-        render(source, None, &opts(80, Tier::Unicode, Sgr::None)).expect("renders")
+        render(source, &opts(80, Tier::Unicode, Sgr::None)).expect("renders")
     }
 
     #[test]
@@ -443,7 +431,6 @@ mod tests {
     fn frontmatter_offsets_body_code_ranges() {
         let out = render(
             "---\ntitle: x\n---\n```\nc\n```\n",
-            None,
             &opts(80, Tier::Unicode, Sgr::None),
         );
         let out = out.expect("renders");
@@ -486,7 +473,7 @@ mod tests {
     #[test]
     fn emoji_defaults_on_for_unicode_and_off_for_ascii() {
         assert_eq!(r(":rocket:\n").text, "\u{1f680}\n\n");
-        let ascii = render(":rocket:\n", None, &opts(80, Tier::Ascii, Sgr::None)).unwrap();
+        let ascii = render(":rocket:\n", &opts(80, Tier::Ascii, Sgr::None)).unwrap();
         assert_eq!(ascii.text, ":rocket:\n\n");
     }
 }

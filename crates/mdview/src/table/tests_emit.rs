@@ -81,7 +81,7 @@ pub(super) fn doc_render(source: &str, sgr: Sgr, hyperlinks: bool) -> String {
         },
         ..RenderOptions::plain(80)
     };
-    render(source, None, &options).expect("renders").text
+    render(source, &options).expect("renders").text
 }
 
 pub(super) fn max_width(output: &str, measure: Measure) -> usize {
