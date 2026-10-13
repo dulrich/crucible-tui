@@ -472,53 +472,10 @@ pub(super) fn find_wiki(
     None
 }
 
-/// `^(!)?\[\[([^\]|#\n]+)(?:#([^\]|\n]*))?(?:\|([^\]\n]+))?\]\]` — the match length and
-/// its parts.
-pub(super) fn match_wikilink(s: &str) -> Option<(usize, Wiki)> {
-    let embed = s.starts_with('!');
-    let r = s[usize::from(embed)..].strip_prefix("[[")?;
-    let slug = r
-        .find(|c| [']', '|', '#', '\n'].contains(&c))
-        .unwrap_or(r.len());
-    if slug == 0 {
-        return None;
-    }
-    let mut j = slug;
-    let mut fragment = None;
-    if r[j..].starts_with('#') {
-        j += 1;
-        let f = r[j..]
-            .find(|c| [']', '|', '\n'].contains(&c))
-            .unwrap_or(r.len() - j);
-        fragment = Some(r[j..j + f].to_string());
-        j += f;
-    }
-    let mut alias = None;
-    if r[j..].starts_with('|') {
-        let k = r[j + 1..]
-            .find(|c| [']', '\n'].contains(&c))
-            .unwrap_or(r.len() - j - 1);
-        if k == 0 {
-            return None;
-        }
-        alias = Some(r[j + 1..j + 1 + k].to_string());
-        j += 1 + k;
-    }
-    r[j..].starts_with("]]").then(|| {
-        let wiki = Wiki {
-            slug: r[..slug].to_string(),
-            fragment,
-            alias,
-            embed,
-        };
-        (usize::from(embed) + 2 + j + 2, wiki)
-    })
-}
-
 /// Lex a standalone inline string (a wiki-link label) the way `inlineTokens` would.
 pub(super) fn lex_inline_string(s: &str, outer: &Lexer) -> Vec<Token> {
     let arena = Arena::new();
-    let root = parse_document(&arena, s, &options());
+    let root = parse_document(&arena, s, &ofm::comrak_options());
     let scope = Scope {
         in_link: outer.scope.in_link,
         in_raw: outer.scope.in_raw,
@@ -540,13 +497,6 @@ pub(super) fn lex_inline_string(s: &str, outer: &Lexer) -> Vec<Token> {
             out
         }
     }
-}
-
-pub(super) struct Wiki {
-    slug: String,
-    fragment: Option<String>,
-    alias: Option<String>,
-    embed: bool,
 }
 
 /// An inline link's `(href, title)`.

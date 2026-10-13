@@ -72,7 +72,7 @@ pub(super) fn reference_definitions<'a>(
         probe.push_str("]\n");
     }
     let arena = Arena::new();
-    let proot = parse_document(&arena, &probe, &options());
+    let proot = parse_document(&arena, &probe, &ofm::comrak_options());
     for n in proot.descendants() {
         if let NodeValue::Link(link) = &n.data().value {
             let line = n.data().sourcepos.start.line;

@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::text::{JS_WS_CLASS, js_trim};
+use crate::js::{JS_WS_CLASS, js_trim};
 
 pub(super) static FIRST_KEY_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
