@@ -1,4 +1,15 @@
-# crucible-tui (`mdview`)
+# crucible-tui
+
+Two terminal tools for the files an agent-assisted repo lives in, built from one Rust workspace (`crates/mdview/`, `crates/jsonedit/`):
+
+| Command | What it does | Why you'd reach for it |
+|---|---|---|
+| **`mdview`** | Read markdown in the terminal: frontmatter as a metadata block, wide tables wrapped losslessly, lists reflowed, code passed through verbatim. | You're reading an Obsidian vault from a terminal, an agent-written plan or report, a cloned repo's `README.md`, or a `SKILL.md`. |
+| **`jsonedit`** | Edit a JSON, JSONC or JSON5 file visudo-style: your editor on a private copy, written back atomically only if it parses. | Some config can only be changed by hand — `~/.claude/settings.json` permission rules, for instance — and a single syntax error there breaks the tooling that reads it. |
+
+`mdview` is described first and at length below; [`jsonedit`](#jsonedit) has its own section.
+
+## mdview
 
 A terminal markdown viewer built for reading the documents a working repo actually
 produces — long plans, execution briefs, `INITIATIVE.md` files — rather than for
@@ -19,20 +30,19 @@ is a full public project because of that, not in spite of it.
 
 ## Install
 
-There's no package yet (see [Distribution](#distribution) below). For now, clone and build the static binary with Rust (toolchain setup is `AGENTS.md`'s "Rust host prerequisites and install"):
+There's no package yet (see [Distribution](#distribution) below). For now, clone and build both static binaries with Rust (toolchain setup is `AGENTS.md`'s "Rust host prerequisites and install"):
 
 ```bash
 bun run build:rust                                # static musl binaries under target/
-ln -sfn "$PWD/target/x86_64-unknown-linux-musl/release/mdview" ~/.local/bin/mdview   # from the repo root
+ln -sfn "$PWD/target/x86_64-unknown-linux-musl/release/mdview" ~/.local/bin/mdview       # from the repo root
+ln -sfn "$PWD/target/x86_64-unknown-linux-musl/release/jsonedit" ~/.local/bin/jsonedit   # from the repo root
 ```
 
-The symlink points at the build output, so a rebuild takes effect immediately — but editing source without rebuilding leaves `mdview` silently running the old code. There is no watch mode. Bun is needed only for the repo's scripts and gates (`bun install`, `bun run verify`), never to run `mdview`.
+The symlinks point at the build output, so a rebuild takes effect immediately — but editing source without rebuilding leaves either command silently running the old code. There is no watch mode. Bun is needed only for the repo's scripts and gates (`bun install`, `bun run verify`), never to run either tool.
 
-A roff man page ships at `man/crucible-tui.1`; `bun run install:man` symlinks it in as
-both `mdview.1` and `crucible-tui.1`, so `man mdview` and `man crucible-tui` both
-resolve.
+Roff man pages ship in `man/`; `bun run install:man` symlinks `man/crucible-tui.1` in as both `mdview.1` and `crucible-tui.1` (so `man mdview` and `man crucible-tui` both resolve) and `man/jsonedit.1` as `jsonedit.1`.
 
-## Usage
+## mdview usage
 
 ```bash
 mdview <file.md> [--width N] [--no-pager] [--check] [--ascii|--unicode] [--color[=WHEN]] [--no-color] [--plain] [--hyperlinks[=WHEN]] [--probe] [--help] [--licenses]
@@ -272,7 +282,7 @@ Out of scope by design: images, callouts, block LaTeX, raw HTML.
 
 ## jsonedit
 
-A second command ships from this repo: `jsonedit`, a visudo-style safe editor for JSON, JSONC and JSON5 configuration files (Rust, `crates/jsonedit/`).
+The second command: a visudo-style safe editor for JSON, JSONC and JSON5 configuration files (Rust, `crates/jsonedit/`). It exists because some configuration is edited by hand on purpose — an agent harness's `~/.claude/settings.json`, for instance, carries permission rules the agent is not allowed to change itself — and a hand edit that leaves a stray comma or an unclosed brace silently breaks every tool that reads the file. `jsonedit` makes that edit the way `visudo` makes a sudoers edit: on a copy, validated before it replaces anything.
 
 ```bash
 jsonedit settings.json                 # edit in $VISUAL / $EDITOR / vi; written only if valid

@@ -3,7 +3,7 @@
 //! **Exactly the census fields** (WP-1 of `plans/mdview-rust-port.md`, step 0): for each of the
 //! 19 token types `TS_BASELINE` `src/walk.ts` dispatches, the fields some renderer module reads, plus `raw`
 //! on `del` (the `single-tilde-del` divergence predicate reads it). Nothing else is carried, so
-//! the adapter (`lex.rs`, WP-7) produces nothing the renderer cannot see and the TS dumper
+//! the adapter (`lex/`, WP-7) produces nothing the renderer cannot see and the TS dumper
 //! (`scripts/lexer-diff.ts`, deleted at WP-9; `TS_BASELINE` = `c097c66`) serialized the same shape. `tokens` on a `text` token is an
 //! `Option` because its *presence* is load-bearing: `TS_BASELINE` `src/list-layout.ts`'s tight-item test
 //! reads whether the key exists to tell a block text token from an inline one.

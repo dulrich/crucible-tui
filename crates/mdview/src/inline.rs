@@ -1,7 +1,7 @@
 //! The owned inline visitors, the emoji pass and the colon sentinel, ported from
 //! `TS_BASELINE` `src/inline.ts` (WP-3 of `plans/mdview-rust-port.md`).
 //!
-//! The `DEL_TOKENIZER` half of `TS_BASELINE` `src/inline.ts` is lexer-side and lives in `lex.rs`. Quirks kept
+//! The `DEL_TOKENIZER` half of `TS_BASELINE` `src/inline.ts` is lexer-side and lives in `lex/`. Quirks kept
 //! on purpose, each a transcription of the TS original:
 //! - `fixHardReturn` replaces only the **first** `\r` (`String.prototype.replace` with a string
 //!   pattern), and its replacement is `String(/\n/g)` — the five characters `/\n/g`.

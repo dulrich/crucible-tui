@@ -1,8 +1,18 @@
-# mdview
+# crucible-tui: mdview and jsonedit
 
-Terminal markdown viewer for this repo's plans, execution briefs, and `INITIATIVE.md`
-files: renders frontmatter as a metadata block and wraps wide tables losslessly instead
-of overflowing or truncating them.
+Two commands from one Cargo workspace. **`mdview`** (`crates/mdview/`) is a terminal markdown viewer for plans, execution briefs and `INITIATIVE.md` files: it renders frontmatter as a metadata block and wraps wide tables losslessly instead of overflowing or truncating them. **`jsonedit`** (`crates/jsonedit/`) is a visudo-style safe editor for JSON, JSONC and JSON5.
+
+## Who each tool is for (user stories)
+
+These are the cases a change is judged against (from the user's `FEEDBACK.md`, 2026-09).
+
+**mdview**: a user wants to read markdown in a terminal because they:
+- have an Obsidian vault and are working in it from a terminal (wiki-links, embeds, Dataview fences);
+- are reading an agent-written plan file or report (frontmatter, wide tables, deep lists);
+- need to inspect a GitHub repository's `README.md`;
+- need to see the details of a `SKILL.md`.
+
+**jsonedit**: some config is edited by hand on purpose. `~/.claude/settings.json` carries permission rules the agent may not change itself, so the user edits it. A hand edit that leaves a syntax error breaks the agent setup that reads the file. `jsonedit` validates the edit before it replaces anything.
 
 ## Two names, on purpose
 
@@ -24,7 +34,7 @@ command, it owns the whole set at once — binary, package, env vars, config dir
 compatibility shim for the old config path — and it updates this section rather than
 deleting it.
 
-A second command, `jsonedit`, now ships from this repo (`crates/jsonedit/`, `plans/jsonedit.md`); mdview is unchanged.
+`jsonedit` is outside this naming question: it is its own command, and its plan is `plans/jsonedit.md`.
 
 ## Stack
 
