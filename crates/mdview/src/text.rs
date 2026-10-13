@@ -19,6 +19,22 @@ use crate::width::{Measure, NARROW_MEASURE};
 /// ECMAScript `\s`, as the body of a `regex`-crate character class: `[` + this + `]`.
 pub const JS_WS_CLASS: &str = r"\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}";
 
+/// A JS regex source compiled with JS class semantics: `\s` and `\S` are ECMAScript whitespace
+/// ([`JS_WS_CLASS`]) and its complement, `\d` is ASCII `[0-9]`. Inside a hand-written class,
+/// `[\s…]` becomes a nested class, which `regex` reads as the union. Panics on a bad pattern:
+/// every caller passes a literal.
+pub fn js_regex(pattern: &str) -> regex::Regex {
+    let ws = format!("[{JS_WS_CLASS}]");
+    let not_ws = format!("[^{JS_WS_CLASS}]");
+    regex::Regex::new(
+        &pattern
+            .replace(r"\s", &ws)
+            .replace(r"\S", &not_ws)
+            .replace(r"\d", "[0-9]"),
+    )
+    .expect("JS regex compiles")
+}
+
 /// ECMAScript `\s` membership (WhiteSpace ∪ LineTerminator).
 pub fn is_js_whitespace(c: char) -> bool {
     matches!(

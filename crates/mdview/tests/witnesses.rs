@@ -4,8 +4,8 @@
 //! `tests/fixtures/witnesses/`, and `witness-index.json` names this file as each record's
 //! `test_file`: a witness is a fixture *plus* a test that fails if its fix is reverted.
 
+use mdview::ansi::strip_sequences;
 use mdview::frontmatter::{format_meta_block_detailed, split_frontmatter};
-use mdview::list_lines::strip_ansi;
 use mdview::overflow::find_first_overflow;
 use mdview::render::{Policy, RenderOptions, Sgr};
 use mdview::width::NARROW_MEASURE;
@@ -28,7 +28,7 @@ fn meta_of(source: &str) -> String {
 fn meta_block(meta: &str, width: usize) -> (String, Vec<(usize, usize)>) {
     let result = format_meta_block_detailed(meta, width, NARROW_MEASURE, Sgr::None);
     (
-        strip_ansi(&result.text).into_owned(),
+        strip_sequences(&result.text).into_owned(),
         result.verbatim_ranges,
     )
 }
@@ -256,7 +256,8 @@ fn render_with(source: &str, width: usize, sgr: Sgr) -> String {
 }
 
 fn wp14(width: usize) -> String {
-    strip_ansi(&render(&fixture("defect-wp14-list-item-inline-markup.md"), width).text).into_owned()
+    strip_sequences(&render(&fixture("defect-wp14-list-item-inline-markup.md"), width).text)
+        .into_owned()
 }
 
 #[test]
@@ -355,13 +356,13 @@ fn wp14_under_real_ansi_the_item_is_styled_like_the_paragraph() {
         .find(|l| l.contains("item"))
         .copied()
         .unwrap_or("");
-    assert!(strip_ansi(control).contains("Control bold and label (https://example.com/p)."));
-    assert!(strip_ansi(item).contains("item bold and label (https://example.com/p)."));
+    assert!(strip_sequences(control).contains("Control bold and label (https://example.com/p)."));
+    assert!(strip_sequences(item).contains("item bold and label (https://example.com/p)."));
     for styled in [control, item] {
-        assert_ne!(styled, strip_ansi(styled));
+        assert_ne!(styled, strip_sequences(styled));
         assert!(styled.contains("\u{1b}[1mbold\u{1b}[22m"), "{styled:?}");
     }
     for line in lines {
-        assert!(cols(&strip_ansi(line)) <= 80);
+        assert!(cols(&strip_sequences(line)) <= 80);
     }
 }

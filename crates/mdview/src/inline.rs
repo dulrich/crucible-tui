@@ -62,7 +62,9 @@ pub fn emojify(ctx: &LayoutContext, text: &str) -> String {
     }
 }
 
-fn style(ctx: &LayoutContext, names: &[StyleName], text: &str) -> String {
+/// `names` applied under the render's SGR mode: the one styling helper the block and inline
+/// leaves share.
+pub fn style(ctx: &LayoutContext, names: &[StyleName], text: &str) -> String {
     apply_style_chain(ctx.sgr, names, text)
 }
 

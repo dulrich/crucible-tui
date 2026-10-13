@@ -4,7 +4,7 @@
 //! object holds a mutable stack) is interior-mutable: visitors push and pop the columns
 //! enclosing blocks still owe. `color` is derived from `sgr` here and nowhere else.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::glyphs::GlyphSet;
@@ -35,6 +35,12 @@ impl PrefixColumns {
     pub fn pop(&self) {
         self.entries.borrow_mut().pop();
     }
+    /// Push `entry` for the guard's lifetime: dropping the guard pops it, on every path.
+    #[must_use = "the entry is popped when the guard drops"]
+    pub fn scoped(&self, entry: PrefixEntry) -> PrefixGuard<'_> {
+        self.push(entry);
+        PrefixGuard { stack: self }
+    }
     /// Total columns owed.
     pub fn width(&self) -> usize {
         self.entries.borrow().iter().map(|e| e.columns).sum()
@@ -42,6 +48,37 @@ impl PrefixColumns {
     /// How many entries are list entries.
     pub fn list_depth(&self) -> usize {
         self.entries.borrow().iter().filter(|e| e.list).count()
+    }
+}
+
+/// One pushed prefix entry, popped when this drops ([`PrefixColumns::scoped`]).
+pub struct PrefixGuard<'a> {
+    stack: &'a PrefixColumns,
+}
+
+impl Drop for PrefixGuard<'_> {
+    fn drop(&mut self) {
+        self.stack.pop();
+    }
+}
+
+/// `cell += n` for the guard's lifetime: dropping it subtracts `n` again, on every path.
+pub struct CounterGuard<'a> {
+    cell: &'a Cell<usize>,
+    n: usize,
+}
+
+impl<'a> CounterGuard<'a> {
+    #[must_use = "the counter is restored when the guard drops"]
+    pub fn add(cell: &'a Cell<usize>, n: usize) -> Self {
+        cell.set(cell.get() + n);
+        CounterGuard { cell, n }
+    }
+}
+
+impl Drop for CounterGuard<'_> {
+    fn drop(&mut self) {
+        self.cell.set(self.cell.get() - self.n);
     }
 }
 

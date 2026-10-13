@@ -6,19 +6,18 @@
 //! is `highlight.rs` (WP-6a), reached only under `full`; under `none`/`formats` highlighting
 //! is off by construction (`blocks.ts` `highlightCode`'s `sgr !== "full"` gate).
 
-use std::sync::LazyLock;
-
-use regex::Regex;
-
+use crate::ansi::strip_sequences;
 use crate::context::LayoutContext;
 use crate::highlight::highlight_to_ansi;
-use crate::inline::{COLON_REPLACER, emojify, fix_hard_return};
-use crate::list_lines::strip_ansi;
-use crate::style::{Sgr, StyleName, apply_style_chain};
-use crate::text::{JS_WS_CLASS, is_js_whitespace, js_trim_end};
+use crate::inline::{COLON_REPLACER, emojify, fix_hard_return, style};
+use crate::list_lines::{hang, line_prefix, map_lines, wrap_after_prefix};
+use crate::style::{Sgr, StyleName};
+use crate::text::{is_js_whitespace, js_trim_end};
 use crate::wrap::wrap_ansi;
 
-const TAB: &str = "    ";
+/// `TAB`: four spaces, the code and blockquote indent (`blocks.ts`) and the list indent
+/// (`lists.ts:93`).
+pub const TAB: &str = "    ";
 
 const BLOCKQUOTE: &[StyleName] = &[StyleName::Gray, StyleName::Italic];
 const HTML: &[StyleName] = &[StyleName::Gray];
@@ -26,7 +25,8 @@ const HEADING: &[StyleName] = &[StyleName::Green, StyleName::Bold];
 const FIRST_HEADING: &[StyleName] = &[StyleName::Magenta, StyleName::Underline, StyleName::Bold];
 const RESET: &[StyleName] = &[StyleName::Reset];
 
-fn section(text: &str) -> String {
+/// `section()`: a block closed by a blank line (`blocks.ts`, `lists.ts:108`).
+pub fn section(text: &str) -> String {
     format!("{text}\n\n")
 }
 
@@ -44,10 +44,6 @@ pub fn unescape_entities(html: &str) -> String {
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
-}
-
-fn style(ctx: &LayoutContext, names: &[StyleName], text: &str) -> String {
-    apply_style_chain(ctx.sgr, names, text)
 }
 
 /// `highlightCode`: off unless `full` (`blocks.ts:192`), and `fixHardReturn` runs first. The
@@ -73,65 +69,29 @@ pub fn render_hr(ctx: &LayoutContext, rule: &str) -> String {
     section(&style(ctx, RESET, rule))
 }
 
-static HTML_LINE_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(
-        r"^([{JS_WS_CLASS}]*)((?:\*|[0-9]+\.)[{JS_WS_CLASS}])?"
-    ))
-    .expect("html prefix regex compiles")
-});
-
 /// `renderHtml`.
 pub fn render_html(ctx: &LayoutContext, text: &str, budget: usize) -> String {
     wrap_html_lines(ctx, &style(ctx, HTML, text), budget)
 }
 
 fn wrap_html_lines(ctx: &LayoutContext, rendered: &str, budget: usize) -> String {
-    rendered
-        .split('\n')
-        .map(|line| {
-            if ctx.measure.width(line) <= budget {
-                return line.to_owned();
-            }
-            let caps = HTML_LINE_PREFIX.captures(line);
-            let indent = caps
-                .as_ref()
-                .and_then(|c| c.get(1))
-                .map_or("", |m| m.as_str());
-            let marker = caps
-                .as_ref()
-                .and_then(|c| c.get(2))
-                .map_or("", |m| m.as_str());
-            let prefix = format!("{indent}{marker}");
-            let rest = &line[prefix.len()..];
-            if indent.is_empty() || rest.is_empty() {
-                return wrap_ansi(line, budget, ctx.measure).join("\n");
-            }
-            let prefix_width = ctx.measure.width(&prefix);
-            let continuation = " ".repeat(prefix_width);
-            wrap_ansi(
-                rest,
-                budget.saturating_sub(prefix_width).max(1),
-                ctx.measure,
-            )
-            .iter()
-            .enumerate()
-            .map(|(i, w)| {
-                if i == 0 {
-                    format!("{prefix}{w}")
-                } else {
-                    format!("{continuation}{w}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    map_lines(rendered, |line| {
+        if ctx.measure.width(line) <= budget {
+            return line.to_owned();
+        }
+        let split = line_prefix(line);
+        if split.indent.is_empty() || split.rest.is_empty() {
+            return wrap_ansi(line, budget, ctx.measure).join("\n");
+        }
+        let width = isize::try_from(budget).unwrap_or(isize::MAX);
+        let lines = wrap_after_prefix(split.prefix, split.rest, width, ctx.measure);
+        hang(split.prefix, &lines, ctx.measure)
+    })
 }
 
 fn reflow_section(ctx: &LayoutContext, text: &str, budget: usize) -> Vec<String> {
     let mut lines = wrap_ansi(text, budget, ctx.measure);
-    if lines.last().is_some_and(|l| strip_ansi(l).is_empty()) {
+    if lines.last().is_some_and(|l| strip_sequences(l).is_empty()) {
         lines.pop();
     }
     lines
@@ -237,7 +197,7 @@ mod tests {
             "    x\n\n"
         );
         assert_eq!(
-            strip_ansi(&render_code(&ctx(Sgr::Full), None, "x")),
+            strip_sequences(&render_code(&ctx(Sgr::Full), None, "x")),
             "    x\n\n"
         );
     }

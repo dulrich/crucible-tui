@@ -1,32 +1,186 @@
 //! Rendered-line primitives shared by render and the detectors, ported from
-//! `TS_BASELINE` `src/list-lines.ts`: `strip_ansi` (a derivation of `ansi.rs`'s scanner), the marker
-//! regexes, and `track_list_line`.
+//! `TS_BASELINE` `src/list-lines.ts`: the marker regexes and `track_list_line`, plus the fence walk,
+//! the hanging-indent wrap and the marker guard every list pass shares.
 //!
-//! Every TS `\s`/`\S` here is ECMAScript whitespace (`text::JS_WS_CLASS`), and `\d` is ASCII.
+//! Every TS `\s`/`\S` here is ECMAScript whitespace (`text::js_regex`), and `\d` is ASCII.
 
 use std::sync::LazyLock;
 
 use regex::Regex;
 
 use crate::ansi::strip_sequences;
-use crate::text::{JS_WS_CLASS, js_trim, js_trim_start};
+use crate::text::{js_regex as js, js_trim, js_trim_start};
 use crate::width::Measure;
+use crate::wrap::wrap_ansi;
 
-/// Every terminal sequence removed (`stripSequences`).
-pub fn strip_ansi(value: &str) -> std::borrow::Cow<'_, str> {
-    strip_sequences(value)
+/// One line of a fence-aware walk: the line, whether it started inside a fenced block, and
+/// whether it carries a sentinel (opens or closes one). A pass that rewrites whole lines must
+/// skip [`FenceLine::touches_fence`]; a pass that only rewrites a leading marker needs only
+/// `started_inside` (`crates/mdview/AGENTS.md`, "Why a sentinel walk exists at all").
+#[derive(Debug, Clone, Copy)]
+pub struct FenceLine<'a> {
+    pub line: &'a str,
+    pub started_inside: bool,
+    pub carries_sentinel: bool,
 }
 
-fn js(pattern: &str) -> Regex {
-    let ws = format!("[{JS_WS_CLASS}]");
-    let not_ws = format!("[^{JS_WS_CLASS}]");
-    Regex::new(
-        &pattern
-            .replace(r"\s", &ws)
-            .replace(r"\S", &not_ws)
-            .replace(r"\d", "[0-9]"),
+impl FenceLine<'_> {
+    /// Started inside a fence, or opens/closes one on this line.
+    pub fn touches_fence(&self) -> bool {
+        self.started_inside || self.carries_sentinel
+    }
+}
+
+/// The per-line sentinel walk every pass over rendered output shares: each sentinel occurrence
+/// flips the inside-a-fence state.
+#[derive(Debug, Clone, Copy)]
+pub struct FenceWalk {
+    sentinel: char,
+    inside: bool,
+}
+
+impl FenceWalk {
+    pub fn new(sentinel: char) -> Self {
+        FenceWalk {
+            sentinel,
+            inside: false,
+        }
+    }
+
+    /// Advance over one line.
+    pub fn step<'a>(&mut self, line: &'a str) -> FenceLine<'a> {
+        let started_inside = self.inside;
+        let mut carries_sentinel = false;
+        for ch in line.chars() {
+            if ch == self.sentinel {
+                self.inside = !self.inside;
+                carries_sentinel = true;
+            }
+        }
+        FenceLine {
+            line,
+            started_inside,
+            carries_sentinel,
+        }
+    }
+}
+
+/// `text.split("\n").map(f).join("\n")`.
+pub fn map_lines(text: &str, f: impl FnMut(&str) -> String) -> String {
+    text.split('\n').map(f).collect::<Vec<_>>().join("\n")
+}
+
+/// [`map_lines`] under a [`FenceWalk`]: `f` sees each line with its fence state.
+pub fn map_fenced_lines(
+    text: &str,
+    sentinel: char,
+    mut f: impl FnMut(FenceLine<'_>) -> String,
+) -> String {
+    let mut walk = FenceWalk::new(sentinel);
+    map_lines(text, |line| f(walk.step(line)))
+}
+
+/// `LIST_LINE_PREFIX = /^(\s*)((?:\*|\d+\.)\s)?/` (`list-layout.ts:253`; `blocks.ts`'s HTML wrap
+/// spells the same regex): a line's indent and optional marker. It always matches.
+static LIST_LINE_PREFIX: LazyLock<Regex> = LazyLock::new(|| js(r"^(\s*)((?:\*|\d+\.)\s)?"));
+
+/// A rendered line split at [`LIST_LINE_PREFIX`]: `prefix` is `indent` + the marker, and
+/// `rest` is everything after it.
+pub struct LinePrefix<'a> {
+    pub indent: &'a str,
+    pub prefix: &'a str,
+    pub rest: &'a str,
+}
+
+/// Split `line` at its indent-and-marker prefix.
+pub fn line_prefix(line: &str) -> LinePrefix<'_> {
+    let caps = LIST_LINE_PREFIX.captures(line);
+    let indent = caps
+        .as_ref()
+        .and_then(|c| c.get(1))
+        .map_or("", |m| m.as_str());
+    let end = caps.as_ref().and_then(|c| c.get(0)).map_or(0, |m| m.end());
+    LinePrefix {
+        indent,
+        prefix: &line[..end],
+        rest: &line[end..],
+    }
+}
+
+/// The hanging-indent join: the first line after `prefix`, every later one after as many
+/// spaces as `prefix` is wide.
+pub fn hang(prefix: &str, lines: &[String], measure: Measure) -> String {
+    let continuation = " ".repeat(measure.width(prefix));
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                format!("{prefix}{line}")
+            } else {
+                format!("{continuation}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `rest` wrapped at `width - width(prefix)` (at least 1), unjoined.
+pub fn wrap_after_prefix(prefix: &str, rest: &str, width: isize, measure: Measure) -> Vec<String> {
+    let available = width - isize::try_from(measure.width(prefix)).unwrap_or(isize::MAX);
+    wrap_ansi(
+        rest,
+        usize::try_from(available.max(1)).unwrap_or(1),
+        measure,
     )
-    .expect("list-lines regex compiles")
+}
+
+/// Whether any line after the first is marker-shaped, asked of its visible text.
+pub fn continuation_marks(lines: &[String], marks: &dyn Fn(&str) -> bool) -> bool {
+    lines
+        .iter()
+        .skip(1)
+        .any(|line| marks(&strip_sequences(line)))
+}
+
+/// Prefix `guard` onto every line after the first whose visible text is marker-shaped.
+pub fn guard_continuations(
+    lines: Vec<String>,
+    guard: &str,
+    marks: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i > 0 && marks(&strip_sequences(&line)) {
+                format!("{guard}{line}")
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
+/// The marker guard, wrap → guard → narrow: render at `width`; if a continuation line would
+/// read as a list marker, render one column narrower and prefix each such line with a space.
+/// `escalate` sees that narrowed render and may ask for two columns and a two-space guard
+/// instead (`ListTextLayout::text`'s on-grid `* ` case); every other caller passes `|_| false`.
+pub fn wrap_guard_narrow(
+    render: impl Fn(isize) -> Vec<String>,
+    width: isize,
+    marks: &dyn Fn(&str) -> bool,
+    escalate: impl Fn(&[String]) -> bool,
+) -> Vec<String> {
+    let lines = render(width);
+    if !continuation_marks(&lines, marks) {
+        return lines;
+    }
+    let narrowed = render(width - 1);
+    if escalate(&narrowed) {
+        return guard_continuations(render(width - 2), "  ", marks);
+    }
+    guard_continuations(narrowed, " ", marks)
 }
 
 /// `/^\s{2,}(?:[•*\-◦‣+]|\d+\.)\s/`
@@ -147,8 +301,8 @@ mod tests {
     }
 
     #[test]
-    fn strip_ansi_removes_every_sequence_kind() {
+    fn strip_sequences_removes_every_sequence_kind() {
         let t = crate::ansi::link("x", "u", true);
-        assert_eq!(strip_ansi(&format!("\u{1b}[1m{t}\u{1b}[22m")), "x");
+        assert_eq!(strip_sequences(&format!("\u{1b}[1m{t}\u{1b}[22m")), "x");
     }
 }
