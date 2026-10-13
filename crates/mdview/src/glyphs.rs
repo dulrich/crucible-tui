@@ -19,58 +19,87 @@ pub enum Tier {
     Ascii,
 }
 
+/// One border glyph per slot (`TS_BASELINE` `table.ts:639`), `cli-table3`'s slot names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BorderChars {
+    pub top_left: &'static str,
+    pub top_mid: &'static str,
+    pub top: &'static str,
+    pub top_right: &'static str,
+    pub left_mid: &'static str,
+    pub mid_mid: &'static str,
+    pub mid: &'static str,
+    pub right_mid: &'static str,
+    pub bottom_left: &'static str,
+    pub bottom_mid: &'static str,
+    pub bottom: &'static str,
+    pub bottom_right: &'static str,
+    pub left: &'static str,
+    pub middle: &'static str,
+    pub right: &'static str,
+}
+
+/// `UNICODE_BORDER` (`table.ts:666`): `cli-table3`'s default charset, byte for byte.
+pub const UNICODE_BORDER: BorderChars = BorderChars {
+    top_left: "┌",
+    top_mid: "┬",
+    top: "─",
+    top_right: "┐",
+    left_mid: "├",
+    mid_mid: "┼",
+    mid: "─",
+    right_mid: "┤",
+    bottom_left: "└",
+    bottom_mid: "┴",
+    bottom: "─",
+    bottom_right: "┘",
+    left: "│",
+    middle: "│",
+    right: "│",
+};
+
+/// The ASCII tier's border (`TS_BASELINE` `src/glyphs.ts`'s `tableChars`).
+pub const ASCII_BORDER: BorderChars = BorderChars {
+    top_left: "+",
+    top_mid: "+",
+    top: "-",
+    top_right: "+",
+    left_mid: "+",
+    mid_mid: "+",
+    mid: "-",
+    right_mid: "+",
+    bottom_left: "+",
+    bottom_mid: "+",
+    bottom: "-",
+    bottom_right: "+",
+    left: "|",
+    middle: "|",
+    right: "|",
+};
+
 /// One tier's glyphs.
 #[derive(Debug, PartialEq, Eq)]
 pub struct GlyphSet {
     pub tier: Tier,
     pub bullets: &'static [&'static str],
     pub rule: &'static str,
-    /// `cli-table3`-named border characters, in `TS_BASELINE` `src/glyphs.ts`'s order; `None` = box drawing.
-    pub table_chars: Option<&'static [(&'static str, &'static str)]>,
+    pub border: &'static BorderChars,
     pub rewrite_task_states: bool,
-}
-
-impl GlyphSet {
-    /// One border character by its `cli-table3` name.
-    pub fn table_char(&self, name: &str) -> Option<&'static str> {
-        self.table_chars?
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
-    }
 }
 
 pub static UNICODE_GLYPHS: GlyphSet = GlyphSet {
     tier: Tier::Unicode,
     bullets: &["•", "◦", "‣"],
     rule: "─",
-    table_chars: None,
+    border: &UNICODE_BORDER,
     rewrite_task_states: true,
 };
-
-const ASCII_TABLE_CHARS: &[(&str, &str)] = &[
-    ("top", "-"),
-    ("top-mid", "+"),
-    ("top-left", "+"),
-    ("top-right", "+"),
-    ("bottom", "-"),
-    ("bottom-mid", "+"),
-    ("bottom-left", "+"),
-    ("bottom-right", "+"),
-    ("left", "|"),
-    ("left-mid", "+"),
-    ("mid", "-"),
-    ("mid-mid", "+"),
-    ("right", "|"),
-    ("right-mid", "+"),
-    ("middle", "|"),
-];
 
 pub static ASCII_GLYPHS: GlyphSet = GlyphSet {
     tier: Tier::Ascii,
     bullets: &["-"],
     rule: "-",
-    table_chars: Some(ASCII_TABLE_CHARS),
+    border: &ASCII_BORDER,
     rewrite_task_states: false,
 };
 
@@ -214,11 +243,28 @@ mod tests {
             assert_eq!(NARROW_MEASURE.width(g), 1, "{g}");
         }
         assert_eq!(WIDE_MEASURE.width("•"), 2);
-        for (_, c) in ASCII_TABLE_CHARS {
+        let b = ASCII_GLYPHS.border;
+        for c in [
+            b.top_left,
+            b.top_mid,
+            b.top,
+            b.top_right,
+            b.left_mid,
+            b.mid_mid,
+            b.mid,
+            b.right_mid,
+            b.bottom_left,
+            b.bottom_mid,
+            b.bottom,
+            b.bottom_right,
+            b.left,
+            b.middle,
+            b.right,
+        ] {
             assert_eq!(WIDE_MEASURE.width(c), 1);
         }
-        assert_eq!(ASCII_GLYPHS.table_char("top-left"), Some("+"));
-        assert_eq!(UNICODE_GLYPHS.table_char("top-left"), None);
+        assert_eq!(ASCII_GLYPHS.border.top_left, "+");
+        assert_eq!(UNICODE_GLYPHS.border.top_left, "┌");
         assert!(!ASCII_GLYPHS.rewrite_task_states);
     }
 }

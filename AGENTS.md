@@ -52,9 +52,9 @@ crates/mdview/src/  the renderer (each module's header names the TS_BASELINE src
   lists.rs          list composition, numbering, task states, de-drift, bullets
   blocks.rs         code, hr, html, paragraph, heading, blockquote
   inline.rs         inline visitors, the emoji pass, the colon sentinel
-  table.rs          the wide-table allocator and emitter (table/tests.rs)
+  table.rs          the wide-table allocator and emitter (table/tests*.rs)
   wikilink.rs       wiki-link styling and OSC-8 following; wikiresolve.rs resolves slugs
-  frontmatter.rs    YAML split and metadata block
+  frontmatter/      YAML split, core-schema parse, JS value model, metadata block
   style.rs          the committed SGR table and emitter; colour.rs the one policy decision
   ansi.rs           the sequence grammar and the OSC-8 emitter
   highlight.rs      syntect colorizer; lang.rs fence aliases; hljs_map.rs (generated)
