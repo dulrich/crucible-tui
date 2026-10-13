@@ -85,7 +85,7 @@ pub(super) fn doc_render(source: &str, sgr: Sgr, hyperlinks: bool) -> String {
 }
 
 pub(super) fn max_width(output: &str, measure: Measure) -> usize {
-    crate::list_lines::strip_ansi(output)
+    crate::ansi::strip_sequences(output)
         .split('\n')
         .map(|l| measure.width(l))
         .max()

@@ -138,7 +138,7 @@ fn dc_equal(want: &str, got: &str, ranges: &[(usize, usize)]) -> bool {
         && w.iter().zip(&g).enumerate().all(|(i, (a, b))| {
             a == b
                 || (ranges.iter().any(|&(s, e)| (s..=e).contains(&(i + 1)))
-                    && mdview::list_lines::strip_ansi(a) == mdview::list_lines::strip_ansi(b))
+                    && mdview::ansi::strip_sequences(a) == mdview::ansi::strip_sequences(b))
         })
 }
 

@@ -269,7 +269,7 @@ pub fn highlight_to_ansi(sgr: Sgr, code: &str, language: Option<&str>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::list_lines::strip_ansi;
+    use crate::ansi::strip_sequences;
 
     #[test]
     fn one_representative_scope_per_style() {
@@ -309,7 +309,7 @@ mod tests {
             ("plain", Some("plaintext")),
         ] {
             let out = highlight_to_ansi(Sgr::Full, code, lang);
-            assert_eq!(strip_ansi(&out), code, "{lang:?}");
+            assert_eq!(strip_sequences(&out), code, "{lang:?}");
         }
     }
 
@@ -326,7 +326,7 @@ mod tests {
         for lang in ["powershell", "ps", "ps1"] {
             let out = highlight_to_ansi(Sgr::Full, code, Some(lang));
             assert!(out.contains('\u{1b}'), "{lang}: {out:?}");
-            assert_eq!(crate::list_lines::strip_ansi(&out), code, "{lang}");
+            assert_eq!(crate::ansi::strip_sequences(&out), code, "{lang}");
         }
     }
 
@@ -346,7 +346,7 @@ mod tests {
     fn carriage_returns_normalize_and_nul_drops() {
         assert_eq!(normalize_text("a\r\nb\rc\u{0}d"), "a\nb\ncd");
         assert_eq!(
-            strip_ansi(&highlight_to_ansi(Sgr::Full, "a\r\nb", Some("rust"))),
+            strip_sequences(&highlight_to_ansi(Sgr::Full, "a\r\nb", Some("rust"))),
             "a\nb"
         );
     }
@@ -357,7 +357,7 @@ mod tests {
         for line in out.split('\n') {
             assert!(!line.ends_with('\u{1b}'));
         }
-        assert_eq!(strip_ansi(&out), "/* a\nb */");
+        assert_eq!(strip_sequences(&out), "/* a\nb */");
     }
 
     #[test]
