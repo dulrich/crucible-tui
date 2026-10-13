@@ -196,7 +196,7 @@ describe("transports", () => {
         if (a.record && b.record) pairs.push({ before: a.record, after: b.record });
       }
       // Every policy pairs: the transport carries a real render on both sides. Whether the
-      // pair agrees is the R-gate's question (and D-A/D-C attribution), not this test's.
+      // pair agrees is the differential's classification question, not this test's.
       expect(errors).toBe(0);
       expect(pairs.length).toBe(POLICY_NAMES.length);
       expect(classifyDiffs(pairs, "a").diffedCombos).toBe(0);

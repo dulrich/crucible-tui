@@ -129,13 +129,9 @@ export interface RenderRequest {
   emoji: EmojiAxis;
 }
 
-/**
- * What the frontmatter formatter reports about its own block: whether it parsed, and — only on failure — the 0-based half-open
- * line span of the diagnostic within the rendered text.
- */
+/** What the frontmatter formatter reports about its own block: whether it parsed. */
 export interface FrontmatterFacts {
   parsed: boolean;
-  diagnostic?: [number, number];
   /** How many leading `codeRanges` are frontmatter-echo ranges (`formatMetaBlockDetailed`'s `verbatimRanges`). */
   echoRanges?: number;
 }
@@ -147,15 +143,12 @@ export interface RenderOutput {
   frontmatter?: FrontmatterFacts;
 }
 
-/** A `{parsed, diagnostic?}` value off the wire, or `undefined` when absent or malformed. */
+/** A `{parsed, echoRanges?}` value off the wire, or `undefined` when absent or malformed. */
 function frontmatterFactsOf(value: unknown): FrontmatterFacts | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { parsed, diagnostic, echoRanges } = value as { parsed?: unknown; diagnostic?: unknown; echoRanges?: unknown };
+  const { parsed, echoRanges } = value as { parsed?: unknown; echoRanges?: unknown };
   if (typeof parsed !== "boolean") return undefined;
   const facts: FrontmatterFacts = { parsed };
-  if (Array.isArray(diagnostic) && diagnostic.length === 2 && diagnostic.every((n) => typeof n === "number")) {
-    facts.diagnostic = [diagnostic[0] as number, diagnostic[1] as number];
-  }
   if (typeof echoRanges === "number") facts.echoRanges = echoRanges;
   return facts;
 }
