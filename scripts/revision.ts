@@ -96,12 +96,6 @@ export interface ComboRecord extends ComboKey {
   fencePrefixOk?: boolean;
   /** Every SGR not authored verbatim in the source is a committed `STYLE_TABLE` open/close. */
   sgrVocabOk?: boolean;
-  /**
-   * Pairwise, set on the `after` side when both outputs differed and were in hand: the
-   * `scripts/divergences.ts` registry id the differing site was attributed to (ratified
-   * entries only). Absent = not attributed (or not differing). Never a body.
-   */
-  attributed?: string;
   // --- non-vacuity counters (every record since WP-1 of `plans/mdview-rust-port.md`) ---
   hasSgr?: boolean;
   hasOsc8?: boolean;
@@ -138,8 +132,7 @@ export interface RenderRequest {
 }
 
 /**
- * What the frontmatter formatter reports about its own block (`scripts/divergences.ts`'s
- * `RenderSide.frontmatter`): whether it parsed, and — only on failure — the 0-based half-open
+ * What the frontmatter formatter reports about its own block: whether it parsed, and — only on failure — the 0-based half-open
  * line span of the diagnostic within the rendered text.
  */
 export interface FrontmatterFacts {
@@ -152,7 +145,7 @@ export interface FrontmatterFacts {
 export interface RenderOutput {
   text: string;
   codeRanges: Array<[number, number]>;
-  /** Present when the document has frontmatter and the side reports it (D-A attribution). */
+  /** Present when the document has frontmatter and the side reports it. */
   frontmatter?: FrontmatterFacts;
 }
 

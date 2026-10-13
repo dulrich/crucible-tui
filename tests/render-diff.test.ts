@@ -8,11 +8,8 @@ import { describe, expect, test } from "bun:test";
 // I/O, its pairing and its printing; revision materialization/loading, the pure diff
 // classification, and the shared hash primitive each got their own home. These four import
 // lines are the same surface this file always exercised.
-import { REGISTRY, type RenderSite } from "../scripts/divergences";
 import {
   assertOutsideRepo,
-  attributeOutputs,
-  formatAttributed,
   loadBaseline,
   pairRecords,
   parseArgs,
@@ -31,7 +28,6 @@ import {
   loadRevision,
   type ComboRecord,
   type Measurer,
-  type RenderOutput,
   type RevisionHandle,
 } from "../scripts/revision";
 import { sha256Hex } from "../scripts/hash";
@@ -804,116 +800,21 @@ describe("CLI — the ghost-manifest repro exits non-zero", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// WP-3 attempt 3 of `plans/mdview-rust-port.md`: the R-gate attributes a differing pair through
-// `scripts/divergences.ts` (D-A), and refuses to link a `node_modules` without `marked`.
-// ---------------------------------------------------------------------------
-
-describe("R-gate attribution through the divergence registry", () => {
-  const WITNESS = "tests/fixtures/witnesses/defect-1-2-unparseable-frontmatter.md";
-  const context = { path: WITNESS, tier: "unicode" as const, policy: "P0" as const };
-
-  async function tsSide(): Promise<RenderOutput> {
-    const source = await Bun.file(join(REPO_ROOT, WITNESS)).text();
-    const { text, codeRanges } = renderSync(source, 80);
-    const echo = codeRanges[0];
-    if (echo === undefined) throw new Error("witness lost its echo range");
-    return { text, codeRanges, frontmatter: { parsed: false, diagnostic: [0, echo[0] - 1] } };
-  }
-
-  /** The Rust shape of the same render: a different, one-line-longer diagnostic. */
-  function withOtherDiagnostic(ts: RenderOutput): RenderOutput {
-    const [start, end] = ts.frontmatter?.diagnostic ?? [0, 0];
-    const lines = ts.text.split("\n");
-    const diagnostic = ["! could not parse frontmatter: other text", "at line 2, column 346:", "", "excerpt", "^", "", ""];
-    const delta = diagnostic.length - (end - start);
-    return {
-      text: [...lines.slice(0, start), ...diagnostic, ...lines.slice(end)].join("\n"),
-      codeRanges: ts.codeRanges.map(([a, b]): [number, number] => [a + delta, b + delta]),
-      frontmatter: { parsed: false, diagnostic: [start, start + diagnostic.length] },
-    };
-  }
-
-  const pairOf = (attributed: string | null): PairedCombo => ({
-    before: makeRecord({ textSha: "ts" }),
-    after: makeRecord({ textSha: "rust", ...(attributed !== null ? { attributed } : {}) }),
-  });
-
-  test("a D-A combo is attributed to yaml-diagnostic and does not fail the run", async () => {
-    const ts = await tsSide();
-    expect(ts.frontmatter?.parsed).toBe(false);
-    const id = attributeOutputs(ts, withOtherDiagnostic(ts), context);
-    expect(id).toBe("yaml-diagnostic");
-    const summary = classifyDiffs([pairOf(id)], "a");
-    expect({ ok: summary.ok, attributed: summary.attributed.length, disallowed: summary.disallowed.length }).toEqual({
-      ok: true,
-      attributed: 1,
-      disallowed: 0,
-    });
-    expect(formatAttributed(summary.attributed)).toBe("render-diff: attributed yaml-diagnostic=1");
-  });
-
-  test("a non-D-A diff on the same file is not attributed and still fails", async () => {
-    const ts = await tsSide();
-    const rust = withOtherDiagnostic(ts);
-    const lines = rust.text.split("\n");
-    lines[lines.length - 2] = `${lines[lines.length - 2] ?? ""} changed`;
-    const id = attributeOutputs(ts, { ...rust, text: lines.join("\n") }, context);
-    expect(id).toBeNull();
-    const summary = classifyDiffs([pairOf(id)], "a");
-    expect({ ok: summary.ok, disallowed: summary.disallowed.length }).toEqual({ ok: false, disallowed: 1 });
-    expect(formatAttributed(summary.attributed)).toBe("render-diff: attributed none");
-  });
-
-  test("a ratified parse-verdict split (flow-key-mapping) is attributed and passes", () => {
-    const ts: RenderOutput = {
-      text: "just a scalar: line\nnot : a, b\n    : c\n---\n\nbody",
-      codeRanges: [],
-      frontmatter: { parsed: true },
-    };
-    const rust: RenderOutput = {
-      text:
-        "! could not parse frontmatter: mapping values are not allowed in this context at line 2,\n" +
-        "column 12:\n\nnot: [a, b]: c\n           ^\n\njust a scalar: line\nnot: [a, b]: c\n---\n\nbody",
-      codeRanges: [[7, 8]],
-      frontmatter: { parsed: false, diagnostic: [0, 6] },
-    };
-    const entry = REGISTRY.find((e) => e.id === "flow-key-mapping");
-    expect(entry?.ratified).not.toBeNull();
-    const site: RenderSite = { kind: "render", path: "x", tier: "unicode", policy: "P0", ts, rust };
-    expect(entry?.predicate(site)).toBe(true);
-    const id = attributeOutputs(ts, rust, context);
-    expect(id).toBe("flow-key-mapping");
-    expect(classifyDiffs([pairOf(id)], "a").ok).toBe(true);
-  });
-
-  test("identical outputs are never attributed", async () => {
-    const ts = await tsSide();
-    expect(attributeOutputs(ts, { ...ts }, context)).toBeNull();
-  });
-});
-
-describe("code-content claims (2026-10-12)", () => {
-  test("a class C pair claimed by a CODE_CONTENT_CLAIMS entry is attributed, not class C", () => {
-    const pair: PairedCombo = {
-      before: makeRecord({ codeContentSha: "ts-code" }),
-      after: makeRecord({ codeContentSha: "rust-code", attributed: "hljs-prototype-key" }),
-    };
-    const summary = classifyDiffs([pair], "a");
-    expect({ ok: summary.ok, classC: summary.classC.length, attributed: summary.attributed.length }).toEqual({
-      ok: true,
-      classC: 0,
-      attributed: 1,
-    });
-  });
-
-  test("any other id still loses to class C", () => {
-    const pair: PairedCombo = {
-      before: makeRecord({ codeContentSha: "ts-code" }),
-      after: makeRecord({ codeContentSha: "rust-code", attributed: "yaml-diagnostic" }),
-    };
-    const summary = classifyDiffs([pair], "a");
-    expect({ ok: summary.ok, classC: summary.classC.length }).toEqual({ ok: false, classC: 1 });
+// WP-1 of `plans/retire-ts-parity-residue.md` retired the divergence registry and its
+// attribution: under `--expect a` there is no exemption left, so every differing pair fails.
+describe("expect=a disallows every differing pair", () => {
+  test("a P0 textSha diff and a P2 D-C-shaped textSha/codeContentSha diff are each disallowed", () => {
+    for (const pair of [
+      { before: makeRecord({ textSha: "x" }), after: makeRecord({ textSha: "y" }) },
+      { before: makeRecord({ policy: "P2", textSha: "x" }), after: makeRecord({ policy: "P2", textSha: "y", codeContentSha: "c2" }) },
+    ] satisfies PairedCombo[]) {
+      const summary = classifyDiffs([pair], "a");
+      expect({ ok: summary.ok, disallowed: summary.disallowed.length, diffed: summary.diffedCombos }).toEqual({
+        ok: false,
+        disallowed: 1,
+        diffed: 1,
+      });
+    }
   });
 });
 
