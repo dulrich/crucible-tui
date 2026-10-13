@@ -2,14 +2,14 @@
 //!
 //! WP-5a of `plans/mdview-rust-port.md` ports the first half: cell normalization (the
 //! span-cell contract), `tableGrid`, `naturalWidths`, the allocator and the two wraps. The
-//! emitter (`resolveBorderChars` … `renderGrid`) is WP-5b's and sits at the bottom of this
+//! emitter (`drawRule` … `renderGrid`) is WP-5b's and sits at the bottom of this
 //! file; `render.rs`'s `table` visitor calls `render_table`.
 //!
 //! **Offsets.** A `CellSpan`'s `start`/`end` and a `CellFragment`'s `start`/`end` are UTF-16
 //! code-unit indices into the cell text, exactly as in TS (`table.ts:99-110`); the emitter
 //! converts at its one slicing seam, `style_fragment`, with `text::utf16_to_byte`.
 
-use crate::glyphs::GlyphSet;
+use crate::glyphs::{BorderChars, GlyphSet};
 use crate::style::Sgr;
 use crate::style::{StyleName, apply_style, apply_style_chain, create_styler};
 use crate::text::{
@@ -573,71 +573,6 @@ pub fn wrap_fragments(text: &str, width: usize, measure: Measure) -> Vec<CellFra
     fragments
 }
 
-/// One border glyph per slot (`table.ts:639`), `cli-table3`'s slot names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BorderChars {
-    top_left: &'static str,
-    top_mid: &'static str,
-    top: &'static str,
-    top_right: &'static str,
-    left_mid: &'static str,
-    mid_mid: &'static str,
-    mid: &'static str,
-    right_mid: &'static str,
-    bottom_left: &'static str,
-    bottom_mid: &'static str,
-    bottom: &'static str,
-    bottom_right: &'static str,
-    left: &'static str,
-    middle: &'static str,
-    right: &'static str,
-}
-
-/// `UNICODE_BORDER` (`table.ts:666`): `cli-table3`'s default charset, byte for byte.
-const UNICODE_BORDER: BorderChars = BorderChars {
-    top_left: "┌",
-    top_mid: "┬",
-    top: "─",
-    top_right: "┐",
-    left_mid: "├",
-    mid_mid: "┼",
-    mid: "─",
-    right_mid: "┤",
-    bottom_left: "└",
-    bottom_mid: "┴",
-    bottom: "─",
-    bottom_right: "┘",
-    left: "│",
-    middle: "│",
-    right: "│",
-};
-
-/// `resolveBorderChars` (`table.ts:692`): per-slot fallback to the Unicode set.
-fn resolve_border_chars(glyphs: &GlyphSet) -> BorderChars {
-    if glyphs.table_chars.is_none() {
-        return UNICODE_BORDER;
-    }
-    let u = UNICODE_BORDER;
-    let pick = |key: &str, fallback: &'static str| glyphs.table_char(key).unwrap_or(fallback);
-    BorderChars {
-        top_left: pick("top-left", u.top_left),
-        top_mid: pick("top-mid", u.top_mid),
-        top: pick("top", u.top),
-        top_right: pick("top-right", u.top_right),
-        left_mid: pick("left-mid", u.left_mid),
-        mid_mid: pick("mid-mid", u.mid_mid),
-        mid: pick("mid", u.mid),
-        right_mid: pick("right-mid", u.right_mid),
-        bottom_left: pick("bottom-left", u.bottom_left),
-        bottom_mid: pick("bottom-mid", u.bottom_mid),
-        bottom: pick("bottom", u.bottom),
-        bottom_right: pick("bottom-right", u.bottom_right),
-        left: pick("left", u.left),
-        middle: pick("middle", u.middle),
-        right: pick("right", u.right),
-    }
-}
-
 /// `styleBorder` (`table.ts:745`): grey, hue-class, so dropped under `formats`.
 fn style_border(sgr: Sgr, text: &str) -> String {
     apply_style(sgr, &create_styler(StyleName::Gray, None), text)
@@ -864,13 +799,26 @@ pub fn render_grid<'g>(
     }
     let natural = natural_widths(&grid.header, &grid.rows, measure);
     let widths = allocate_widths(&natural, target_width).widths;
-    let chars = resolve_border_chars(glyphs);
     let layout =
         |row: &'g [CellContent]| -> Vec<LaidOutCell<'g>> { lay_out_row(row, &widths, measure) };
     let header = layout(&grid.header);
     let rows: Vec<Vec<LaidOutCell<'_>>> = grid.rows.iter().map(|r| layout(r)).collect();
-    compose_table(&header, &rows, &widths, &grid.aligns, &chars, measure, sgr)
+    compose_table(
+        &header,
+        &rows,
+        &widths,
+        &grid.aligns,
+        glyphs.border,
+        measure,
+        sgr,
+    )
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_doc;
+#[cfg(test)]
+mod tests_emit;
+#[cfg(test)]
+mod tests_spans;

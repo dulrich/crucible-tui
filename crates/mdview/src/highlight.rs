@@ -14,12 +14,11 @@
 //! - **Both call branches** (`highlight.ts:263`): a truthy language takes `hljs.highlight`, an
 //!   absent or empty one `highlightAuto`. syntect has no auto-detection; the auto branch here
 //!   tries `find_syntax_by_first_line` (shebangs, mode lines) and is plain otherwise.
-//! - The theme is [`THEME`], keyed by the retired highlight.js vocabulary (`highlight.ts:89`);
-//!   syntect scopes reach a key through [`SCOPE_MAP`]. Every escape is written by
+//! - The theme is [`SCOPE_STYLES`]: syntect scope prefixes carrying the chain of the retired
+//!   highlight.js key each stood for (`highlight.ts:89`) inline. Every escape is written by
 //!   `style.rs`'s `apply_style_chain`, so every generated SGR is in the committed table.
 //! - **Nesting**: TS applies innermost-first and lets the parent wrap the styled child. Here a
-//!   token takes the chain of the innermost scope on its stack that maps to a key with a
-//!   non-null chain. That changes SGR only (D-C).
+//!   token takes the chain of the innermost scope on its stack that matches a row. That changes SGR only (D-C).
 //! - Newlines are emitted outside any span, so a styled run never straddles a line.
 //!
 //! The syntax set loads lazily, once per process ([`SYNTAXES`]), on the first fence that needs
@@ -36,92 +35,57 @@ use crate::style::{Sgr, StyleName, apply_style_chain};
 
 use StyleName::{Blue, Bold, Cyan, Dim, Gray, Green, Italic, Red, Underline, Yellow};
 
-/// The theme, total over the retired `cli-highlight` key vocabulary (`highlight.ts:89-132`).
-/// An empty chain is the retired `plain` (`null` in TS).
-pub const THEME: &[(&str, &[StyleName])] = &[
-    ("keyword", &[Blue]),
-    ("built_in", &[Cyan]),
-    ("type", &[Cyan, Dim]),
-    ("literal", &[Blue]),
-    ("number", &[Green]),
-    ("regexp", &[Red]),
-    ("string", &[Red]),
-    ("subst", &[]),
-    ("symbol", &[]),
-    ("class", &[Blue]),
-    ("function", &[Yellow]),
-    ("title", &[]),
-    ("params", &[]),
-    ("comment", &[Green]),
-    ("doctag", &[Green]),
-    ("meta", &[Gray]),
-    ("meta-keyword", &[]),
-    ("meta-string", &[]),
-    ("section", &[]),
-    ("tag", &[Gray]),
-    ("name", &[Blue]),
-    ("builtin-name", &[]),
-    ("attr", &[Cyan]),
-    ("attribute", &[]),
-    ("variable", &[]),
-    ("bullet", &[]),
-    ("code", &[]),
-    ("emphasis", &[Italic]),
-    ("strong", &[Bold]),
-    ("formula", &[]),
-    ("link", &[Underline]),
-    ("quote", &[]),
-    ("selector-tag", &[]),
-    ("selector-id", &[]),
-    ("selector-class", &[]),
-    ("selector-attr", &[]),
-    ("selector-pseudo", &[]),
-    ("template-tag", &[]),
-    ("template-variable", &[]),
-    ("addition", &[Green]),
-    ("deletion", &[Red]),
-    ("default", &[]),
-];
+/// One syntect scope prefix and what a token under it gets: the style chain of the retired
+/// `cli-highlight` theme key it stood for (`highlight.ts:89-132`; the trailing comment names that
+/// key, an empty chain is the retired `plain`) and whether it counts toward an auto-detection score.
+#[derive(Debug, Clone, Copy)]
+pub struct ScopeStyle {
+    pub prefix: &'static str,
+    pub chain: &'static [StyleName],
+    /// The analogue of hljs relevance: a grammar earns a point for each run it recognises here.
+    pub scores: bool,
+}
 
-/// syntect scope prefix → theme key, first match wins (so the more specific prefix comes
-/// first). A prefix matches a scope when it equals it or is followed by `.`. The source of each
-/// row is the Sublime/TextMate scope-naming convention against highlight.js's class names for
-/// the same construct.
-pub const SCOPE_MAP: &[(&str, &str)] = &[
-    ("comment", "comment"),
-    ("string.regexp", "regexp"),
-    ("string", "string"),
-    ("constant.numeric", "number"),
-    ("constant.language", "literal"),
-    ("constant.other.symbol", "symbol"),
-    ("constant.character.escape", "subst"),
-    ("keyword.operator", "default"),
-    ("keyword", "keyword"),
-    ("storage.type.primitive", "type"),
-    ("storage", "keyword"),
-    ("support.type", "type"),
-    ("support.class", "type"),
-    ("support.function", "built_in"),
-    ("support.constant", "built_in"),
-    ("entity.name.function", "function"),
-    ("entity.name.class", "class"),
-    ("entity.name.type", "class"),
-    ("entity.name.tag", "name"),
-    ("entity.other.attribute-name", "attr"),
-    ("entity.name.section", "section"),
-    ("meta.preprocessor", "meta"),
-    ("meta.annotation", "meta"),
-    ("meta.tag", "tag"),
-    ("variable", "variable"),
-    ("markup.inserted", "addition"),
-    ("markup.deleted", "deletion"),
-    ("markup.italic", "emphasis"),
-    ("markup.bold", "strong"),
-    ("markup.underline.link", "link"),
-    ("markup.heading", "section"),
-    ("markup.quote", "quote"),
-    ("markup.raw", "code"),
-    ("markup.list", "bullet"),
+/// syntect scope prefix → style, first match wins (so the more specific prefix comes first). A
+/// prefix matches a scope when it equals it or is followed by `.`. The source of each row is the
+/// Sublime/TextMate scope-naming convention against highlight.js's class names for the same
+/// construct.
+#[rustfmt::skip]
+pub const SCOPE_STYLES: &[ScopeStyle] = &[
+    ScopeStyle { prefix: "comment", chain: &[Green], scores: true }, // comment
+    ScopeStyle { prefix: "string.regexp", chain: &[Red], scores: false }, // regexp
+    ScopeStyle { prefix: "string", chain: &[Red], scores: true }, // string
+    ScopeStyle { prefix: "constant.numeric", chain: &[Green], scores: true }, // number
+    ScopeStyle { prefix: "constant.language", chain: &[Blue], scores: true }, // literal
+    ScopeStyle { prefix: "constant.other.symbol", chain: &[], scores: false }, // symbol
+    ScopeStyle { prefix: "constant.character.escape", chain: &[], scores: false }, // subst
+    ScopeStyle { prefix: "keyword.operator", chain: &[], scores: false }, // default
+    ScopeStyle { prefix: "keyword", chain: &[Blue], scores: true }, // keyword
+    ScopeStyle { prefix: "storage.type.primitive", chain: &[Cyan, Dim], scores: true }, // type
+    ScopeStyle { prefix: "storage", chain: &[Blue], scores: true }, // keyword
+    ScopeStyle { prefix: "support.type", chain: &[Cyan, Dim], scores: true }, // type
+    ScopeStyle { prefix: "support.class", chain: &[Cyan, Dim], scores: true }, // type
+    ScopeStyle { prefix: "support.function", chain: &[Cyan], scores: true }, // built_in
+    ScopeStyle { prefix: "support.constant", chain: &[Cyan], scores: true }, // built_in
+    ScopeStyle { prefix: "entity.name.function", chain: &[Yellow], scores: true }, // function
+    ScopeStyle { prefix: "entity.name.class", chain: &[Blue], scores: true }, // class
+    ScopeStyle { prefix: "entity.name.type", chain: &[Blue], scores: true }, // class
+    ScopeStyle { prefix: "entity.name.tag", chain: &[Blue], scores: true }, // name
+    ScopeStyle { prefix: "entity.other.attribute-name", chain: &[Cyan], scores: true }, // attr
+    ScopeStyle { prefix: "entity.name.section", chain: &[], scores: false }, // section
+    ScopeStyle { prefix: "meta.preprocessor", chain: &[Gray], scores: false }, // meta
+    ScopeStyle { prefix: "meta.annotation", chain: &[Gray], scores: false }, // meta
+    ScopeStyle { prefix: "meta.tag", chain: &[Gray], scores: true }, // tag
+    ScopeStyle { prefix: "variable", chain: &[], scores: false }, // variable
+    ScopeStyle { prefix: "markup.inserted", chain: &[Green], scores: false }, // addition
+    ScopeStyle { prefix: "markup.deleted", chain: &[Red], scores: false }, // deletion
+    ScopeStyle { prefix: "markup.italic", chain: &[Italic], scores: false }, // emphasis
+    ScopeStyle { prefix: "markup.bold", chain: &[Bold], scores: false }, // strong
+    ScopeStyle { prefix: "markup.underline.link", chain: &[Underline], scores: false }, // link
+    ScopeStyle { prefix: "markup.heading", chain: &[], scores: false }, // section
+    ScopeStyle { prefix: "markup.quote", chain: &[], scores: false }, // quote
+    ScopeStyle { prefix: "markup.raw", chain: &[], scores: false }, // code
+    ScopeStyle { prefix: "markup.list", chain: &[], scores: false }, // bullet
 ];
 
 /// two-face's extended grammar set (newline variant) plus the vendored grammars under
@@ -135,29 +99,21 @@ pub static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(|| {
     .expect("build.rs wrote a valid syntax dump")
 });
 
-fn theme_chain(key: &str) -> &'static [StyleName] {
-    THEME
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map_or(&[], |(_, chain)| chain)
-}
-
-fn scope_key(scope: &str) -> Option<&'static str> {
-    SCOPE_MAP.iter().find_map(|(prefix, key)| {
-        let hit = scope == *prefix
-            || (scope.starts_with(prefix) && scope.as_bytes().get(prefix.len()) == Some(&b'.'));
-        hit.then_some(*key)
+fn scope_style(scope: &str) -> Option<&'static ScopeStyle> {
+    SCOPE_STYLES.iter().find(|row| {
+        let prefix = row.prefix;
+        scope == prefix
+            || (scope.starts_with(prefix) && scope.as_bytes().get(prefix.len()) == Some(&b'.'))
     })
 }
 
-/// The key and chain for a token: the innermost scope that maps to a key, empty if none does.
-fn chain_for(stack: &ScopeStack) -> (Option<&'static str>, &'static [StyleName]) {
-    for scope in stack.as_slice().iter().rev() {
-        if let Some(key) = scope_key(&scope.build_string()) {
-            return (Some(key), theme_chain(key));
-        }
-    }
-    (None, &[])
+/// The row for a token: the innermost scope on its stack that maps to one, if any does.
+fn style_for(stack: &ScopeStack) -> Option<&'static ScopeStyle> {
+    stack
+        .as_slice()
+        .iter()
+        .rev()
+        .find_map(|scope| scope_style(&scope.build_string()))
 }
 
 /// `decodeEntities`' effect on the text: `\r\n?` → `\n`, then NUL dropped.
@@ -211,13 +167,6 @@ const AUTO_CANDIDATES: &[&str] = &[
     "css",
 ];
 
-/// Keys that count toward an auto-detection score — the analogue of hljs relevance: a
-/// grammar earns a point for each run it recognises as one of these.
-const SCORING_KEYS: &[&str] = &[
-    "keyword", "built_in", "literal", "number", "function", "type", "class", "string", "comment",
-    "name", "attr", "tag",
-];
-
 type Run = (&'static [StyleName], String);
 
 /// Tokenize `text` with `syntax` into styled runs (adjacent same-chain ranges coalesced,
@@ -249,13 +198,11 @@ fn runs(syntax: &SyntaxReference, text: &str) -> (Vec<Run>, usize) {
             if range.is_empty() {
                 continue;
             }
-            let (key, chain) = chain_for(&stack);
-            if key.is_some_and(|k| SCORING_KEYS.contains(&k))
-                && !line[range.clone()].trim().is_empty()
-            {
+            let style = style_for(&stack);
+            if style.is_some_and(|r| r.scores) && !line[range.clone()].trim().is_empty() {
                 score += 1;
             }
-            push(chain, &line[range], &mut out);
+            push(style.map_or(&[], |r| r.chain), &line[range], &mut out);
         }
     }
     (out, score)
@@ -325,11 +272,30 @@ mod tests {
     use crate::list_lines::strip_ansi;
 
     #[test]
-    fn theme_is_total_over_the_retired_vocabulary() {
-        assert_eq!(THEME.len(), 42);
-        for (_, key) in SCOPE_MAP {
-            assert!(THEME.iter().any(|(k, _)| k == key), "{key}");
+    fn one_representative_scope_per_style() {
+        for (scope, chain, scores) in [
+            ("comment.line.double-slash", &[Green][..], true),
+            ("string.regexp.js", &[Red], false),
+            ("string.quoted.double", &[Red], true),
+            ("constant.numeric.integer", &[Green], true),
+            ("constant.language.boolean", &[Blue], true),
+            ("keyword.control", &[Blue], true),
+            ("storage.type.primitive.rust", &[Cyan, Dim], true),
+            ("support.function.builtin", &[Cyan], true),
+            ("entity.name.function.rust", &[Yellow], true),
+            ("meta.preprocessor.c", &[Gray], false),
+            ("meta.tag.html", &[Gray], true),
+            ("markup.italic", &[Italic], false),
+            ("markup.bold", &[Bold], false),
+            ("markup.underline.link", &[Underline], false),
+            ("keyword.operator.arith", &[], false),
+            ("variable.other", &[], false),
+        ] {
+            let row = scope_style(scope).expect(scope);
+            assert_eq!(row.chain, chain, "{scope}");
+            assert_eq!(row.scores, scores, "{scope}");
         }
+        assert_eq!(SCOPE_STYLES.len(), 34);
     }
 
     #[test]
@@ -413,9 +379,10 @@ mod tests {
 
     #[test]
     fn scope_prefixes_match_on_atom_boundaries() {
-        assert_eq!(scope_key("string.quoted.double"), Some("string"));
-        assert_eq!(scope_key("stringy"), None);
-        assert_eq!(scope_key("keyword.operator.arith"), Some("default"));
-        assert_eq!(scope_key("keyword.control"), Some("keyword"));
+        let prefix = |scope| scope_style(scope).map(|r| r.prefix);
+        assert_eq!(prefix("string.quoted.double"), Some("string"));
+        assert_eq!(prefix("stringy"), None);
+        assert_eq!(prefix("keyword.operator.arith"), Some("keyword.operator"));
+        assert_eq!(prefix("keyword.control"), Some("keyword"));
     }
 }
