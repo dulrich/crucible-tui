@@ -5,7 +5,7 @@
 //! - `serve`: one JSON request per line in, one JSON response per line out.
 //!   Request `{source, path?, width, tier, ambiguous, policy: {sgr, hyperlinks, tmux}, emoji?,
 //!   tokens?}` — `policy` may instead be the string `"env"`, resolved from this process's
-//!   environment and stdout (the colour axis); response `{text, codeRanges, frontmatter?: {parsed, diagnostic?, echoRanges}}` or `{error}`.
+//!   environment and stdout (the colour axis); response `{text, codeRanges, frontmatter?: {parsed, echoRanges}}` or `{error}`.
 //! - `lex`: request `{body, tier}`; response `{tokens}` (`crate::lex`, the comrak adapter)
 //! - `style-table`: dump the committed SGR table (`style.rs`), one JSON line.
 //!
@@ -203,12 +203,10 @@ pub fn handle_render(line: &str) -> String {
         let output = render(source, &options).map_err(|e| e.to_string())?;
         let ranges: Vec<[usize; 2]> = output.code_ranges.iter().map(|&(a, b)| [a, b]).collect();
         let mut response = json!({ "text": output.text, "codeRanges": ranges });
-        // The frontmatter facts D-A's predicate reads (`scripts/divergences.ts` at `a2ea0a1`, `RenderSide`; retired).
+        // The frontmatter facts `scripts/revision.ts`'s measurer reads. (`diagnostic`, the span
+        // the retired divergence registry read, was dropped after `a2ea0a1`.)
         if let Some(fm) = &output.frontmatter {
             let mut facts = json!({ "parsed": fm.parsed });
-            if let Some((start, end)) = fm.diagnostic {
-                facts["diagnostic"] = json!([start, end]);
-            }
             // How many of `codeRanges`' leading entries are frontmatter-echo ranges — what
             // `scripts/revision.ts`'s measurer read from `formatMetaBlockDetailed` before WP-9.
             facts["echoRanges"] = json!(fm.echo_ranges);

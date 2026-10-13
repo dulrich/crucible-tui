@@ -76,16 +76,12 @@ pub struct RenderOutput {
     pub frontmatter: Option<FrontmatterFacts>,
 }
 
-/// What the frontmatter formatter knows about its own block, for the R-gate's D-A attribution
-/// (`scripts/divergences.ts`'s `RenderSide.frontmatter`, retired; at `a2ea0a1`), computed once by [`render`].
+/// What the frontmatter formatter knows about its own block, computed once by [`render`] and
+/// reported by `__parity serve` for `scripts/revision.ts`'s measurer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrontmatterFacts {
     /// Whether the block parsed.
     pub parsed: bool,
-    /// Only on a failed parse: the 0-based half-open line span `[start, end)` of the diagnostic
-    /// within the rendered text. The meta block opens the document, and a failed parse's echo
-    /// range starts on the line after the diagnostic, so the span is `[0, echo_start - 1)`.
-    pub diagnostic: Option<(usize, usize)>,
     /// How many of `code_ranges`' leading entries are frontmatter-echo ranges.
     pub echo_ranges: usize,
 }
@@ -315,13 +311,10 @@ pub fn render(source: &str, options: &RenderOptions) -> Result<RenderOutput, Ren
         .as_deref()
         .map(|m| frontmatter::format_meta_block_detailed(m, target_width, measure, sgr));
     let frontmatter = meta_result.as_ref().map(|r| {
-        let diagnostic = match r.verbatim_ranges.first() {
-            Some(&(start, _)) if start > 1 => Some((0, start - 1)),
-            _ => None,
-        };
+        // A failed parse prints its diagnostic above the echo, so its echo range starts below line 1.
+        let failed = matches!(r.verbatim_ranges.first(), Some(&(start, _)) if start > 1);
         FrontmatterFacts {
-            parsed: diagnostic.is_none(),
-            diagnostic,
+            parsed: !failed,
             echo_ranges: r.verbatim_ranges.len(),
         }
     });
