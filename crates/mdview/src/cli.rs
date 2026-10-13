@@ -156,13 +156,9 @@ use crate::glyphs::{Tier, resolve_glyphs, wide_forces_ascii};
 use crate::lang::FenceLanguageResolver;
 use crate::overflow::find_first_overflow;
 use crate::pager::{page, should_page, write_stdout};
-use crate::probe::{
-    AmbiguousResolution, AmbiguousSource, PROBE_GLYPH, ResolveAmbiguousOptions,
-    resolve_ambiguous_width,
-};
+use crate::probe::{ResolveAmbiguousOptions, format_probe_report, resolve_ambiguous_width};
 use crate::render::RenderOptions;
 use crate::style::Sgr;
-use crate::width::Ambiguous;
 
 /// `--licenses`: the same file TS embeds, so the bytes match by construction.
 pub const LICENSE_NOTICES: &str = include_str!("../../../THIRD-PARTY-LICENSES.txt");
@@ -455,9 +451,8 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
 
     let target_width = resolve_width(options.width, p.columns);
     let ambiguous = resolve_ambiguous_width(ResolveAmbiguousOptions {
-        env: Some(&p.env),
         allow_probe: !options.check,
-        ..Default::default()
+        ..ResolveAmbiguousOptions::new(&p.env)
     });
     let glyphs = resolve_glyphs(&p.env, options.glyph_tier, Some(ambiguous.ambiguous));
     if wide_forces_ascii(options.glyph_tier, ambiguous.ambiguous) {
@@ -567,106 +562,6 @@ fn run_highlight_as(args: &[String], p: &Process) -> CliResult {
     Ok(0)
 }
 
-fn source_str(s: AmbiguousSource) -> &'static str {
-    match s {
-        AmbiguousSource::Env => "env",
-        AmbiguousSource::Cache => "cache",
-        AmbiguousSource::Probe => "probe",
-        AmbiguousSource::Default => "default",
-    }
-}
-
-/// `formatProbeReport(resolution, env)`.
-pub fn format_probe_report(r: &AmbiguousResolution, env: &Env, p: &Process) -> String {
-    let get = |k: &str| env.get(k).map(String::as_str);
-    let truthy = |k: &str| get(k).is_some_and(|v| !v.is_empty());
-    let multiplexer = if truthy("ZELLIJ") || truthy("ZELLIJ_SESSION_NAME") {
-        "zellij"
-    } else if truthy("TMUX") {
-        "tmux"
-    } else if truthy("STY") {
-        "screen"
-    } else {
-        "none"
-    };
-    let or_unset = |k: &str| get(k).unwrap_or("(unset)").to_owned();
-    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
-        .iter()
-        .find_map(|k| get(k).filter(|v| !v.is_empty()))
-        .unwrap_or("(unset)");
-    let yes = |b: bool| if b { "yes" } else { "no" };
-    let mut lines: Vec<String> = vec![
-        "mdview probe — East Asian Ambiguous width".into(),
-        String::new(),
-        "terminal".into(),
-        format!("  TERM             {}", or_unset("TERM")),
-        format!("  TERM_PROGRAM     {}", or_unset("TERM_PROGRAM")),
-        format!("  COLORTERM        {}", or_unset("COLORTERM")),
-        format!("  VTE_VERSION      {}", or_unset("VTE_VERSION")),
-        format!("  multiplexer      {multiplexer}"),
-        format!("  locale           {locale}"),
-        format!("  stdin is a TTY   {}", yes(p.stdin_is_tty)),
-        format!("  stdout is a TTY  {}", yes(p.stdout_is_tty)),
-        format!(
-            "  columns          {}",
-            p.columns.map_or("(unknown)".to_owned(), |c| c.to_string())
-        ),
-        String::new(),
-        "probe".into(),
-    ];
-    if let Some(probe) = &r.probe {
-        lines.push(format!("  test glyph       {PROBE_GLYPH} (U+2014 EM DASH)"));
-        lines.push(format!(
-            "  DSR reply        {}",
-            probe.reply.as_deref().unwrap_or("(none)")
-        ));
-        lines.push(format!(
-            "  cursor column    {}",
-            probe
-                .columns
-                .map_or("(not reported)".to_owned(), |(b, a)| format!("{b} -> {a}"))
-        ));
-        lines.push(format!(
-            "  measured width   {}",
-            probe
-                .glyph_columns
-                .map_or("(not derivable)".to_owned(), |g| g.to_string())
-        ));
-        lines.push(format!("  elapsed          {}ms", probe.elapsed_ms));
-        lines.push(format!("  outcome          {}", probe.detail));
-    } else {
-        lines.push("  not run          no live probe was needed or permitted on this run".into());
-    }
-    let ambiguous = match r.ambiguous {
-        Ambiguous::Narrow => "narrow",
-        Ambiguous::Wide => "wide",
-    };
-    let cache_note = if r.source == AmbiguousSource::Cache {
-        " (NOT a live probe)"
-    } else {
-        ""
-    };
-    for line in [
-        String::new(),
-        "result".into(),
-        format!("  ambiguous width  {ambiguous}"),
-        format!("  decided by       {}{cache_note}", source_str(r.source)),
-        format!("  because          {}", r.detail),
-        String::new(),
-        "cache".into(),
-        format!("  file             {}", r.cache_path.to_string_lossy()),
-        format!("  identity         {}", r.identity),
-        String::new(),
-        "Precedence, highest first: MDVIEW_AMBIGUOUS=narrow|wide, then this cache,".into(),
-        "then a live DSR probe (needs stdin and stdout to both be TTYs), then narrow.".into(),
-        "Re-probe with `mdview probe --refresh`; override with MDVIEW_AMBIGUOUS.".into(),
-        String::new(),
-    ] {
-        lines.push(line);
-    }
-    lines.join("\n")
-}
-
 fn run_probe(args: &[String], p: &Process) -> CliResult {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         emit(PROBE_USAGE)?;
@@ -701,14 +596,13 @@ fn run_probe(args: &[String], p: &Process) -> CliResult {
         }
     }
     let resolution = resolve_ambiguous_width(ResolveAmbiguousOptions {
-        env: Some(&p.env),
         allow_probe: true,
         refresh,
         no_cache,
         timeout_ms,
-        ..Default::default()
+        ..ResolveAmbiguousOptions::new(&p.env)
     });
-    emit(&format_probe_report(&resolution, &p.env, p))?;
+    emit(&format_probe_report(&resolution, p))?;
     Ok(0)
 }
 

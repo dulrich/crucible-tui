@@ -17,7 +17,6 @@
 //! mode and exit 130/143/129. Raw mode clears `ISIG`, so Ctrl-C arrives as a `0x03` byte the
 //! reader already aborts on; SIGTERM/SIGHUP during the ≤400 ms probe are not trapped here.
 
-use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -25,7 +24,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use regex::Regex;
 use serde_json::{Map, Value};
 
+use crate::cli::Process;
 use crate::colour::Env;
+use crate::fsutil::{home_dir, write_atomic};
 use crate::width::{Ambiguous, Measure, NARROW_MEASURE, measure_for, parse_ambiguous_width};
 
 /// The test glyph: EM DASH, East Asian Ambiguous.
@@ -65,19 +66,11 @@ fn node_join(parts: &[&str]) -> PathBuf {
     })
 }
 
-fn home_dir() -> String {
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .or_else(|| std::env::home_dir().map(|p| p.to_string_lossy().into_owned()))
-        .unwrap_or_default()
-}
-
-/// `resolveAmbiguousCachePath(env)`; like TS, `homedir()` reads the process, not `env`.
+/// `resolveAmbiguousCachePath(env)`; `HOME` is read from the threaded `env`.
 pub fn resolve_ambiguous_cache_path(env: &Env) -> PathBuf {
     let cache_home = match env.get("XDG_CACHE_HOME") {
         Some(x) if !x.is_empty() => x.clone(),
-        _ => node_join(&[&home_dir(), ".cache"])
+        _ => node_join(&[&home_dir(env), ".cache"])
             .to_string_lossy()
             .into_owned(),
     };
@@ -108,12 +101,16 @@ fn detect_multiplexer(env: &Env) -> &'static str {
     "none"
 }
 
-/// `terminalIdentity(env)`: the over-specified cache key.
-pub fn terminal_identity(env: &Env) -> String {
-    let locale = truthy(env, "LC_ALL")
+/// The locale the identity and the probe report both name: `LC_ALL || LC_CTYPE || LANG`.
+fn locale(env: &Env) -> Option<&str> {
+    truthy(env, "LC_ALL")
         .or_else(|| truthy(env, "LC_CTYPE"))
         .or_else(|| truthy(env, "LANG"))
-        .unwrap_or("");
+}
+
+/// `terminalIdentity(env)`: the over-specified cache key.
+pub fn terminal_identity(env: &Env) -> String {
+    let locale = locale(env).unwrap_or("");
     [
         format!("term={}", get(env, "TERM").unwrap_or("")),
         format!("program={}", get(env, "TERM_PROGRAM").unwrap_or("")),
@@ -221,16 +218,7 @@ pub fn write_cached_ambiguous_width(identity: &str, ambiguous: Ambiguous, path: 
         .unwrap_or_else(|| PathBuf::from("."));
     let attempt = || -> std::io::Result<()> {
         std::fs::create_dir_all(&dir)?;
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let temp = dir.join(format!(
-            ".ambiguous-width.json.tmp-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::write(&temp, format!("{text}\n"))?;
-        std::fs::rename(&temp, path)
+        write_atomic(path, format!("{text}\n").as_bytes())
     };
     attempt().is_ok()
 }
@@ -514,11 +502,9 @@ pub struct AmbiguousResolution {
     pub probe: Option<ProbeReport>,
 }
 
-/// `ResolveAmbiguousOptions`.
-#[derive(Default)]
+/// `ResolveAmbiguousOptions`. `env` is required: every caller threads its own.
 pub struct ResolveAmbiguousOptions<'a> {
-    /// `None`: the process environment (the TS default, `process.env`).
-    pub env: Option<&'a Env>,
+    pub env: &'a Env,
     pub allow_probe: bool,
     pub refresh: bool,
     pub no_cache: bool,
@@ -527,16 +513,24 @@ pub struct ResolveAmbiguousOptions<'a> {
     pub cache_path: Option<PathBuf>,
 }
 
+impl<'a> ResolveAmbiguousOptions<'a> {
+    /// Every other option at its default: no probe, cache read and written, default timeout.
+    pub fn new(env: &'a Env) -> Self {
+        Self {
+            env,
+            allow_probe: false,
+            refresh: false,
+            no_cache: false,
+            terminal: None,
+            timeout_ms: None,
+            cache_path: None,
+        }
+    }
+}
+
 /// Resolution order: `MDVIEW_AMBIGUOUS` → cache (unless refresh) → live probe → narrow.
 pub fn resolve_ambiguous_width(options: ResolveAmbiguousOptions<'_>) -> AmbiguousResolution {
-    let process_env: Env;
-    let env = match options.env {
-        Some(e) => e,
-        None => {
-            process_env = std::env::vars().collect::<HashMap<_, _>>();
-            &process_env
-        }
-    };
+    let env = options.env;
     let identity = terminal_identity(env);
     let cache_path = options
         .cache_path
@@ -604,6 +598,97 @@ pub fn resolve_ambiguous_width(options: ResolveAmbiguousOptions<'_>) -> Ambiguou
         "no override, no cached answer, and no live probe (a probe needs both stdin and stdout to be TTYs, and never runs under --check or the sweep) — narrow is what Unicode TR11 recommends when the context cannot be established".into(),
         None,
     )
+}
+
+fn source_str(s: AmbiguousSource) -> &'static str {
+    match s {
+        AmbiguousSource::Env => "env",
+        AmbiguousSource::Cache => "cache",
+        AmbiguousSource::Probe => "probe",
+        AmbiguousSource::Default => "default",
+    }
+}
+
+/// `formatProbeReport(resolution, env)`.
+///
+/// The `multiplexer` and `locale` lines read the same helpers the cache identity does, so the
+/// report can never contradict its own `mux=` / `locale=` identity line.
+pub fn format_probe_report(r: &AmbiguousResolution, p: &Process) -> String {
+    let env = &p.env;
+    let or_unset = |k: &str| get(env, k).unwrap_or("(unset)").to_owned();
+    let multiplexer = detect_multiplexer(env);
+    let locale = locale(env).unwrap_or("(unset)");
+    let yes = |b: bool| if b { "yes" } else { "no" };
+    let mut lines: Vec<String> = vec![
+        "mdview probe — East Asian Ambiguous width".into(),
+        String::new(),
+        "terminal".into(),
+        format!("  TERM             {}", or_unset("TERM")),
+        format!("  TERM_PROGRAM     {}", or_unset("TERM_PROGRAM")),
+        format!("  COLORTERM        {}", or_unset("COLORTERM")),
+        format!("  VTE_VERSION      {}", or_unset("VTE_VERSION")),
+        format!("  multiplexer      {multiplexer}"),
+        format!("  locale           {locale}"),
+        format!("  stdin is a TTY   {}", yes(p.stdin_is_tty)),
+        format!("  stdout is a TTY  {}", yes(p.stdout_is_tty)),
+        format!(
+            "  columns          {}",
+            p.columns.map_or("(unknown)".to_owned(), |c| c.to_string())
+        ),
+        String::new(),
+        "probe".into(),
+    ];
+    if let Some(probe) = &r.probe {
+        lines.push(format!("  test glyph       {PROBE_GLYPH} (U+2014 EM DASH)"));
+        lines.push(format!(
+            "  DSR reply        {}",
+            probe.reply.as_deref().unwrap_or("(none)")
+        ));
+        lines.push(format!(
+            "  cursor column    {}",
+            probe
+                .columns
+                .map_or("(not reported)".to_owned(), |(b, a)| format!("{b} -> {a}"))
+        ));
+        lines.push(format!(
+            "  measured width   {}",
+            probe
+                .glyph_columns
+                .map_or("(not derivable)".to_owned(), |g| g.to_string())
+        ));
+        lines.push(format!("  elapsed          {}ms", probe.elapsed_ms));
+        lines.push(format!("  outcome          {}", probe.detail));
+    } else {
+        lines.push("  not run          no live probe was needed or permitted on this run".into());
+    }
+    let ambiguous = match r.ambiguous {
+        Ambiguous::Narrow => "narrow",
+        Ambiguous::Wide => "wide",
+    };
+    let cache_note = if r.source == AmbiguousSource::Cache {
+        " (NOT a live probe)"
+    } else {
+        ""
+    };
+    for line in [
+        String::new(),
+        "result".into(),
+        format!("  ambiguous width  {ambiguous}"),
+        format!("  decided by       {}{cache_note}", source_str(r.source)),
+        format!("  because          {}", r.detail),
+        String::new(),
+        "cache".into(),
+        format!("  file             {}", r.cache_path.to_string_lossy()),
+        format!("  identity         {}", r.identity),
+        String::new(),
+        "Precedence, highest first: MDVIEW_AMBIGUOUS=narrow|wide, then this cache,".into(),
+        "then a live DSR probe (needs stdin and stdout to both be TTYs), then narrow.".into(),
+        "Re-probe with `mdview probe --refresh`; override with MDVIEW_AMBIGUOUS.".into(),
+        String::new(),
+    ] {
+        lines.push(line);
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -796,9 +881,8 @@ mod tests {
         let id = terminal_identity(&e);
         write_cached_ambiguous_width(&id, Ambiguous::Wide, &path);
         let r = resolve_ambiguous_width(ResolveAmbiguousOptions {
-            env: Some(&e),
             cache_path: Some(path.clone()),
-            ..Default::default()
+            ..ResolveAmbiguousOptions::new(&e)
         });
         assert_eq!(
             (r.source, r.ambiguous),
@@ -806,20 +890,18 @@ mod tests {
         );
         let ov = env(&[("MDVIEW_AMBIGUOUS", "narrow")]);
         let r = resolve_ambiguous_width(ResolveAmbiguousOptions {
-            env: Some(&ov),
             cache_path: Some(path.clone()),
-            ..Default::default()
+            ..ResolveAmbiguousOptions::new(&ov)
         });
         assert_eq!(r.source, AmbiguousSource::Env);
         let mut fake = Fake::new(&[None]);
         let r = resolve_ambiguous_width(ResolveAmbiguousOptions {
-            env: Some(&e),
             cache_path: Some(path.clone()),
             refresh: true,
             allow_probe: true,
             terminal: Some(&mut fake),
             timeout_ms: Some(10),
-            ..Default::default()
+            ..ResolveAmbiguousOptions::new(&e)
         });
         assert_eq!(
             (r.source, r.ambiguous),
@@ -829,5 +911,60 @@ mod tests {
         std::fs::write(&path, "{not json").unwrap();
         assert_eq!(read_cached_ambiguous_width("id", &path), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn report_for(pairs: &[(&str, &str)]) -> (String, String) {
+        let p = Process {
+            env: env(&[&[("MDVIEW_AMBIGUOUS", "narrow")], pairs].concat()),
+            stdin_is_tty: false,
+            stdout_is_tty: false,
+            columns: None,
+            cwd: "/".into(),
+        };
+        let r = resolve_ambiguous_width(ResolveAmbiguousOptions::new(&p.env));
+        let report = format_probe_report(&r, &p);
+        let line = |prefix: &str| {
+            report
+                .lines()
+                .find_map(|l| l.trim_start().strip_prefix(prefix).map(str::trim))
+                .unwrap_or_else(|| panic!("no {prefix} line in {report}"))
+                .to_owned()
+        };
+        (line("multiplexer"), line("identity"))
+    }
+
+    #[test]
+    fn probe_report_multiplexer_follows_the_identity_order() {
+        // TMUX and ZELLIJ both set: the identity says tmux, and so must the report.
+        let (mux, identity) = report_for(&[("TMUX", "x"), ("ZELLIJ", "0")]);
+        assert_eq!(mux, "tmux");
+        assert!(identity.contains("|mux=tmux|"), "{identity}");
+        // screen under a screen TERM outranks tmux, in both lines.
+        let (mux, identity) =
+            report_for(&[("STY", "1"), ("TMUX", "x"), ("TERM", "screen-256color")]);
+        assert_eq!(mux, "screen");
+        assert!(identity.contains("|mux=screen|"), "{identity}");
+        let (mux, identity) = report_for(&[]);
+        assert_eq!(mux, "none");
+        assert!(identity.contains("|mux=none|"), "{identity}");
+    }
+
+    #[test]
+    fn probe_report_locale_matches_the_identity() {
+        let p = Process {
+            env: env(&[
+                ("MDVIEW_AMBIGUOUS", "narrow"),
+                ("LC_ALL", ""),
+                ("LANG", "C.UTF-8"),
+            ]),
+            stdin_is_tty: false,
+            stdout_is_tty: false,
+            columns: None,
+            cwd: "/".into(),
+        };
+        let r = resolve_ambiguous_width(ResolveAmbiguousOptions::new(&p.env));
+        let report = format_probe_report(&r, &p);
+        assert!(report.contains("  locale           C.UTF-8\n"), "{report}");
+        assert!(r.identity.ends_with("|locale=C.UTF-8"));
     }
 }
