@@ -9,12 +9,6 @@ license.workspace = true
 name = "mdview"
 path = "src/main.rs"
 
-[features]
-# Token injection for the R-gate (`render-diff --input tokens`): a `tokens` field in a
-# `__parity serve` request is deserialized into `token.rs`'s enum and rendered in place of
-# the adapter's own lex. Off in the shipped binary; `scripts/revision.ts` builds with it.
-parity-tokens = []
-
 [dependencies]
 # Every runtime dependency the port needs, pinned up front at WP-1 of
 # `plans/mdview-rust-port.md` so later work packages never edit this file or Cargo.lock.

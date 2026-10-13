@@ -213,8 +213,6 @@ interface CliOptions {
   policies: PolicyName[];
   /** `--emoji default,on,off` (default `default`). */
   emojis: EmojiAxis[];
-  /** `--input source|tokens`: `tokens` attaches the current checkout's census tokens to rev-B's requests. */
-  input: "source" | "tokens";
   /** `--shard i/n` (1-based): keep selected file index `k` iff `k % n === i - 1`. */
   shard?: { index: number; count: number };
   /** `--require-free list,table`: skip files whose `lexBody` tokens contain these types. */
@@ -242,7 +240,6 @@ export function parseArgs(argv: string[]): CliOptions {
     allowEmpty: false,
     policies: ["P0"],
     emojis: ["default"],
-    input: "source",
     requireFree: [],
     requireNonzero: [],
   };
@@ -299,10 +296,6 @@ export function parseArgs(argv: string[]): CliOptions {
       options.policies = parseList("--policy", next(), POLICY_NAMES);
     } else if (arg === "--emoji") {
       options.emojis = parseList("--emoji", next(), EMOJI_AXES);
-    } else if (arg === "--input") {
-      const value = next();
-      if (value !== "source" && value !== "tokens") throw new Error(`--input must be "source" or "tokens", got: ${value}`);
-      options.input = value;
     } else if (arg === "--shard") {
       const value = next();
       const match = /^(\d+)\/(\d+)$/.exec(value);
@@ -509,20 +502,17 @@ function combosOf(axes: RenderAxes): ComboSpec[] {
 interface FileVisit {
   file: string;
   source: string;
-  /** Census tokens per tier, present only under `--input tokens`. */
-  tokens: Partial<Record<GlyphTierName, unknown[]>>;
 }
 
 /**
  * Walk every selected file once: read it (a read failure becomes one error per combo, on every
- * side named in `sides`), apply `--require-free`, compute `--input tokens`' census tokens, and
- * hand the visit to `onFile`.
+ * side named in `sides`), apply `--require-free`, and hand the visit to `onFile`.
  */
 async function visitFiles(
   corpora: SelectedCorpus[],
   axes: RenderAxes,
   measurer: Measurer,
-  options: { requireFree: string[]; input: "source" | "tokens" },
+  options: { requireFree: string[] },
   readErrors: ComboErrorEntry[][],
   onFile: (visit: FileVisit) => Promise<void>,
 ): Promise<{ skippedRequireFree: number }> {
@@ -544,19 +534,14 @@ async function visitFiles(
         skippedRequireFree += 1;
         continue;
       }
-      const tokens: FileVisit["tokens"] = {};
-      if (options.input === "tokens") {
-        for (const tier of axes.tiers) tokens[tier] = measurer.lexBody(source, tier);
-      }
-      await onFile({ file, source, tokens });
+      await onFile({ file, source });
     }
   }
   return { skippedRequireFree };
 }
 
-function requestFor(visit: FileVisit, combo: ComboSpec, withTokens: boolean) {
-  const tokens = withTokens ? visit.tokens[combo.tier] : undefined;
-  return { source: visit.source, path: visit.file, ...combo, ...(tokens !== undefined ? { tokens } : {}) };
+function requestFor(visit: FileVisit, combo: ComboSpec) {
+  return { source: visit.source, path: visit.file, ...combo };
 }
 
 /** Render every selected file at every requested combo on one revision (`--baseline`). */
@@ -574,11 +559,11 @@ async function renderAll(
     corpora,
     axes,
     measurer,
-    { requireFree: options.requireFree, input: "source" },
+    { requireFree: options.requireFree },
     [errors],
     async (visit) => {
       const results = await Promise.all(
-        combos.map((combo) => computeComboRecord(handle, measurer, requestFor(visit, combo, false))),
+        combos.map((combo) => computeComboRecord(handle, measurer, requestFor(visit, combo))),
       );
       for (const { record, error } of results) {
         if (record) records.push(record);
@@ -592,8 +577,7 @@ async function renderAll(
 /**
  * Render every selected file at every requested combo on **both** revisions, side by side, so
  * the pairwise D-C fence check (`fencePrefixesOk`) runs while both texts are in hand; the
- * texts are dropped as soon as the pair is recorded. Under `--input tokens` only rev-B's
- * requests carry tokens. Each file's combos are issued together, so a server side pipelines.
+ * texts are dropped as soon as the pair is recorded. Each file's combos are issued together, so a server side pipelines.
  */
 async function renderPaired(
   handleA: RevisionHandle,
@@ -601,7 +585,7 @@ async function renderPaired(
   measurer: Measurer,
   corpora: SelectedCorpus[],
   axes: RenderAxes,
-  options: { requireFree: string[]; input: "source" | "tokens" },
+  options: { requireFree: string[] },
 ): Promise<{
   before: ComboRecord[];
   after: ComboRecord[];
@@ -622,8 +606,8 @@ async function renderPaired(
     const results = await Promise.all(
       combos.map(async (combo) => {
         const [a, b] = await Promise.all([
-          computeComboRecord(handleA, measurer, requestFor(visit, combo, false)),
-          computeComboRecord(handleB, measurer, requestFor(visit, combo, options.input === "tokens")),
+          computeComboRecord(handleA, measurer, requestFor(visit, combo)),
+          computeComboRecord(handleB, measurer, requestFor(visit, combo)),
         ]);
         if (a.record && b.record && a.output && b.output && b.record.fenceStrippedSha !== undefined) {
           const echoCount = Math.min(
@@ -869,14 +853,14 @@ async function runCli(): Promise<void> {
       measurer,
       corpora,
       axesOf(options),
-      { requireFree: options.requireFree, input: options.input },
+      { requireFree: options.requireFree },
     ).finally(() => Promise.all([handleA.close(), handleB.close()]));
 
     const { pairs, unpairedBefore, unpairedAfter } = pairRecords(before, after);
     const summary = classifyDiffs(pairs, options.expect, classifyOptions);
     console.log(`render-diff: rev-a=${handleA.label} rev-b=${handleB.label}`);
     console.log(
-      `render-diff: policy=${options.policies.join(",")} emoji=${options.emojis.join(",")} input=${options.input}` +
+      `render-diff: policy=${options.policies.join(",")} emoji=${options.emojis.join(",")}` +
         `${options.shard ? ` shard=${options.shard.index}/${options.shard.count}` : ""}`,
     );
     console.log(`render-diff: wall ${((performance.now() - started) / 1000).toFixed(1)}s`);

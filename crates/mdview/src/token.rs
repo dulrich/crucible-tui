@@ -8,15 +8,14 @@
 //! `Option` because its *presence* is load-bearing: `TS_BASELINE` `src/list-layout.ts`'s tight-item test
 //! reads whether the key exists to tell a block text token from an inline one.
 //!
-//! `Serialize` is always derived (`mdview __parity lex` dumps adapter tokens); `Deserialize`
-//! only under the `parity-tokens` feature, which is the R-gate's token-injection input.
+//! Only `Serialize` is derived (`mdview __parity lex` dumps adapter tokens); nothing deserializes
+//! tokens since token injection was removed (WP-2 of `plans/retire-ts-parity-residue.md`).
 
 use serde::Serialize;
 
 use crate::text::Align;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[cfg_attr(feature = "parity-tokens", derive(serde::Deserialize))]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Token {
     Space,
@@ -26,7 +25,6 @@ pub enum Token {
         tokens: Vec<Token>,
     },
     Code {
-        #[serde(default)]
         lang: Option<String>,
         text: String,
     },
@@ -51,7 +49,7 @@ pub enum Token {
     Text {
         raw: String,
         text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         tokens: Option<Vec<Token>>,
     },
     Escape {
@@ -64,7 +62,6 @@ pub enum Token {
     },
     Image {
         href: String,
-        #[serde(default)]
         title: Option<String>,
         text: String,
     },
@@ -87,10 +84,8 @@ pub enum Token {
     },
     Wikilink {
         slug: String,
-        #[serde(default)]
         fragment: Option<String>,
         embed: bool,
-        #[serde(default)]
         alias: Option<String>,
         tokens: Vec<Token>,
     },
@@ -98,7 +93,6 @@ pub enum Token {
 
 /// A table header or body cell (`TS_BASELINE` `src/table.ts` reads `text` and flattens `tokens`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[cfg_attr(feature = "parity-tokens", derive(serde::Deserialize))]
 pub struct TableCell {
     pub text: String,
     pub tokens: Vec<Token>,
@@ -107,11 +101,9 @@ pub struct TableCell {
 /// A list item (`TS_BASELINE` `src/lists.ts`): `raw` feeds `RAW_TASK_STATE`, and only `loose` is read for
 /// spacing — never comrak's `tight`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[cfg_attr(feature = "parity-tokens", derive(serde::Deserialize))]
 pub struct ListItem {
     pub raw: String,
     pub task: bool,
-    #[serde(default)]
     pub checked: Option<bool>,
     pub loose: bool,
     pub tokens: Vec<Token>,

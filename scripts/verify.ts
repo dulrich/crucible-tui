@@ -155,7 +155,7 @@ const steps: Step[] = [
   { name: "hljs map freshness", run: () => sh(["bun", "run", "scripts/gen-hljs-map.ts", "--check"]) },
   {
     // The Rust-vs-Rust regression differential over the T0 gate corpus, every policy: the
-    // working tree against `HEAD`, both built with `parity-tokens` into the parity cache.
+    // working tree against `HEAD`, both release builds in the parity cache.
     // Every combo class-A identical (`--expect a`), or the step fails.
     name: "render diff (T0, rust:HEAD vs rust:.)",
     run: () =>
