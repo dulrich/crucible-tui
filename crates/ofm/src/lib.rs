@@ -2,9 +2,19 @@
 //! path-dependency consumer (`plans/ofm-crate-extraction.md`). No I/O, no env/argv/TTY reads,
 //! no terminal or render dependencies.
 
+mod check;
 pub mod frontmatter;
 pub mod js;
+pub mod note;
+mod parse;
 pub mod wikilink;
+
+pub use check::check_spans;
+pub use note::{
+    BlockId, Callout, FmLink, Footnote, Frontmatter, Heading, LinkDest, LinkKind, MdLink, Note,
+    Span, Tag, TagSource, Task, WikiLink,
+};
+pub use parse::parse;
 
 use comrak::Options;
 
