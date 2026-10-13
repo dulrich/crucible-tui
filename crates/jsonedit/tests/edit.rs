@@ -2,8 +2,8 @@
 //! rewrites the buffer) and scripted prompt input. Every test works in its
 //! own fresh temp dir.
 
+use jsonedit::Indent;
 use jsonedit::edit::{EditEnv, edit, editor_args, split_shell};
-use jsonedit::{Dialect, Indent};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,12 @@ impl Dir {
         fs::create_dir_all(&p).unwrap();
         Dir(p)
     }
+    /// The per-test buffer directory (`EditEnv.tmp_dir`), created on demand.
+    fn bufs(&self) -> PathBuf {
+        let p = self.0.join("bufs");
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
     fn file(&self, name: &str, body: &str) -> PathBuf {
         let p = self.0.join(name);
         fs::write(&p, body).unwrap();
@@ -26,6 +32,18 @@ impl Drop for Dir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// The buffer directory beside `target`: every test's target sits in its
+/// own [`Dir`], so `<dir>/bufs` is that test's alone.
+fn bufs_of(target: &Path) -> PathBuf {
+    let p = target.parent().unwrap().join("bufs");
+    fs::create_dir_all(&p).unwrap();
+    p
+}
+
+fn buffer_count(dir: &Path) -> usize {
+    fs::read_dir(dir).unwrap().count()
 }
 
 /// Runs the loop with `script` as the editor (`$1` is the buffer) and
@@ -41,6 +59,7 @@ fn run(
         editor: vec!["sh".into(), "-c".into(), script.into(), "sh".into()],
         input: Box::new(std::io::Cursor::new(answers.as_bytes().to_vec())),
         tty,
+        tmp_dir: bufs_of(target),
     };
     let mut err = Vec::new();
     let code = edit(target.to_str().unwrap(), None, indent, &mut env, &mut err);
@@ -68,6 +87,7 @@ fn valid_edit_writes_editor_bytes_verbatim() {
     );
     assert_eq!(code, 0, "{err}");
     assert_eq!(fs::read(&t).unwrap(), fs::read(&good).unwrap());
+    assert_eq!(buffer_count(&d.bufs()), 0);
 }
 
 #[test]
@@ -98,17 +118,10 @@ fn invalid_then_prompt_choices() {
         if !written {
             assert_eq!(body, ORIG);
         }
-        let buffers: Vec<_> = fs::read_dir(std::env::temp_dir())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with(&format!("x.jsonedit-{}-", std::process::id()))
-            })
-            .collect();
         if kept {
             let b = kept_buffer(&err);
+            assert_eq!(b.parent().unwrap(), d.bufs(), "{err}");
+            assert_eq!(buffer_count(&d.bufs()), 1, "{err}");
             assert!(b.exists() && b.extension().unwrap() == "json", "{err}");
             assert_eq!(
                 fs::metadata(&b).unwrap().permissions().mode() & 0o777,
@@ -117,7 +130,8 @@ fn invalid_then_prompt_choices() {
             fs::remove_file(b).unwrap();
         } else {
             assert!(!err.contains("buffer kept"), "{err}");
-            let _ = buffers;
+            // Invariant 4: removed after a write or an exit.
+            assert_eq!(buffer_count(&d.bufs()), 0, "{answer:?}: {err}");
         }
     }
 }
@@ -220,6 +234,28 @@ fn indent_mismatch_warns_and_offers_write_anyway() {
         err.contains("ambiguous") && !err.contains("warning"),
         "{err}"
     );
+    // Unrecognised input re-prompts; the second answer (4 spaces) is the
+    // reference, so the tab line warns and `w` writes it.
+    let amb = "{\n\t\"a\": {\n    \"b\": 1\n\t},\n  \"c\": 2\n}\n";
+    let t = d.file("y.json", amb);
+    let (code, err) = run(
+        &t,
+        "printf '{\\n\\t \"q\": 1}' > \"$1\"",
+        "huh\n4\nw\n",
+        true,
+        None,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(err.matches("ambiguous").count(), 2, "{err}");
+    assert!(
+        err.contains("warning") && err.contains("(w)rite anyway"),
+        "{err}"
+    );
+    // EOF skips the check, as blank does.
+    let t = d.file("z.json", amb);
+    let (code, err) = run(&t, "printf '{\\n\\t \"q\": 1}' > \"$1\"", "", true, None);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("warning"), "{err}");
 }
 
 #[test]
@@ -236,7 +272,6 @@ fn editor_failure_aborts_and_editor_value_splits() {
         ["/opt/my editor/bin", "-a", "x \"y\"", "z w"]
     );
     assert!(split_shell("'open").is_err());
-    let _ = Dialect::Json;
 }
 
 #[test]
@@ -316,12 +351,18 @@ fn editor_args_line_hint_forms() {
 /// A fake editor named `vim` in `d`: call N logs its argv and copies
 /// `outN` over the buffer (its last argument) and, if present, `sideN`
 /// over `target` to simulate a concurrent change.
-fn fake_vim(d: &Dir, target: &Path) -> PathBuf {
-    let script = d.0.join("vim");
+///
+/// `d/vim` is a symlink to `/bin/sh` and the logic is a separate script
+/// passed as the first editor argument, so no test ever exec's a file it
+/// has just written (that raced a concurrent fork into ETXTBSY). With
+/// `sh SCRIPT ARGS...`, `$0` is the script and `$*` is exactly the args
+/// after it -- the same `$*` the old exec'd script saw.
+fn fake_vim(d: &Dir, target: &Path) -> Vec<String> {
+    let script = d.0.join("vim.sh");
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\nd='{d}'\nn=$(cat \"$d/count\" 2>/dev/null || echo 0); n=$((n+1)); echo $n > \"$d/count\"\n\
+            "d='{d}'\nn=$(cat \"$d/count\" 2>/dev/null || echo 0); n=$((n+1)); echo $n > \"$d/count\"\n\
              echo \"call $n: $*\" >> \"$d/log\"\nfor b; do :; done\ncp \"$d/out$n\" \"$b\"\n\
              if [ -f \"$d/side$n\" ]; then cp \"$d/side$n\" '{t}'; fi\n",
             d = d.0.display(),
@@ -329,15 +370,20 @@ fn fake_vim(d: &Dir, target: &Path) -> PathBuf {
         ),
     )
     .unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    script
+    let vim = d.0.join("vim");
+    std::os::unix::fs::symlink("/bin/sh", &vim).unwrap();
+    vec![
+        vim.to_str().unwrap().into(),
+        script.to_str().unwrap().into(),
+    ]
 }
 
-fn run_vim(target: &Path, vim: &Path, answers: &str) -> (i32, String) {
+fn run_vim(target: &Path, vim: Vec<String>, answers: &str) -> (i32, String) {
     let mut env = EditEnv {
-        editor: vec![vim.to_str().unwrap().into()],
+        editor: vim,
         input: Box::new(std::io::Cursor::new(answers.as_bytes().to_vec())),
         tty: true,
+        tmp_dir: bufs_of(target),
     };
     let mut err = Vec::new();
     let code = edit(
@@ -357,7 +403,7 @@ fn reedit_passes_line_hint_and_never_a_stale_one() {
     let t = d.file("x.json", ORIG);
     d.file("out1", "{\n  \"a\": 1,\n  \"b\" 2\n}\n");
     let good = d.file("out2", "{\n  \"a\": 1,\n  \"b\": 3\n}\n");
-    let (code, err) = run_vim(&t, &fake_vim(&d, &t), "e\n");
+    let (code, err) = run_vim(&t, fake_vim(&d, &t), "e\n");
     assert_eq!(code, 0, "{err}");
     assert_eq!(fs::read(&t).unwrap(), fs::read(&good).unwrap());
     let log = fs::read_to_string(d.0.join("log")).unwrap();
@@ -374,7 +420,7 @@ fn reedit_passes_line_hint_and_never_a_stale_one() {
     d.file("out2", "{\n  \"a\": 9\n}\n");
     d.file("side2", "{\"other\": 1}");
     let good = d.file("out3", "{\n  \"a\": 9\n}\n");
-    let (code, err) = run_vim(&t, &fake_vim(&d, &t), "e\ne\n");
+    let (code, err) = run_vim(&t, fake_vim(&d, &t), "e\ne\n");
     assert_eq!(code, 0, "{err}");
     assert!(err.contains("changed on disk"), "{err}");
     assert_eq!(fs::read(&t).unwrap(), fs::read(&good).unwrap());

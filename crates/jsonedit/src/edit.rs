@@ -20,6 +20,8 @@ pub struct EditEnv {
     pub input: Box<dyn BufRead>,
     /// Whether stdin is interactive; when false the loop never prompts.
     pub tty: bool,
+    /// Where the editor buffer is created (`$TMPDIR` for the real process).
+    pub tmp_dir: PathBuf,
 }
 
 impl EditEnv {
@@ -38,6 +40,7 @@ impl EditEnv {
             editor,
             input: Box::new(std::io::BufReader::new(stdin)),
             tty,
+            tmp_dir: std::env::temp_dir(),
         })
     }
 }
@@ -197,7 +200,7 @@ fn create_0600(path: &Path) -> std::io::Result<File> {
 }
 
 /// `<tmp>/<stem>.jsonedit-<pid>-<n>[.<ext>]`, mode 0600.
-fn make_buffer(target: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+fn make_buffer(dir: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     let stem = target
         .file_stem()
         .map_or("buffer".into(), |s| s.to_string_lossy().into_owned());
@@ -208,7 +211,7 @@ fn make_buffer(target: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     }
     // `:` would make an editor's `FILE:N` hint ambiguous; the name is cosmetic.
     let name = name.replace(':', "_");
-    let path = std::env::temp_dir().join(name);
+    let path = dir.join(name);
     let mut f = create_0600(&path)?;
     f.write_all(bytes)?;
     Ok(path)
@@ -258,8 +261,38 @@ fn read_target(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     }
 }
 
-/// Asks until one of `keys` is answered; EOF is `None` (callers treat it as abort).
-fn ask(env: &mut EditEnv, err: &mut dyn Write, question: &str, keys: &str) -> Option<char> {
+/// One answer to a post-editor prompt.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Choice {
+    Write,
+    Edit,
+    Exit,
+    Abort,
+}
+
+impl Choice {
+    fn key(self) -> char {
+        match self {
+            Choice::Write => 'w',
+            Choice::Edit => 'e',
+            Choice::Exit => 'x',
+            Choice::Abort => 'a',
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Choice::Write => "(w)rite anyway",
+            Choice::Edit => "(e)dit again",
+            Choice::Exit => "e(x)it without saving",
+            Choice::Abort => "(a)bort keeping the buffer",
+        }
+    }
+}
+
+/// Asks until one of `choices` is answered; EOF is [`Choice::Abort`].
+fn ask(env: &mut EditEnv, err: &mut dyn Write, choices: &[Choice]) -> Choice {
+    let labels: Vec<&str> = choices.iter().map(|c| c.label()).collect();
+    let question = format!("{}?", labels.join(", "));
     loop {
         let _ = write!(err, "{question} ");
         let _ = err.flush();
@@ -267,29 +300,137 @@ fn ask(env: &mut EditEnv, err: &mut dyn Write, question: &str, keys: &str) -> Op
         match env.input.read_line(&mut line) {
             Ok(0) | Err(_) => {
                 let _ = writeln!(err);
-                return None;
+                return Choice::Abort;
             }
             Ok(_) => {}
         }
         let answer = line.trim().to_ascii_lowercase();
         let mut cs = answer.chars();
         if let (Some(c), None) = (cs.next(), cs.next())
-            && keys.contains(c)
+            && let Some(&choice) = choices.iter().find(|ch| ch.key() == c)
         {
-            return Some(c);
+            return choice;
         }
     }
 }
 
+/// Asks for the reference indent; re-prompts on unrecognised input, and
+/// blank input or EOF skips the check.
 fn ask_indent(env: &mut EditEnv, err: &mut dyn Write) -> Option<Indent> {
-    let _ = write!(
-        err,
-        "jsonedit: indent style is ambiguous; enter 'tab', a number of spaces, or nothing to skip the check: "
-    );
-    let _ = err.flush();
-    let mut line = String::new();
-    env.input.read_line(&mut line).ok()?;
-    Indent::from_name(line.trim())
+    loop {
+        let _ = write!(
+            err,
+            "jsonedit: indent style is ambiguous; enter 'tab', a number of spaces, or nothing to skip the check: "
+        );
+        let _ = err.flush();
+        let mut line = String::new();
+        match env.input.read_line(&mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        let answer = line.trim();
+        if answer.is_empty() {
+            return None;
+        }
+        if let Some(i) = Indent::from_name(answer) {
+            return Some(i);
+        }
+    }
+}
+
+/// What the review after an editor run decided.
+enum Verdict {
+    Write,
+    /// Re-edit, reopening at this line if known.
+    Edit(Option<usize>),
+    Exit,
+    /// Keep the buffer; the reason is printed.
+    Abort(String),
+}
+
+impl Verdict {
+    fn from_choice(choice: Choice, hint: Option<usize>) -> Verdict {
+        match choice {
+            Choice::Write => Verdict::Write,
+            Choice::Edit => Verdict::Edit(hint),
+            Choice::Exit => Verdict::Exit,
+            Choice::Abort => Verdict::Abort("aborted".into()),
+        }
+    }
+}
+
+/// The fixed inputs the review reads.
+struct Review<'a> {
+    file: &'a str,
+    target: &'a Path,
+    dialect: Dialect,
+    reference: Option<Indent>,
+    base: &'a [u8],
+}
+
+impl Review<'_> {
+    /// Validation, the indent check and the concurrent-change check, in
+    /// order. A concurrent change accepted for re-edit makes disk the new
+    /// `original`.
+    fn run(
+        &self,
+        edited: &[u8],
+        original: &mut Option<Vec<u8>>,
+        env: &mut EditEnv,
+        err: &mut dyn Write,
+    ) -> Verdict {
+        use Choice::{Abort, Edit, Exit, Write as W};
+        let file = self.file;
+        if let Err(diags) = validate(edited, self.dialect) {
+            for d in &diags {
+                let _ = writeln!(err, "{file}:{}:{}: {}", d.line, d.column, d.message);
+            }
+            if !env.tty {
+                return Verdict::Abort("invalid; nothing written".into());
+            }
+            let choice = ask(env, err, &[Edit, Exit, Abort]);
+            return Verdict::from_choice(choice, diags.first().map(|d| d.line));
+        }
+        if let Some(style) = self.reference {
+            let bad = indent::mismatches(self.base, edited, style);
+            if !bad.is_empty() {
+                let list: Vec<String> = bad.iter().take(5).map(usize::to_string).collect();
+                let more = if bad.len() > 5 { ", ..." } else { "" };
+                let _ = writeln!(
+                    err,
+                    "jsonedit: warning: line(s) {}{more} do not match the file's indent style ({style})",
+                    list.join(", ")
+                );
+                if env.tty {
+                    let choice = ask(env, err, &[W, Edit, Exit, Abort]);
+                    if choice != W {
+                        return Verdict::from_choice(choice, bad.first().copied());
+                    }
+                }
+            }
+        }
+        // Concurrent change: the target must still hold what was opened.
+        let now = match read_target(self.target) {
+            Ok(n) => n,
+            Err(e) => return Verdict::Abort(format!("cannot re-read {file}: {e}")),
+        };
+        if now != *original {
+            let _ = writeln!(
+                err,
+                "jsonedit: {file} changed on disk while it was being edited"
+            );
+            if !env.tty {
+                return Verdict::Abort("not overwriting".into());
+            }
+            let choice = ask(env, err, &[Edit, Abort]);
+            if choice == Edit {
+                // The user has been told; the new disk bytes become the baseline.
+                *original = now;
+            }
+            return Verdict::from_choice(choice, None);
+        }
+        Verdict::Write
+    }
 }
 
 /// Runs the safe-edit loop on `file` and returns the exit code.
@@ -336,7 +477,7 @@ pub fn edit(
             _ => None,
         },
     };
-    let buffer = match make_buffer(&target, &base) {
+    let buffer = match make_buffer(&env.tmp_dir, &target, &base) {
         Ok(p) => p,
         Err(e) => {
             let _ = writeln!(err, "jsonedit: cannot create editor buffer: {e}");
@@ -356,6 +497,15 @@ pub fn edit(
         code
     };
 
+    let review = Review {
+        file,
+        target: &target,
+        dialect,
+        reference,
+        base: &base,
+    };
+
+    // Run editor -> read -> unchanged? -> review -> write.
     // Line to reopen at on a re-edit; never set for the first launch.
     let mut hint: Option<usize> = None;
     loop {
@@ -379,81 +529,16 @@ pub fn edit(
             };
             return discard(err, 0, msg);
         }
-        if let Err(diags) = validate(&edited, dialect) {
-            for d in &diags {
-                let _ = writeln!(err, "{file}:{}:{}: {}", d.line, d.column, d.message);
-            }
-            if !env.tty {
-                return abort(err, "invalid; nothing written");
-            }
-            match ask(
-                env,
-                err,
-                "(e)dit again, e(x)it without saving, (a)bort keeping the buffer?",
-                "exa",
-            ) {
-                Some('e') => {
-                    hint = diags.first().map(|d| d.line);
-                    continue;
+        match review.run(&edited, &mut original, env, err) {
+            Verdict::Abort(why) => return abort(err, &why),
+            Verdict::Exit => return discard(err, 1, "exited without saving"),
+            Verdict::Edit(h) => hint = h,
+            Verdict::Write => {
+                if let Err(e) = atomic_write(&target, &edited) {
+                    return abort(err, &format!("cannot write {file}: {e}"));
                 }
-                Some('x') => return discard(err, 1, "exited without saving"),
-                _ => return abort(err, "aborted"),
+                return discard(err, 0, "");
             }
         }
-        if let Some(style) = reference {
-            let bad = indent::mismatches(&base, &edited, style);
-            if !bad.is_empty() {
-                let list: Vec<String> = bad.iter().take(5).map(usize::to_string).collect();
-                let more = if bad.len() > 5 { ", ..." } else { "" };
-                let _ = writeln!(
-                    err,
-                    "jsonedit: warning: line(s) {}{more} do not match the file's indent style ({style})",
-                    list.join(", ")
-                );
-                if env.tty {
-                    match ask(
-                        env,
-                        err,
-                        "(w)rite anyway, (e)dit again, e(x)it without saving, (a)bort keeping the buffer?",
-                        "wexa",
-                    ) {
-                        Some('w') => {}
-                        Some('e') => {
-                            hint = bad.first().copied();
-                            continue;
-                        }
-                        Some('x') => return discard(err, 1, "exited without saving"),
-                        _ => return abort(err, "aborted"),
-                    }
-                }
-            }
-        }
-        // Concurrent change: the target must still hold what was opened.
-        let now = match read_target(&target) {
-            Ok(n) => n,
-            Err(e) => return abort(err, &format!("cannot re-read {file}: {e}")),
-        };
-        if now != original {
-            let _ = writeln!(
-                err,
-                "jsonedit: {file} changed on disk while it was being edited"
-            );
-            if !env.tty {
-                return abort(err, "not overwriting");
-            }
-            match ask(env, err, "(e)dit again, (a)bort keeping the buffer?", "ea") {
-                Some('e') => {
-                    // The user has been told; the new disk bytes become the baseline.
-                    original = now;
-                    hint = None;
-                    continue;
-                }
-                _ => return abort(err, "aborted"),
-            }
-        }
-        if let Err(e) = atomic_write(&target, &edited) {
-            return abort(err, &format!("cannot write {file}: {e}"));
-        }
-        return discard(err, 0, "");
     }
 }
