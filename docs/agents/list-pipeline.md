@@ -527,6 +527,32 @@ artifact; the detectors are heuristics over rendered text, so in aggregate a rel
 is indistinguishable from a new one. **A future package re-checking this should re-run the
 adjacent-width reproduction rather than re-derive it.**
 
+### The typed rendered line — WP-R10 of `plans/rust-port-code-quality-remediation.md`
+
+**Everything above describes the passes as string passes over a joined body, and that is how they were transcribed. Since WP-R10 the Rust pipeline carries a list as `Vec<RenderedLine>` instead**, and every pass reads structure from fields rather than re-walking sentinels and re-matching regexes over the joined text. The behaviour is unchanged — the work package's gate was render-diff `diffed=0` — and the history above stays true of `TS_BASELINE`.
+
+`RenderedLine` (`crates/mdview/src/list_lines.rs`) is `{ fence, indent, marker, body }`:
+
+- `fence` is `Inside` / `Carries` / `Prose` — the sentinel walk's two booleans as one field. "Started inside" is `Inside`; "touches a fence" is anything but `Prose`. The strictness difference recorded in "Why a sentinel walk exists at all" (`crates/mdview/AGENTS.md`) is now the choice between those two predicates, made once per pass.
+- `indent` is the **raw** lead up to the first visible non-whitespace character. It is bytes, not a column count, because under colour an SGR sequence can sit between the indent and the `*` (`"    \x1b[0m* inner"`), and the line has to round-trip exactly.
+- `marker` is `Bullet` (`*`) or `Ordered("12.")`, set only for a visible marker followed by whitespace whose bytes are contiguous; `body` is everything after it, the gap included.
+
+**One entry, one exit.** Bytes become typed in `lists::compose` — the walk still returns `String` from every visitor (widening that is `docs/adr/0001-editor-path.md`'s successor, out of scope), so a nested list reaches its parent's composition as bytes and is typed there, once, by `RenderedLine::type_line`. They leave in `lists::emit_list`, called once by `ListTextLayout::list_body`; a nested list's emitted bytes go back up the walk and are re-typed by the parent's `compose`.
+
+| Pass | Typed how |
+|---|---|
+| compose (unordered + ordered, one function) | types each line at entry; the claim decision still asks the *entry bytes* (`claimLine`'s two domains, unchanged); a pad is prepended to `indent`; an ordered item's first line gets `Marker::Ordered` in place of the `* ` |
+| `indentLines` | prepends `TAB` to `indent` unless the line is empty or starts with a JS line terminator |
+| `fixNestedLists` | the split point is still found by `FIX_NESTED` over the line's visible text — that join is made in bytes by the walk — but the head keeps its fields and only the glued remainder is re-typed, as the nested input it is |
+| `realignEmbeddedContinuations` | trims the line's `indent` field; the item stack is still tracked by `track_list_line` over the visible text (the detectors' shared primitive) |
+| `section` | appends two blank typed lines |
+| `rewrapListBody` | the hanging prefix comes from the fields (indent + marker + one gap character when the indent is literal whitespace; otherwise the indent's literal lead, which is where `LIST_LINE_PREFIX`'s `^\s*` stopped); the head keeps its marker, continuations are marker-less |
+| `substituteBullets` | **no longer a pass.** The glyph is chosen at emission (`bullet_glyph`): a `Marker::Bullet` line, not `Inside`, whose visible indent is spaces on the four-column grid, at depth `indent / 4`. `UNORDERED_MARKER_LINE` and the `visibleMap` re-detection are deleted |
+
+**What the retained-passes table's `substituteBullets` row still means.** Its three blockers were about choosing glyphs *at composition*; the typed model does not do that. The marker is set at composition, but the glyph is still chosen at the outermost list's emission from the rendered indent — so the blockquote shift and the hybrid join's literal `*` both still hold, and the grid rule still keeps an off-grid author `*` literal.
+
+**Measured cost.** Production SLOC of `lists.rs` + `list_layout.rs` + `list_lines.rs` rose (the WP-R10 report carries the figures); the spike projected +20 to +50 and the user accepted a net increase for the structural typing.
+
 ### A blockquote owes columns exactly like a list, and half the defect was ours
 
 The fourth defect in this family, and the only one whose symptom is *outside* the block it

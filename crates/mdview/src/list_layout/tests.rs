@@ -11,6 +11,15 @@ use crate::render::{RenderOptions, Renderer, SENTINEL, Sgr, render};
 
 const S: char = SENTINEL;
 
+/// `rewrapListBody` over a byte body: typed in, emitted out.
+fn rewrap_body(body: &str, depth: usize, width: usize, quote: usize) -> String {
+    let lines = RenderedLine::typed_body(body, S);
+    lists::emit_list(
+        &rewrap_list_body(lines, depth, width, quote, NARROW_MEASURE),
+        None,
+    )
+}
+
 fn ctx(width: usize) -> LayoutContext {
     LayoutContext::new(LayoutContextInit {
         emoji: false,
@@ -206,7 +215,7 @@ fn rewrap_list_body_matches_the_reference() {
     ];
     for (body, depth, width, quote, want) in cases {
         assert_eq!(
-            rewrap_list_body(&body, depth, width, quote, NARROW_MEASURE, S),
+            rewrap_body(&body, depth, width, quote),
             want,
             "{body:?} @ {width}"
         );
@@ -316,7 +325,7 @@ fn rewrap_list_body_guards_on_grid_continuations_like_the_reference() {
     ];
     for &(body, width, want) in table {
         assert_eq!(
-            rewrap_list_body(bodies[body], 1, width, 0, NARROW_MEASURE, S),
+            rewrap_body(bodies[body], 1, width, 0),
             want,
             "body {body} @ {width}"
         );
