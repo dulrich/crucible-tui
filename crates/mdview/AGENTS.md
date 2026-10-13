@@ -709,6 +709,8 @@ mdview probe [--refresh] [--no-cache] [--timeout MS]
 mdview help [subcommand]
 ```
 
+`--width N` and `probe --timeout MS` take a plain unsigned decimal integer — no JS `Number()` spellings (`0x50`, `1e2`, `80.5`, padding) — and a file read error carries `io::Error`'s own text, not Node's `fs` errno wording (WP-R9 of `plans/rust-port-code-quality-remediation.md`).
+
 **`--no-color`, `--plain` and `--hyperlinks[=WHEN]` (WP-3 of `plans/colour-modes.md`)** follow
 `--color`'s own conventions exactly, parsed in the same flat `for` loop in `parseArgs`:
 `--no-color` is not a second field, it is parsed straight into the same `color` local as
@@ -787,7 +789,7 @@ parse, because merging into a file it cannot understand would either clobber con
 see or silently discard it. Writes are atomic (temp file + `rename`) and touch only
 `highlightAs[fence]`, preserving every other key — it round-trips the *raw* JSON object, never
 the typed `MdviewConfig`, which would silently drop any key this module doesn't know about the
-first time the subcommand ran.
+first time the subcommand ran. The write is `serde_json::to_string_pretty` plus a trailing newline, keys in file order (`preserve_order`); JS `JSON.stringify` key order and number spelling are not reproduced (WP-R9 of `plans/rust-port-code-quality-remediation.md`).
 
 **Man page:** roff source at `man/crucible-tui.1`, installed by `bun run install:man` as **both**
 `~/.local/share/man/man1/mdview.1` and `.../crucible-tui.1` — symlinked, matching the

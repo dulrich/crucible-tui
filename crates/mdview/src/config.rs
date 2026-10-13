@@ -5,11 +5,10 @@
 //! file degrades to defaults with one stderr notice, a bad entry is dropped individually, but
 //! `highlight-as` refuses to write into a file it cannot parse.
 //!
-//! Two JS behaviours are reproduced deliberately, because they decide bytes:
-//! - **property order** (`Object.entries`/`JSON.stringify`): array-index keys first, ascending,
-//!   then every other key in insertion order — `js_key_order`;
-//! - **`JSON.stringify(v, null, 2)`**: numbers through `ryu-js` (`1.0` prints `1`), the JS
-//!   string escape set, `[]`/`{}` for empty containers — `js_stringify`.
+//! The write serializes with `serde_json::to_string_pretty` (two-space indent, keys in
+//! insertion order via `preserve_order`) plus a trailing newline; TS's `JSON.stringify`
+//! property order and number spelling are no longer reproduced (WP-R9, ruling (a)), so a
+//! numeric-looking key keeps its file position and `2.0` stays `2.0`.
 //!
 //! One residual, named: a `JSON.parse` failure message is JavaScriptCore's own wording in TS
 //! and serde_json's here, so the *text* of "ignoring malformed config … : <reason>" and of
@@ -43,109 +42,6 @@ pub fn resolve_config_path(env: &Env) -> PathBuf {
     config_home.join("mdview").join("config.json")
 }
 
-/// Whether `key` is a JS array index (canonical decimal, `< 2^32 - 1`).
-fn is_array_index(key: &str) -> bool {
-    if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
-        return false;
-    }
-    if !key.bytes().all(|b| b.is_ascii_digit()) {
-        return false;
-    }
-    key.parse::<u64>().is_ok_and(|n| n < u64::from(u32::MAX))
-}
-
-/// JS own-property order: array-index keys ascending, then the rest in insertion order.
-pub fn js_key_order(map: &Map<String, Value>) -> Vec<(&String, &Value)> {
-    let mut indices: Vec<(&String, &Value)> =
-        map.iter().filter(|(k, _)| is_array_index(k)).collect();
-    indices.sort_by_key(|(k, _)| k.parse::<u64>().unwrap_or(0));
-    indices.extend(map.iter().filter(|(k, _)| !is_array_index(k)));
-    indices
-}
-
-/// `JSON.stringify(string)`.
-pub fn js_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-fn js_number(n: &serde_json::Number) -> String {
-    let f = n.as_f64().unwrap_or(f64::NAN);
-    if !f.is_finite() {
-        return "null".into();
-    }
-    ryu_js::Buffer::new().format(f).to_owned()
-}
-
-fn stringify_into(value: &Value, indent: usize, out: &mut String) {
-    match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => out.push_str(&js_number(n)),
-        Value::String(s) => out.push_str(&js_quote(s)),
-        Value::Array(items) => {
-            if items.is_empty() {
-                out.push_str("[]");
-                return;
-            }
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push('\n');
-                out.push_str(&" ".repeat(indent + 2));
-                stringify_into(item, indent + 2, out);
-            }
-            out.push('\n');
-            out.push_str(&" ".repeat(indent));
-            out.push(']');
-        }
-        Value::Object(map) => {
-            if map.is_empty() {
-                out.push_str("{}");
-                return;
-            }
-            out.push('{');
-            for (i, (k, v)) in js_key_order(map).into_iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push('\n');
-                out.push_str(&" ".repeat(indent + 2));
-                out.push_str(&js_quote(k));
-                out.push_str(": ");
-                stringify_into(v, indent + 2, out);
-            }
-            out.push('\n');
-            out.push_str(&" ".repeat(indent));
-            out.push('}');
-        }
-    }
-}
-
-/// `JSON.stringify(value, null, 2)`.
-pub fn js_stringify(value: &Value) -> String {
-    let mut out = String::new();
-    stringify_into(value, 0, &mut out);
-    out
-}
-
 fn read_text(path: &Path) -> Option<String> {
     std::fs::read(path)
         .ok()
@@ -165,7 +61,7 @@ fn validate_highlight_as(
     };
     let mut valid = BTreeMap::new();
     let mut bad: Vec<String> = Vec::new();
-    for (key, entry) in js_key_order(map) {
+    for (key, entry) in map {
         match entry {
             Value::String(s)
                 if !crate::text::js_trim(s).is_empty() && !crate::text::js_trim(key).is_empty() =>
@@ -175,7 +71,7 @@ fn validate_highlight_as(
                     crate::text::js_trim(s).to_lowercase(),
                 );
             }
-            _ => bad.push(js_quote(key)),
+            _ => bad.push(Value::String(key.clone()).to_string()),
         }
     }
     if !bad.is_empty() {
@@ -301,7 +197,7 @@ pub fn write_highlight_alias(
     }
     let mut highlight_as = Map::new();
     if let Some(Value::Object(existing_map)) = raw.get("highlightAs") {
-        for (k, v) in js_key_order(existing_map) {
+        for (k, v) in existing_map {
             if v.is_string() {
                 highlight_as.insert(k.clone(), v.clone());
             }
@@ -310,7 +206,10 @@ pub fn write_highlight_alias(
     highlight_as.insert(normalized_fence, Value::String(normalized_language));
     // `{ ...raw, highlightAs }`: an existing key keeps its position, a new one is appended.
     raw.insert("highlightAs".into(), Value::Object(highlight_as));
-    let serialized = format!("{}\n", js_stringify(&Value::Object(raw)));
+    let serialized = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&Value::Object(raw)).map_err(|e| e.to_string())?
+    );
 
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -354,7 +253,6 @@ pub fn resolve_corpus_manifest_path(config: &MdviewConfig, env: &Env) -> (String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("mdview-config-{}-{name}", std::process::id()));
@@ -413,14 +311,14 @@ mod tests {
     }
 
     #[test]
-    fn bad_entries_are_dropped_individually_in_js_key_order() {
+    fn bad_entries_are_dropped_individually_in_file_order() {
         let (c, w) = load(
             r#"{"highlightAs":{"b":1,"a":"sql","2":"","1":" "},"emoji":"yes","color":3}"#,
             "bad",
         );
         assert_eq!(c.highlight_as.unwrap().len(), 1);
         assert!(
-            w[0].ends_with(r#"non-string or empty value(s) for "1", "2", "b""#),
+            w[0].ends_with(r#"non-string or empty value(s) for "b", "2", "1""#),
             "{w:?}"
         );
         assert!(w[1].contains("\"emoji\"") && w[1].ends_with("expected a boolean"));
@@ -434,15 +332,6 @@ mod tests {
         assert!(w[0].ends_with(": expected a JSON object"));
         let (_, w) = load(r#"{"highlightAs":"x"}"#, "hlstring");
         assert!(w[0].contains("expected an object mapping fence language"));
-    }
-
-    #[test]
-    fn stringify_matches_js() {
-        let v = json!({"b": 1.0, "10": [], "a": {}, "2": [1.5, null, true, "q\"\u{1}\n"]});
-        assert_eq!(
-            js_stringify(&v),
-            "{\n  \"2\": [\n    1.5,\n    null,\n    true,\n    \"q\\\"\\u0001\\n\"\n  ],\n  \"10\": [],\n  \"b\": 1,\n  \"a\": {}\n}"
-        );
     }
 
     #[test]
@@ -463,7 +352,7 @@ mod tests {
         assert!(!r.created);
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
-            "{\n  \"emoji\": true,\n  \"highlightAs\": {\n    \"dataviewjs\": \"sql\",\n    \"tasks\": \"sql\"\n  },\n  \"z\": 2\n}\n"
+            "{\n  \"emoji\": true,\n  \"highlightAs\": {\n    \"dataviewjs\": \"sql\",\n    \"tasks\": \"sql\"\n  },\n  \"z\": 2.0\n}\n"
         );
     }
 
