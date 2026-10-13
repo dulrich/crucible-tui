@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::colour::{ColourDirective, Env, parse_colour_directive};
+use crate::fsutil::{home_dir, write_atomic};
 
 /// `MdviewConfig`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,20 +34,11 @@ pub struct MdviewConfig {
     pub hyperlinks: Option<ColourDirective>,
 }
 
-/// `homedir()`: `$HOME` from the process, else the platform answer (Node's own order).
-fn home_dir() -> String {
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .or_else(|| std::env::home_dir().map(|p| p.to_string_lossy().into_owned()))
-        .unwrap_or_default()
-}
-
 /// `resolveConfigPath()`: `$XDG_CONFIG_HOME/mdview/config.json`, else `~/.config/...`.
 pub fn resolve_config_path(env: &Env) -> PathBuf {
     let config_home = match env.get("XDG_CONFIG_HOME") {
         Some(x) if !x.is_empty() => PathBuf::from(x),
-        _ => Path::new(&home_dir()).join(".config"),
+        _ => Path::new(&home_dir(env)).join(".config"),
     };
     config_home.join("mdview").join("config.json")
 }
@@ -270,13 +262,6 @@ fn js_typeof(v: &Value) -> &'static str {
     }
 }
 
-fn now_ms() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
-}
-
 /// `writeHighlightAlias(fence, language, path)`: atomic, touching only `highlightAs[fence]`.
 pub fn write_highlight_alias(
     fence: &str,
@@ -329,13 +314,7 @@ pub fn write_highlight_alias(
 
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let temp = dir.join(format!(
-        ".config.json.tmp-{}-{}",
-        std::process::id(),
-        now_ms()
-    ));
-    std::fs::write(&temp, serialized).map_err(|e| e.to_string())?;
-    std::fs::rename(&temp, path).map_err(|e| e.to_string())?;
+    write_atomic(path, serialized.as_bytes()).map_err(|e| e.to_string())?;
     Ok(WriteHighlightAliasResult {
         path: path.to_path_buf(),
         created: existing.is_none(),

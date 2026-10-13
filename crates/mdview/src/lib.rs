@@ -14,6 +14,7 @@ pub mod context;
 #[rustfmt::skip]
 pub mod emoji_data;
 pub mod frontmatter;
+pub mod fsutil;
 pub mod glyphs;
 pub mod highlight;
 pub mod inline;
