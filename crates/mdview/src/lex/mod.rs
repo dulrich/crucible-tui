@@ -2,7 +2,7 @@
 //!
 //! `lex(body, tier)` is a pure function producing exactly the census tokens
 //! (`crate::token::Token`) that `TS_BASELINE` `src/render.ts`'s `lexBody` produces, modulo the registered
-//! divergences (`scripts/divergences.ts`). comrak decides **structure** — which blocks exist,
+//! divergences (`scripts/divergences.ts`, retired; at `a2ea0a1`). comrak decides **structure** — which blocks exist,
 //! where they start and end, and which inline nodes exist — and every string field is rebuilt
 //! from the **source**, through comrak's sourcepos, the way marked would have sliced it:
 //!

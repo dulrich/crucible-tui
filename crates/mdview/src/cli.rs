@@ -414,8 +414,7 @@ fn run_view(args: &[String], p: &Process) -> CliResult {
         path,
         highlight_as: config.highlight_as.clone().unwrap_or_default(),
     };
-    let rendered =
-        crate::render(&source, None, &render_options).map_err(|e| format!("render: {e}"))?;
+    let rendered = crate::render(&source, &render_options).map_err(|e| format!("render: {e}"))?;
     let output = rendered.text;
 
     if options.check {

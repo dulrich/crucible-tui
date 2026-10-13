@@ -159,7 +159,7 @@ fn golden_render_replay() {
         let options = mdview::parity::parse_options(record)
             .unwrap_or_else(|e| panic!("malformed golden record: {e}: {record}"));
         let hash = source_hash(source);
-        match mdview::render::render(source, None, &options) {
+        match mdview::render::render(source, &options) {
             Err(e) => failures.push(format!("{hash} error {e}")),
             Ok(out) => {
                 let ranges: Vec<(usize, usize)> =

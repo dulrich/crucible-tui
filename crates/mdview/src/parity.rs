@@ -200,10 +200,10 @@ pub fn handle_render(line: &str) -> String {
         if !matches!(request.get("tokens"), None | Some(Value::Null)) {
             return Err("token input was removed (plans/retire-ts-parity-residue.md WP-2)".into());
         }
-        let output = render(source, None, &options).map_err(|e| e.to_string())?;
+        let output = render(source, &options).map_err(|e| e.to_string())?;
         let ranges: Vec<[usize; 2]> = output.code_ranges.iter().map(|&(a, b)| [a, b]).collect();
         let mut response = json!({ "text": output.text, "codeRanges": ranges });
-        // The frontmatter facts D-A's predicate reads (`scripts/divergences.ts`, `RenderSide`).
+        // The frontmatter facts D-A's predicate reads (`scripts/divergences.ts` at `a2ea0a1`, `RenderSide`; retired).
         if let Some(fm) = &output.frontmatter {
             let mut facts = json!({ "parsed": fm.parsed });
             if let Some((start, end)) = fm.diagnostic {

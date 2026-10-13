@@ -524,7 +524,7 @@ fn text_guard_sweep_matches_the_reference() {
 
 fn doc(source: &str, width: usize) -> String {
     let options = RenderOptions::plain(width);
-    render(source, None, &options).expect("renders").text
+    render(source, &options).expect("renders").text
 }
 
 #[test]

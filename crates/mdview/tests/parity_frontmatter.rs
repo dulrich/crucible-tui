@@ -1,5 +1,5 @@
 //! The render response's frontmatter facts (WP-3 attempt 3 of `plans/mdview-rust-port.md`):
-//! what D-A's predicate (`scripts/divergences.ts`, `RenderSide.frontmatter`) reads from the
+//! what D-A's predicate (`scripts/divergences.ts` at `a2ea0a1`, retired; `RenderSide.frontmatter`) reads from the
 //! Rust side of the R-gate.
 
 use serde_json::Value;
