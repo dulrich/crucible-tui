@@ -159,13 +159,18 @@ enum Consume {
 
 type N<'a> = &'a AstNode<'a>;
 
-struct Lexer<'s> {
-    src: &'s str,
-    line_starts: Vec<usize>,
-    subs: HashMap<usize, Sub>,
-    /// The pre-pass's fence phase at the start of each line (see [`Lexer::prepass`]).
-    fence: Vec<bool>,
-    tier: Tier,
+/// The lexer's container-scoped state. A container (blockquote, list item, table cell)
+/// derives a child scope and runs inside it through [`Lexer::in_scope`], so the parent's
+/// scope comes back structurally when the container ends instead of by a hand-written
+/// save/restore at each site.
+///
+/// Not every field rolls back: `in_link`, `in_raw` (inline state marked threads through
+/// its whole token stream) and `first_at` (a one-block handoff `blocks_loose` sets and
+/// clears around each child) flow *out* of a child scope unchanged, exactly as they did
+/// before scopes existed. `tab_pad` is not scope at all: it is accumulated position
+/// metadata on [`Lexer`], never rolled back (audit pin E2).
+#[derive(Clone)]
+struct Scope {
     in_link: bool,
     in_raw: bool,
     top: bool,
@@ -182,6 +187,38 @@ struct Lexer<'s> {
     /// parsing a cell and reports its inline sourcepos in the unescaped string's coordinates,
     /// so a reported offset is `base + index`, and `offs[index]` is the real one.
     cell: Option<(usize, Vec<usize>)>,
+}
+
+impl Scope {
+    /// The document's own scope: top level, unclipped, outside any link, raw tag or cell.
+    fn root() -> Self {
+        Scope {
+            in_link: false,
+            in_raw: false,
+            top: true,
+            first_at: None,
+            clip: usize::MAX,
+            cend: usize::MAX,
+            cell: None,
+        }
+    }
+}
+
+/// The item path's `top` rule: a list item's blocks lex with `top = false` (marked's
+/// `blockTokens(…, [], false)` for item text), and after *every* item `top` is set to
+/// `true` rather than restored, as marked's item loop leaves it — so blocks following a
+/// nested list inside a non-top container lex as top-level. Deliberate; keep it.
+const TOP_AFTER_ITEM: bool = true;
+
+struct Lexer<'s> {
+    src: &'s str,
+    line_starts: Vec<usize>,
+    subs: HashMap<usize, Sub>,
+    /// The pre-pass's fence phase at the start of each line (see [`Lexer::prepass`]).
+    fence: Vec<bool>,
+    tier: Tier,
+    /// The container-scoped state; see [`Scope`].
+    scope: Scope,
     /// Lazy lines whose container prefix ended inside a tab, by line: the tab's doc offset and
     /// the virtual spaces left of it. comrak's lazy paragraph continuation (`add_line`, reached
     /// without the non-lazy path's advance to the first non-space) pads those spaces into the
@@ -236,33 +273,45 @@ pub fn lex(body: &str, tier: Tier) -> Vec<Token> {
             }));
         root = parse_document(&arena, &parsed, &o);
     }
-    let mut line_starts = vec![0];
-    for (i, b) in src.bytes().enumerate() {
-        if b == b'\n' {
-            line_starts.push(i + 1);
-        }
-    }
-    let mut lx = Lexer {
-        src: &src,
-        line_starts,
-        subs: HashMap::new(),
-        fence: Vec::new(),
-        tier,
-        in_link: false,
-        in_raw: false,
-        top: true,
-        first_at: None,
-        clip: usize::MAX,
-        cend: usize::MAX,
-        cell: None,
-        tab_pad: RefCell::new(HashMap::new()),
-    };
+    let mut lx = Lexer::new(&src, tier, Scope::root());
     (lx.subs, lx.fence) = lx.prepass();
     let end = src.len();
     lx.blocks(root, &[], 0, Some(end))
 }
 
 impl<'s> Lexer<'s> {
+    /// A lexer over `src` at `tier`, starting in `scope`; the pre-pass tables start empty.
+    fn new(src: &'s str, tier: Tier, scope: Scope) -> Self {
+        let mut line_starts = vec![0];
+        for (i, b) in src.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push(i + 1);
+            }
+        }
+        Lexer {
+            src,
+            line_starts,
+            subs: HashMap::new(),
+            fence: Vec::new(),
+            tier,
+            scope,
+            tab_pad: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Run `f` inside the child scope `child`, then restore the parent's scope. The fields
+    /// that are not container-scoped (`in_link`, `in_raw`, `first_at`; see [`Scope`]) carry
+    /// out of the child as `f` left them. `tab_pad` is untouched: it is never rolled back.
+    fn in_scope<R>(&mut self, child: Scope, f: impl FnOnce(&mut Self) -> R) -> R {
+        let parent = std::mem::replace(&mut self.scope, child);
+        let out = f(self);
+        let inner = std::mem::replace(&mut self.scope, parent);
+        self.scope.in_link = inner.in_link;
+        self.scope.in_raw = inner.in_raw;
+        self.scope.first_at = inner.first_at;
+        out
+    }
+
     // -- lines ---------------------------------------------------------------
 
     fn nlines(&self) -> usize {
@@ -465,7 +514,7 @@ impl<'s> Lexer<'s> {
             v.s.push_str(&lv.s[skip..]);
             v.offs.extend_from_slice(&lv.offs[skip..]);
         }
-        let keep = v.offs.partition_point(|&o| o < self.clip);
+        let keep = v.offs.partition_point(|&o| o < self.scope.clip);
         v.s.truncate(keep);
         v.offs.truncate(keep);
         v

@@ -14,10 +14,19 @@ impl Lexer<'_> {
 
     /// Inline tokens for the nodes of a table row that fall inside one cell view.
     pub(super) fn inlines_in(&mut self, row: N, cv: &View, in_table: bool) -> Vec<Token> {
-        let saved = self.cell.take();
-        if in_table {
-            self.cell = cv.offs.first().map(|&f| (f, cv.offs.clone()));
-        }
+        let child = Scope {
+            cell: if in_table {
+                cv.offs.first().map(|&f| (f, cv.offs.clone()))
+            } else {
+                None
+            },
+            ..self.scope.clone()
+        };
+        self.in_scope(child, |lx| lx.cell_inlines(row, cv, in_table))
+    }
+
+    /// [`Lexer::inlines_in`]'s body, run inside the cell's scope.
+    fn cell_inlines(&mut self, row: N, cv: &View, in_table: bool) -> Vec<Token> {
         let mut kids = Vec::new();
         if let (Some(&first), Some(&last)) = (cv.offs.first(), cv.offs.last()) {
             for cell in row.children() {
@@ -29,14 +38,12 @@ impl Lexer<'_> {
                 }
             }
         }
-        let out = self.inline_seq(&kids, cv, 0, cv.s.len(), if in_table { b"|" } else { &[] });
-        self.cell = saved;
-        out
+        self.inline_seq(&kids, cv, 0, cv.s.len(), if in_table { b"|" } else { &[] })
     }
 
     /// A doc offset comrak reported inside a table cell, mapped back to the source.
     pub(super) fn uncell(&self, d: usize) -> usize {
-        let Some((base, offs)) = &self.cell else {
+        let Some((base, offs)) = &self.scope.cell else {
             return d;
         };
         let (Some(&last), true) = (offs.last(), d >= *base) else {
@@ -80,7 +87,7 @@ impl Lexer<'_> {
     pub(super) fn text_token(&self, s: &str) -> Token {
         Token::Text {
             raw: s.to_string(),
-            text: if self.in_raw {
+            text: if self.scope.in_raw {
                 s.to_string()
             } else {
                 escape_no_encode(s)
@@ -100,7 +107,7 @@ impl Lexer<'_> {
         }) = out.last_mut()
         {
             raw.push_str(s);
-            text.push_str(&if self.in_raw {
+            text.push_str(&if self.scope.in_raw {
                 s.to_string()
             } else {
                 escape_no_encode(s)
@@ -265,10 +272,12 @@ impl Lexer<'_> {
                     run_brackets -= 1;
                     None
                 }
-                b':' if *depth > 0 && !self.in_link => gfm_url(t, pos, i, b),
-                b'w' if *depth > 0 && !self.in_link => gfm_www(t, i, b),
-                b'@' if run_brackets <= 0 && !self.in_link => gfm_email(t, pos.max(run), i, b)
-                    .filter(|&(_, e)| !bytes[e - 1].is_ascii_alphabetic()),
+                b':' if *depth > 0 && !self.scope.in_link => gfm_url(t, pos, i, b),
+                b'w' if *depth > 0 && !self.scope.in_link => gfm_www(t, i, b),
+                b'@' if run_brackets <= 0 && !self.scope.in_link => {
+                    gfm_email(t, pos.max(run), i, b)
+                        .filter(|&(_, e)| !bytes[e - 1].is_ascii_alphabetic())
+                }
                 _ => None,
             };
             if let Some((ls, le)) = found {
@@ -344,10 +353,10 @@ impl Lexer<'_> {
             NodeValue::Code(_) => codespan_token(raw).map(Inline::One),
             NodeValue::HtmlInline(_) => {
                 let lower = raw.to_ascii_lowercase();
-                if !self.in_link && lower.starts_with("<a ") {
-                    self.in_link = true;
-                } else if self.in_link && lower.starts_with("</a>") {
-                    self.in_link = false;
+                if !self.scope.in_link && lower.starts_with("<a ") {
+                    self.scope.in_link = true;
+                } else if self.scope.in_link && lower.starts_with("</a>") {
+                    self.scope.in_link = false;
                 }
                 let raw_tag = |p: &str| {
                     ["pre", "code", "kbd", "script"].iter().any(|t| {
@@ -357,10 +366,10 @@ impl Lexer<'_> {
                             .is_some_and(|r| r.starts_with(|c: char| c == '>' || c.is_whitespace()))
                     })
                 };
-                if !self.in_raw && raw_tag("<") {
-                    self.in_raw = true;
-                } else if self.in_raw && raw_tag("</") {
-                    self.in_raw = false;
+                if !self.scope.in_raw && raw_tag("<") {
+                    self.scope.in_raw = true;
+                } else if self.scope.in_raw && raw_tag("</") {
+                    self.scope.in_raw = false;
                 }
                 Some(Inline::One(Token::Html {
                     text: raw.to_string(),
@@ -393,7 +402,7 @@ impl Lexer<'_> {
                 }
                 if !raw.starts_with('[') {
                     // GFM extended autolink.
-                    if self.in_link {
+                    if self.scope.in_link {
                         return Some(Inline::Text(raw.to_string()));
                     }
                     return Some(Inline::One(autolink_token(raw)));
@@ -405,10 +414,10 @@ impl Lexer<'_> {
                     Some((h, _)) => h,
                     None => link.url.clone(),
                 };
-                self.in_link = true;
+                self.scope.in_link = true;
                 let lv = unescape_view(&v.sub(s + 1, s + label_end), b"[]");
                 let tokens = self.inline_seq(&kids, &lv, 0, lv.s.len(), b"[]");
-                self.in_link = false;
+                self.scope.in_link = false;
                 Some(Inline::One(Token::Link { href, text, tokens }))
             }
             NodeValue::Image(link) => {
@@ -510,27 +519,12 @@ pub(super) fn match_wikilink(s: &str) -> Option<(usize, Wiki)> {
 pub(super) fn lex_inline_string(s: &str, outer: &Lexer) -> Vec<Token> {
     let arena = Arena::new();
     let root = parse_document(&arena, s, &options());
-    let mut line_starts = vec![0];
-    for (i, b) in s.bytes().enumerate() {
-        if b == b'\n' {
-            line_starts.push(i + 1);
-        }
-    }
-    let mut lx = Lexer {
-        src: s,
-        line_starts,
-        subs: HashMap::new(),
-        fence: Vec::new(),
-        tier: outer.tier,
-        in_link: outer.in_link,
-        in_raw: outer.in_raw,
-        top: true,
-        first_at: None,
-        clip: usize::MAX,
-        cend: usize::MAX,
-        cell: None,
-        tab_pad: RefCell::new(HashMap::new()),
+    let scope = Scope {
+        in_link: outer.scope.in_link,
+        in_raw: outer.scope.in_raw,
+        ..Scope::root()
     };
+    let mut lx = Lexer::new(s, outer.tier, scope);
     // Only the fence phase: a label is never rewritten by the pre-pass.
     lx.fence = lx.prepass().1;
     let mut v = View::default();

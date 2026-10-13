@@ -54,10 +54,10 @@ impl Lexer<'_> {
             }
             first = false;
             if self.line_of(from) == start_line && from > self.line_start(start_line) {
-                self.first_at = Some(from);
+                self.scope.first_at = Some(from);
             }
             let (tok, end, consume) = self.block(child, chain);
-            self.first_at = None;
+            self.scope.first_at = None;
             out.extend(tok);
             prev_end = end;
             prev_consume = consume;
@@ -205,21 +205,17 @@ impl Lexer<'_> {
         let first = self
             .content_start(l0, chain)
             .0
-            .max(self.first_at.unwrap_or(0));
+            .max(self.scope.first_at.unwrap_or(0));
         let eol = self.line_end(l1);
         let value = n.data().value.clone();
         match value {
             NodeValue::Paragraph => {
                 let v = self.view_lines(l0, l1, first, chain, true);
-                if self.top {
+                if self.scope.top {
                     let tokens = self.inlines_of(n, &v, 0, v.s.len());
                     (vec![Token::Paragraph { tokens }], eol, Consume::EndOfLine)
                 } else {
-                    (
-                        vec![self.block_text(n, l0, l1, first, chain, &v)],
-                        eol,
-                        Consume::EndOfLine,
-                    )
+                    (vec![self.block_text(n, &v)], eol, Consume::EndOfLine)
                 }
             }
             NodeValue::Heading(h) => {
@@ -305,8 +301,8 @@ impl Lexer<'_> {
                 let (mut extra, consume) = self.html_trailer(l1, chain, hb.block_type);
                 // The last list item's content is trimmed at the list's end (marked trims the
                 // item's trailing blank lines), so the trailer cannot reach past the clip.
-                if self.clip != usize::MAX {
-                    let room = self.clip.saturating_sub(self.line_end(l1));
+                if self.scope.clip != usize::MAX {
+                    let room = self.scope.clip.saturating_sub(self.line_end(l1));
                     extra.truncate(room.min(extra.len()));
                 }
                 text.push_str(&extra);
@@ -316,13 +312,12 @@ impl Lexer<'_> {
                 let mut inner = chain.to_vec();
                 inner.push(Container::Quote);
                 let from = self.content_start(l0, &inner).0;
-                let saved = self.top;
-                let saved_cend = self.cend;
-                self.top = true;
-                self.cend = self.cend.min(l1);
-                let tokens = self.blocks(n, &inner, from, Some(eol));
-                self.top = saved;
-                self.cend = saved_cend;
+                let child = Scope {
+                    top: true,
+                    cend: self.scope.cend.min(l1),
+                    ..self.scope.clone()
+                };
+                let tokens = self.in_scope(child, |lx| lx.blocks(n, &inner, from, Some(eol)));
                 (vec![Token::Blockquote { tokens }], eol, Consume::EndOfLine)
             }
             NodeValue::List(list) => {
@@ -345,7 +340,7 @@ impl Lexer<'_> {
         block_type: u8,
     ) -> (String, Consume) {
         let mut extra = String::new();
-        let last = self.nlines().min(self.cend);
+        let last = self.nlines().min(self.scope.cend);
         let mut l = l1 + 1;
         if l > last {
             return (extra, Consume::EndOfLine);
@@ -390,15 +385,7 @@ impl Lexer<'_> {
     }
 
     /// A non-top paragraph: marked's block `text` tokens, one per line, merged.
-    pub(super) fn block_text(
-        &mut self,
-        n: N,
-        l0: usize,
-        l1: usize,
-        first: usize,
-        chain: &[Container],
-        v: &View,
-    ) -> Token {
+    pub(super) fn block_text(&mut self, n: N, v: &View) -> Token {
         let lines: Vec<&str> = v.s.split('\n').collect();
         let mut raw = String::new();
         let mut text = String::new();
@@ -431,7 +418,6 @@ impl Lexer<'_> {
             text.push_str(line);
             i += 1;
         }
-        let _ = (l0, l1, first, chain);
         let tokens = if text == v.s {
             self.inlines_of(n, v, 0, v.s.len())
         } else {
@@ -519,7 +505,7 @@ impl Lexer<'_> {
             // Task state.
             let line_has_sub = self.subs.contains_key(&l0) && {
                 let s = &self.subs[&l0];
-                s.start >= cs.saturating_sub(0) && s.start <= cs + 1
+                s.start >= cs && s.start <= cs + 1
             };
             let mut task = false;
             let mut checked = None;
@@ -554,15 +540,21 @@ impl Lexer<'_> {
             } else {
                 Some(self.line_start(item_end_line + 1).saturating_sub(1))
             };
-            self.top = false;
-            let saved_clip = self.clip;
-            if last {
-                self.clip = self.clip.min(list_end);
-            }
-            let saved_cend = self.cend;
-            self.cend = self.cend.min(item_end_line);
-            let (mut tokens, multi) = self.item_blocks(item, &inner, from, until, l0);
-            self.cend = saved_cend;
+            let child = Scope {
+                top: false,
+                clip: if last {
+                    self.scope.clip.min(list_end)
+                } else {
+                    self.scope.clip
+                },
+                cend: self.scope.cend.min(item_end_line),
+                ..self.scope.clone()
+            };
+            // The parent's `clip` and `cend` come back here; the lookahead below reads
+            // neither (`line_text` is unclipped), so restoring `clip` before it is unchanged.
+            let (mut tokens, multi) =
+                self.in_scope(child, |lx| lx.item_blocks(item, &inner, from, until, l0));
+            self.scope.top = TOP_AFTER_ITEM;
             // A non-last item's content ends without a newline. When its last line is
             // whitespace that survives the item's dedent, directly after a blockquote, marked's
             // blockquote `paragraph` lookahead (` +\n`) cannot fail there, so that whitespace
@@ -584,8 +576,6 @@ impl Lexer<'_> {
                     }
                 }
             }
-            self.clip = saved_clip;
-            self.top = true;
             if multi {
                 loose = true;
             }
