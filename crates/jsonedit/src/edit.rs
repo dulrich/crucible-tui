@@ -264,6 +264,7 @@ fn read_target(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
 /// One answer to a post-editor prompt.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Choice {
+    Fix,
     Write,
     Edit,
     Exit,
@@ -273,6 +274,7 @@ enum Choice {
 impl Choice {
     fn key(self) -> char {
         match self {
+            Choice::Fix => 'f',
             Choice::Write => 'w',
             Choice::Edit => 'e',
             Choice::Exit => 'x',
@@ -281,6 +283,7 @@ impl Choice {
     }
     fn label(self) -> &'static str {
         match self {
+            Choice::Fix => "(f)ix indentation",
             Choice::Write => "(w)rite anyway",
             Choice::Edit => "(e)dit again",
             Choice::Exit => "e(x)it without saving",
@@ -341,6 +344,9 @@ fn ask_indent(env: &mut EditEnv, err: &mut dyn Write) -> Option<Indent> {
 /// What the review after an editor run decided.
 enum Verdict {
     Write,
+    /// Replace the buffer with these re-indented bytes and review them again
+    /// without relaunching the editor.
+    Fix(Vec<u8>),
     /// Re-edit, reopening at this line if known.
     Edit(Option<usize>),
     Exit,
@@ -352,11 +358,20 @@ impl Verdict {
     fn from_choice(choice: Choice, hint: Option<usize>) -> Verdict {
         match choice {
             Choice::Write => Verdict::Write,
+            // Only reached with the fixed bytes in hand (see `Review::run`).
+            Choice::Fix => Verdict::Abort("aborted".into()),
             Choice::Edit => Verdict::Edit(hint),
             Choice::Exit => Verdict::Exit,
             Choice::Abort => Verdict::Abort("aborted".into()),
         }
     }
+}
+
+/// Up to five line numbers, then `, ...`.
+fn line_list(lines: &[usize]) -> String {
+    let list: Vec<String> = lines.iter().take(5).map(usize::to_string).collect();
+    let more = if lines.len() > 5 { ", ..." } else { "" };
+    format!("{}{more}", list.join(", "))
 }
 
 /// The fixed inputs the review reads.
@@ -379,7 +394,7 @@ impl Review<'_> {
         env: &mut EditEnv,
         err: &mut dyn Write,
     ) -> Verdict {
-        use Choice::{Abort, Edit, Exit, Write as W};
+        use Choice::{Abort, Edit, Exit, Fix, Write as W};
         let file = self.file;
         if let Err(diags) = validate(edited, self.dialect) {
             for d in &diags {
@@ -394,15 +409,26 @@ impl Review<'_> {
         if let Some(style) = self.reference {
             let bad = indent::mismatches(self.base, edited, style);
             if !bad.is_empty() {
-                let list: Vec<String> = bad.iter().take(5).map(usize::to_string).collect();
-                let more = if bad.len() > 5 { ", ..." } else { "" };
                 let _ = writeln!(
                     err,
-                    "jsonedit: warning: line(s) {}{more} do not match the file's indent style ({style})",
-                    list.join(", ")
+                    "jsonedit: warning: line(s) {} do not match the file's indent style ({style})",
+                    line_list(&bad)
                 );
                 if env.tty {
-                    let choice = ask(env, err, &[W, Edit, Exit, Abort]);
+                    let fix = indent::reindent(edited, &bad, style);
+                    let choice = if fix.fixed.is_empty() {
+                        ask(env, err, &[W, Edit, Exit, Abort])
+                    } else {
+                        ask(env, err, &[Fix, W, Edit, Exit, Abort])
+                    };
+                    if choice == Fix {
+                        let _ = writeln!(
+                            err,
+                            "jsonedit: re-indented line(s) {}",
+                            line_list(&fix.fixed)
+                        );
+                        return Verdict::Fix(fix.bytes);
+                    }
                     if choice != W {
                         return Verdict::from_choice(choice, bad.first().copied());
                     }
@@ -508,14 +534,24 @@ pub fn edit(
     // Run editor -> read -> unchanged? -> review -> write.
     // Line to reopen at on a re-edit; never set for the first launch.
     let mut hint: Option<usize> = None;
+    // Re-indented bytes to review next instead of relaunching the editor.
+    let mut fixed: Option<Vec<u8>> = None;
     loop {
-        let status = std::process::Command::new(&env.editor[0])
-            .args(editor_args(&env.editor, &buffer, hint))
-            .status();
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => return abort(err, &format!("editor exited with {s}")),
-            Err(e) => return abort(err, &format!("cannot run editor '{}': {e}", env.editor[0])),
+        if let Some(bytes) = fixed.take() {
+            if let Err(e) = fs::write(&buffer, &bytes) {
+                return abort(err, &format!("cannot write buffer: {e}"));
+            }
+        } else {
+            let status = std::process::Command::new(&env.editor[0])
+                .args(editor_args(&env.editor, &buffer, hint))
+                .status();
+            match status {
+                Ok(s) if s.success() => {}
+                Ok(s) => return abort(err, &format!("editor exited with {s}")),
+                Err(e) => {
+                    return abort(err, &format!("cannot run editor '{}': {e}", env.editor[0]));
+                }
+            }
         }
         let edited = match fs::read(&buffer) {
             Ok(b) => b,
@@ -533,6 +569,7 @@ pub fn edit(
             Verdict::Abort(why) => return abort(err, &why),
             Verdict::Exit => return discard(err, 1, "exited without saving"),
             Verdict::Edit(h) => hint = h,
+            Verdict::Fix(bytes) => fixed = Some(bytes),
             Verdict::Write => {
                 if let Err(e) = atomic_write(&target, &edited) {
                     return abort(err, &format!("cannot write {file}: {e}"));

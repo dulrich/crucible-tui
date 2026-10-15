@@ -446,3 +446,72 @@ fn buffer_name_has_no_colon() {
     );
     fs::remove_file(b).unwrap();
 }
+
+/// Runs the loop with an editor that copies `new` into the buffer.
+fn run_new(d: &Dir, t: &Path, new: &str, answers: &str, tty: bool) -> (i32, String) {
+    let src = d.file("new", new);
+    let script = format!("cp '{}' \"$1\"", src.display());
+    run(t, &script, answers, tty, Some(Indent::Spaces(2)))
+}
+
+#[test]
+fn fix_reindents_flagged_line_and_writes() {
+    let d = Dir::new("fix");
+    let t = d.file("x.json", ORIG);
+    let new = "{\n  \"a\": {\n     \"z\": 0\n  },\n  \"b\": 2\n}\n";
+    let (code, err) = run_new(&d, &t, new, "f\n", true);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("(f)ix indentation, (w)rite anyway"), "{err}");
+    assert!(err.contains("jsonedit: re-indented line(s) 3"), "{err}");
+    assert_eq!(
+        fs::read_to_string(&t).unwrap(),
+        "{\n  \"a\": {\n    \"z\": 0\n  },\n  \"b\": 2\n}\n"
+    );
+    assert_eq!(buffer_count(&bufs_of(&t)), 0);
+}
+
+#[test]
+fn fix_then_abort_keeps_partially_fixed_buffer() {
+    let d = Dir::new("fixabort");
+    let t = d.file("x.jsonc", ORIG);
+    let new = "{\n  \"a\": 1,\n   \"x\": 2,\n  /* c\n   d */\n  \"b\": 2\n}\n";
+    let (code, err) = run_new(&d, &t, new, "f\na\n", true);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("warning: line(s) 3, 5 do not match"), "{err}");
+    assert!(err.contains("re-indented line(s) 3\n"), "{err}");
+    assert!(err.contains("warning: line(s) 5 do not match"), "{err}");
+    // The second prompt has nothing fixable left.
+    assert_eq!(err.matches("(f)ix").count(), 1, "{err}");
+    assert_eq!(fs::read_to_string(&t).unwrap(), ORIG);
+    assert_eq!(
+        fs::read_to_string(kept_buffer(&err)).unwrap(),
+        new.replace("   \"x\"", "  \"x\"")
+    );
+}
+
+#[test]
+fn fix_restoring_original_is_no_changes() {
+    let d = Dir::new("fixbase");
+    let t = d.file("x.json", ORIG);
+    let new = ORIG.replace("  \"a\"", "   \"a\"");
+    let (code, err) = run_new(&d, &t, &new, "f\n", true);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.trim_end().ends_with("jsonedit: no changes"), "{err}");
+    assert_eq!(fs::read_to_string(&t).unwrap(), ORIG);
+    assert_eq!(buffer_count(&bufs_of(&t)), 0);
+}
+
+#[test]
+fn non_tty_mismatch_writes_verbatim_without_fix() {
+    let d = Dir::new("fixnotty");
+    let t = d.file("x.json", ORIG);
+    let new = ORIG.replace("  \"a\"", "   \"a\"").replace("2\n", "3\n");
+    let (code, err) = run_new(&d, &t, &new, "f\n", false);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("warning: line(s) 2 do not match"), "{err}");
+    assert!(
+        !err.contains("(f)ix") && !err.contains("re-indented"),
+        "{err}"
+    );
+    assert_eq!(fs::read_to_string(&t).unwrap(), new);
+}
