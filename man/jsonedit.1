@@ -21,7 +21,10 @@ It copies
 into a private temporary buffer, opens your editor on the buffer, and
 validates the result when the editor exits.
 The file is replaced only when the buffer is valid, and then with exactly
-the bytes the editor left: nothing is re\-formatted or re\-serialised.
+the bytes the editor left: nothing is re\-formatted or re\-serialised,
+and only an explicit
+.B (f)ix\ indentation
+choice changes any of them.
 .PP
 With
 .BR \-\-check ,
@@ -79,7 +82,14 @@ New or changed lines that do not match it produce a warning, and the prompt
 gains
 .BR (w)rite\ anyway ,
 because the bytes are still valid.
-Nothing is ever re\-indented.
+When at least one of those lines can be fixed, the prompt first offers
+.BR (f)ix\ indentation :
+it replaces only the flagged lines' leading whitespace with their bracket
+depth in the file's unit (a line starting with a closing bracket dedents one
+level), prints the fixed line numbers, and checks the result again without
+reopening the editor.
+A line that starts inside a comment or a string continuation is left alone.
+Nothing is re\-indented unless you choose it.
 .PP
 If the file changed on disk while it was being edited, it is not
 overwritten: the change is reported and the prompt offers

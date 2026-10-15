@@ -291,9 +291,9 @@ jsonedit --dialect jsonc --indent 2 tsconfig.json
 ```
 
 - **Dialects:** `.jsonc` is JSONC, `.json5` is JSON5, anything else is strict JSON; `--dialect` overrides. Duplicate keys and empty input are errors in every dialect.
-- **Safety:** the editor works on a private 0600 buffer that keeps the file's extension. The file is replaced atomically (same-directory temp, fsync, rename), with the editor's bytes verbatim — never re-serialised — and keeps its permissions. Symlinks are followed and left intact. A change made on disk during the edit is detected and never silently overwritten.
+- **Safety:** the editor works on a private 0600 buffer that keeps the file's extension. The file is replaced atomically (same-directory temp, fsync, rename), with the editor's bytes verbatim — never re-serialised, and changed only by an explicit `(f)ix indentation` choice — and keeps its permissions. Symlinks are followed and left intact. A change made on disk during the edit is detected and never silently overwritten.
 - **Invalid buffer:** the errors are printed and you choose `(e)dit again`, `e(x)it without saving` or `(a)bort keeping the buffer`. Without a terminal it never prompts: it keeps the buffer, prints its path and exits 1.
-- **Indent style:** the file's indent unit is detected (or given with `--indent tab|N`); new or changed lines that do not match it produce a warning and a `(w)rite anyway` choice. Nothing is ever re-indented.
+- **Indent style:** the file's indent unit is detected (or given with `--indent tab|N`); new or changed lines that do not match it produce a warning and a `(w)rite anyway` choice. When at least one of those lines can be fixed, the prompt first offers `(f)ix indentation`: it replaces only the flagged lines' leading whitespace with their bracket depth in the file's unit, then checks the result again without reopening the editor. Lines that start inside a comment or string are left alone. Nothing is re-indented unless you choose it.
 
 Exit codes: 0 written or unchanged, 1 invalid or aborted, 2 usage. `man jsonedit` has the full reference; building and installing it (`bun run build:rust`, the `~/.local/bin` symlink) is in `AGENTS.md`'s "Rust host prerequisites and install".
 
