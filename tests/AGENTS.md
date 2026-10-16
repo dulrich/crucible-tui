@@ -231,3 +231,25 @@ To render a file interactively:
 ./target/x86_64-unknown-linux-musl/release/mdview example/plan.md
 ```
 
+
+## Why each TypeScript file remains
+
+Under the three-stage port rule (user, 2026-10-15; `plans/rust-port-stage-3.md`) every tracked `.ts` file needs a live consumer. All run in verify's `bun test tests` step; each tests a TS instrument (or is a helper for those tests), so stays TypeScript.
+
+| File | Guards | Verify step or decision served | Why TypeScript |
+|---|---|---|---|
+| `tests/ansi.test.ts` | `scripts/measure/ansi.ts` scanner spans, strip, OSC-8 | `bun test tests` | tests a TS instrument |
+| `tests/overflow.test.ts` | `scripts/measure/overflow.ts` width gate | `bun test tests` | tests a TS instrument |
+| `tests/render-diff-cli.test.ts` | `render-diff.ts` CLI: policy/emoji axes, channels, non-vacuity | `bun test tests` | tests a TS instrument |
+| `tests/render-diff.test.ts` | differential harness internals | `bun test tests` | tests a TS instrument |
+| `tests/colour-axis.test.ts` | `colour-axis.ts` gates | `bun test tests` | tests a TS instrument |
+| `tests/sweep-colour-axis.test.ts` | sweep `--colour-mode` arg handling/printing | `bun test tests` | tests a TS instrument |
+| `tests/sweep-cli.test.ts` | `sweep.ts` arg parsing | `bun test tests` | tests a TS instrument |
+| `tests/sweep-manifest.test.ts` | sweep manifest/symlink membership | `bun test tests` | tests a TS instrument |
+| `tests/gate-corpus.test.ts` | the bundled gate corpus manifest | `bun test tests` | tests a TS instrument |
+| `tests/detectors.test.ts` | `scripts/measure/detectors.ts` | `bun test tests` | tests a TS instrument |
+| `tests/scripts-acyclic.test.ts` | `scripts/` import DAG stays acyclic | `bun test tests` | tests a TS instrument |
+| `tests/containment.test.ts` | publication containment guard | `bun test tests` | tests a TS instrument |
+| `tests/helpers/containment.ts` | containment guard logic | imported by `containment.test.ts`, `gen-licenses.ts`, `render-diff.ts`, `revision.ts` | TS ruling |
+| `tests/helpers/osc8.ts` | OSC-8 fixture bytes | imported by ansi/detectors/colour-axis tests | tests a TS instrument |
+| `tests/helpers/render.ts` | one render via the built binary | imported by `render-diff`, `overflow` and `detectors` tests | tests a TS instrument |

@@ -872,3 +872,31 @@ Extraction removed the parent, so there is no longer a second resolution to get 
 but the failure mode is worth knowing, because it is silent and looks like a real
 measurement.
 
+
+## Why each TypeScript file remains
+
+Under the three-stage port rule (user, 2026-10-15; `plans/rust-port-stage-3.md`) every tracked `.ts` file needs a live consumer; "TS ruling" = the user's 2026-10-12 decision that instruments stay TypeScript.
+
+| File | Guards / produces | Verify step or decision served | Why TypeScript |
+|---|---|---|---|
+| `scripts/verify.ts` | the fail-fast gate chain | `bun run verify` itself | TS ruling |
+| `scripts/sweep.ts` | sweep CLI | `bun run sweep` (three verify steps) | TS ruling |
+| `scripts/corpus.ts` | corpus discovery/evaluation library | imported by `sweep.ts`, `emoji-audit.ts`, `render-diff.ts` | TS ruling |
+| `scripts/colour-axis.ts` | the three exact colour gates | `sweep -- --colour-mode both` (via `sweep.ts`) | TS ruling |
+| `scripts/sweep-options.ts` | shared width grammar | imported by `sweep.ts`, `render-diff.ts` | TS ruling |
+| `scripts/render-diff.ts` | Rust-vs-Rust render differential CLI | `render-diff.ts --rev-a rust:HEAD --rev-b rust:.` | TS ruling |
+| `scripts/diff-classify.ts` | differential record/diff/classify | imported by `render-diff.ts` | TS ruling |
+| `scripts/revision.ts` | builds/serves a revision via `__parity serve` | imported by `render-diff.ts`, `corpus.ts` | TS ruling |
+| `scripts/hash.ts` | shared hash leaf | imported by `diff-classify.ts`, `colour-axis.ts` | TS ruling |
+| `scripts/emoji-audit.ts` | re-runnable shortcode audit | evidence for the `emoji: false` decision (kept by `plans/retire-ts-parity-residue.md`) | TS ruling |
+| `scripts/gen-licenses.ts` | `THIRD-PARTY-LICENSES.txt` | `gen-licenses.ts --check` | TS ruling |
+| `scripts/gen-emoji-table.ts` | `crates/mdview/src/emoji_data.rs` | `gen-emoji-table.ts --check` | pins `node-emoji` input |
+| `scripts/gen-hljs-map.ts` | `crates/mdview/src/hljs_map.rs` | `gen-hljs-map.ts --check` | pins `highlight.js` input |
+| `scripts/gen-width-tables.ts` | `crates/mdview/src/width/tables.rs` | `gen-width-tables.ts --check` | pins `get-east-asian-width` / `string-width` inputs |
+| `scripts/measure/ansi.ts` | terminal-sequence scanner | imported by `colour-axis.ts`, `width.ts`, `list-lines.ts` | TS ruling |
+| `scripts/measure/config.ts` | corpus-manifest resolution | imported by `sweep.ts`, `corpus.ts` | TS ruling |
+| `scripts/measure/detectors.ts` | list/table defect detectors | imported by `corpus.ts`, `render-diff.ts` (sweep + differential) | TS ruling; uses `marked` |
+| `scripts/measure/frontmatter.ts` | frontmatter split | imported by `detectors.ts`, `revision.ts` | TS ruling |
+| `scripts/measure/list-lines.ts` | rendered-line primitives | imported by `detectors.ts`, `corpus.ts` | TS ruling |
+| `scripts/measure/overflow.ts` | the width gate | imported by `corpus.ts`, `render-diff.ts` | TS ruling |
+| `scripts/measure/width.ts` | the width `Measure` | imported by sweep, colour axis, differential | TS ruling; uses `string-width` |
