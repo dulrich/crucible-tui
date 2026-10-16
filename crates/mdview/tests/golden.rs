@@ -1,7 +1,6 @@
-//! The golden-file loader (WP-1 of `plans/mdview-rust-port.md`): every file under
-//! `tests/golden/` is JSONL with a header line recording the TS sha it was captured from.
-//! Later work packages replay these records through `mdview::render`; WP-1 only proves the
-//! files load and are well-formed.
+//! The golden files: `tests/golden/render.jsonl` is a Rust-renderer snapshot (re-baselined by
+//! WP-1 of `plans/rust-port-stage-3.md`), JSONL with a provenance header line. The replay is
+//! exact; `regenerate_render_golden` (ignored by default) is the only way to re-capture it.
 
 use std::path::{Path, PathBuf};
 
@@ -42,32 +41,37 @@ fn golden_dir() -> PathBuf {
 }
 
 #[test]
-fn every_golden_file_loads_with_a_ts_sha_header() {
+fn the_golden_set_is_render_jsonl_with_a_rust_provenance_header() {
     let mut files: Vec<PathBuf> = std::fs::read_dir(golden_dir())
         .expect("tests/golden exists")
         .map(|e| e.expect("dir entry").path())
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
         .collect();
     files.sort();
-    assert!(
-        files.len() >= 2,
-        "expected render.jsonl and parity-tables.jsonl, found {files:?}"
+    assert_eq!(
+        files,
+        vec![golden_dir().join("render.jsonl")],
+        "the golden set is exactly render.jsonl"
     );
-    for path in files {
-        let golden = load_golden(&path).unwrap_or_else(|e| panic!("{e}"));
-        let sha = golden
-            .header
-            .get("tsSha")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        assert_eq!(
-            sha.len(),
-            40,
-            "{}: header tsSha must be a full git sha",
-            path.display()
-        );
-        assert!(!golden.records.is_empty(), "{}: no records", path.display());
-    }
+    let golden = load_golden(&files[0]).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        golden.header["engine"], "rust",
+        "header engine must be rust"
+    );
+    let sha = golden.header["capturedAt"].as_str().unwrap_or("");
+    assert!(
+        sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()),
+        "header capturedAt must be a full git sha, got {sha:?}"
+    );
+    assert_eq!(
+        golden.header["records"].as_u64(),
+        Some(golden.records.len() as u64),
+        "header records must equal the record count"
+    );
+    assert!(
+        golden.header["protocol"].is_string(),
+        "header protocol missing"
+    );
 }
 
 #[test]
@@ -93,91 +97,34 @@ fn a_malformed_golden_line_is_an_error_not_a_skip() {
     let dir = std::env::temp_dir().join(format!("mdview-golden-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join("bad.jsonl");
-    std::fs::write(&path, "{\"header\":{\"tsSha\":\"x\"}}\n{not json\n").expect("write");
+    std::fs::write(&path, "{\"header\":{\"engine\":\"rust\"}}\n{not json\n").expect("write");
     assert!(load_golden(&path).is_err());
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
-/// FNV-1a 64 over the source bytes, as 16 hex digits: the allowlist's key. (No hash crate is
-/// pinned; this is an identifier, not a security boundary.)
-fn source_hash(source: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in source.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{h:016x}")
-}
-
-/// `golden-allowlist.txt`: `<fnv64 source hash> <registry id> <note>`; `#` comments and
-/// blank lines ignored.
-fn load_allowlist() -> std::collections::HashMap<String, String> {
-    let text = std::fs::read_to_string(golden_dir().join("golden-allowlist.txt"))
-        .expect("tests/golden/golden-allowlist.txt exists");
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| {
-            let mut parts = l.splitn(3, ' ');
-            let hash = parts.next().unwrap_or_default().to_owned();
-            let id = parts.next().unwrap_or_default().to_owned();
-            assert!(
-                !id.is_empty(),
-                "allowlist line names no registry entry: {l}"
-            );
-            (hash, id)
-        })
-        .collect()
-}
-
-/// D-C (WP-6a): colour-on fenced output is judged with SGR stripped. Same line count; every
-/// line outside a code range byte-identical; every line inside one equal once SGR is stripped.
-fn dc_equal(want: &str, got: &str, ranges: &[(usize, usize)]) -> bool {
-    let (w, g): (Vec<&str>, Vec<&str>) = (want.split('\n').collect(), got.split('\n').collect());
-    w.len() == g.len()
-        && w.iter().zip(&g).enumerate().all(|(i, (a, b))| {
-            a == b
-                || (ranges.iter().any(|&(s, e)| (s..=e).contains(&(i + 1)))
-                    && mdview::ansi::strip_sequences(a) == mdview::ansi::strip_sequences(b))
-        })
-}
-
-/// WP-3's golden replay: every `render.jsonl` record either matches `text` and `codeRanges`
-/// exactly or is allowlisted by source hash
-/// against a named registry entry. Nothing is skipped silently.
+/// The golden replay: every `render.jsonl` record must match `text` and `codeRanges` exactly.
+/// No relaxation, no allowlist, nothing skipped.
 #[test]
 fn golden_render_replay() {
     let golden = load_golden(&golden_dir().join("render.jsonl")).unwrap_or_else(|e| panic!("{e}"));
-    let allowlist = load_allowlist();
     let mut matched = 0usize;
-    let mut dc_relaxed = 0usize;
-    let mut allowlisted = 0usize;
-    let mut used = std::collections::HashSet::new();
     let mut failures = Vec::new();
-    for record in &golden.records {
+    for (i, record) in golden.records.iter().enumerate() {
         let source = record["source"].as_str().expect("source");
         let options = mdview::parity::parse_options(record)
             .unwrap_or_else(|e| panic!("malformed golden record: {e}: {record}"));
-        let hash = source_hash(source);
+        let line = i + 2;
         match mdview::render::render(source, &options) {
-            Err(e) => failures.push(format!("{hash} error {e}")),
+            Err(e) => failures.push(format!("line {line} error {e}")),
             Ok(out) => {
                 let ranges: Vec<(usize, usize)> =
                     serde_json::from_value(record["codeRanges"].clone()).expect("codeRanges");
                 let want = record["text"].as_str().unwrap_or_default();
                 if out.text == want && out.code_ranges == ranges {
                     matched += 1;
-                } else if options.policy.sgr == mdview::render::Sgr::Full
-                    && out.code_ranges == ranges
-                    && dc_equal(want, &out.text, &ranges)
-                {
-                    dc_relaxed += 1;
-                } else if allowlist.contains_key(&hash) {
-                    allowlisted += 1;
-                    used.insert(hash);
                 } else {
                     failures.push(format!(
-                        "{hash} width={} {:?}\n  want {want:?} {ranges:?}\n  got  {:?} {:?}",
+                        "line {line} width={} {:?}\n  want {want:?} {ranges:?}\n  got  {:?} {:?}",
                         options.width,
                         source.chars().take(160).collect::<String>(),
                         out.text,
@@ -188,14 +135,9 @@ fn golden_render_replay() {
         }
     }
     println!(
-        "golden replay: records={} matched={matched} dc-relaxed={dc_relaxed} allowlisted={allowlisted} failed={}",
+        "golden replay: records={} matched={matched} failed={}",
         golden.records.len(),
         failures.len()
-    );
-    let stale: Vec<&String> = allowlist.keys().filter(|h| !used.contains(*h)).collect();
-    assert!(
-        stale.is_empty(),
-        "allowlist entries matched nothing: {stale:?}"
     );
     assert!(matched > 0, "golden replay matched 0 records");
     assert!(
@@ -204,4 +146,51 @@ fn golden_render_replay() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// Re-capture `render.jsonl` from the current renderer. Never runs under default `cargo test`;
+/// run it deliberately (see `tests/golden/README.md`) -- a re-capture is a reviewed behaviour
+/// change. Each record's `source` and option fields are kept byte-for-byte (the line prefix up
+/// to `,"text":`); only `text` and `codeRanges` are re-rendered. The header records the commit
+/// the tree was captured at.
+#[test]
+#[ignore = "rewrites tests/golden/render.jsonl; run deliberately"]
+fn regenerate_render_golden() {
+    let path = golden_dir().join("render.jsonl");
+    let old = std::fs::read_to_string(&path).expect("render.jsonl");
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("git rev-parse");
+    let sha = String::from_utf8(sha.stdout)
+        .expect("utf8")
+        .trim()
+        .to_owned();
+    assert_eq!(sha.len(), 40, "git rev-parse HEAD gave {sha:?}");
+    let mut body = String::new();
+    let mut count = 0usize;
+    for line in old.lines().skip(1).filter(|l| !l.is_empty()) {
+        let record: Value = serde_json::from_str(line).expect("record");
+        let source = record["source"].as_str().expect("source");
+        let options = mdview::parity::parse_options(&record).expect("options");
+        let out = mdview::render::render(source, &options).expect("render");
+        let cut = line.find(",\"text\":").expect("record has text");
+        body.push_str(&line[..cut]);
+        body.push_str(",\"text\":");
+        body.push_str(&serde_json::to_string(&out.text).expect("text"));
+        body.push_str(",\"codeRanges\":");
+        body.push_str(&serde_json::to_string(&out.code_ranges).expect("ranges"));
+        body.push_str("}\n");
+        count += 1;
+    }
+    let header = serde_json::json!({"header": {
+        "kind": "render",
+        "engine": "rust",
+        "capturedAt": sha,
+        "records": count,
+        "protocol": "one record per line: {source, width, tier, ambiguous, emoji, policy, text, codeRanges}; text and codeRanges are mdview::render::render output"
+    }});
+    std::fs::write(&path, format!("{header}\n{body}")).expect("write render.jsonl");
+    println!("regenerated {count} records at {sha}");
 }
