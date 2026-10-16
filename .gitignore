@@ -43,7 +43,6 @@ GEMINI.local.md
 .DS_Store
 
 # --- project-specific ---
-# dist/ (the bun build --compile output) is covered by the lang-bun block above.
 runs/
 # target/ is the Cargo workspace build output (jsonedit).
 target/
