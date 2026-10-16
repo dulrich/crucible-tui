@@ -158,6 +158,17 @@ describe("the runs/ exemption is exactly that narrow (WP-12d)", () => {
     }
   });
 
+  test("a runs/ citation is the repo's own even in a checkout with no runs/ directory", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-runs-absent-"));
+    try {
+      await mkdir(join(dir, "node_modules"), { recursive: true });
+      await writeFile(join(dir, "README.md"), "see runs/dispatch/some-wp-report.md\n");
+      expect(scanTree(dir, buildContext(dir))).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("collectFiles never descends into a top-level runs/ at all", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mdview-runs-collect-"));
     try {
