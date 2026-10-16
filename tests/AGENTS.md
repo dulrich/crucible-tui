@@ -87,7 +87,7 @@ rule describes what this repo's *own* content looks like and flags everything el
 
 | Rule | Flags |
 |---|---|
-| `foreign-path` | a path-shaped citation whose first segment is not a directory this repo has, not an installed package (nor a listed former one — see below), and not the sanctioned fake root — i.e. a neighbour's internal layout |
+| `foreign-path` | a path-shaped citation whose first segment is not a directory this repo has (the strip set's control-plane directories, such as the gitignored `runs/`, count even where a checkout lacks them), not an installed package (nor a listed former one — see below), and not the sanctioned fake root — i.e. a neighbour's internal layout |
 | `home-path` | an absolute path under a home-like root naming any account but the sanctioned fake one — i.e. the machine's directory layout |
 | `neighbour-name` | a bare mention of a directory that actually sits around this checkout, read from the filesystem at run time and never written down — i.e. a name in prose, which is not path-shaped and which no path rule can see |
 

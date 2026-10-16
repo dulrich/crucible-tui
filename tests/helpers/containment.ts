@@ -303,6 +303,10 @@ function ownNames(root: string): Set<string> {
   for (const entry of readdirSync(root)) names.add(entry);
   // Conventional directories this repo may not have yet but owns the name of.
   for (const name of SKIP_DIRS) names.add(name);
+  // The control-plane directories in the publication strip set are this repo's own even
+  // where a checkout lacks them: `runs/` is gitignored, so a fresh clone or worktree has no
+  // `runs/` and every committed `runs/dispatch/…` citation used to read as foreign.
+  for (const name of EXEMPT_ROOT_DIRS) names.add(name);
   return names;
 }
 
