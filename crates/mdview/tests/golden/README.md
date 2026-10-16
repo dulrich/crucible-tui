@@ -1,10 +1,13 @@
-# Golden files — the TypeScript renderer's frozen output
+# Golden files — a Rust-renderer snapshot
 
-Captured from the TypeScript renderer by `scripts/golden-capture.ts` (WP-1 of `plans/mdview-rust-port.md`); `crates/mdview/tests/golden.rs` replays them against the Rust renderer, with `golden-allowlist.txt` naming each record a ratified divergence explains.
+`render.jsonl` is a snapshot of the Rust renderer's output: one record per line, `{source, width, tier, ambiguous, emoji, policy, text, codeRanges}`, under a header line recording `engine: "rust"`, `capturedAt` (the commit the tree was captured at) and the record count. `crates/mdview/tests/golden.rs` replays every record through `mdview::render::render` and requires exact `text` and `codeRanges` equality — no relaxation, no allowlist.
 
-| File | Captured from | Holds |
-|---|---|---|
-| `render.jsonl` | `d3889c5` (header `tsSha`; `srcDirty: true`, the WP-1 tree in flight) | one `renderDocumentDetailed` record per line: `{source, width, tier, ambiguous, emoji, policy, text, codeRanges}` |
-| `parity-tables.jsonl` | `d3889c5` (header `tsSha`) | the frozen marked-terminal visitor byte tables (`tests/helpers/{block,inline}-parity-golden.ts`), as `{suite, name, color, emoji, expected}` |
+Re-capture it deliberately, from the repository root:
 
-The TypeScript renderer, the capture script and the helper tables it read were deleted at WP-9; all of them are at `TS_BASELINE` = `c097c66`, the last commit carrying that renderer. These files can no longer be regenerated — they are a fixed record, and a change to one is a change to the record, not a re-capture.
+```bash
+cargo test -p mdview --locked --test golden -- --ignored regenerate_render_golden --nocapture
+```
+
+It keeps every record's `source` and option fields byte-for-byte and re-renders only `text` and `codeRanges`. Default `cargo test` never runs it. **A re-capture is a reviewed behaviour change, not a fix-up**: the diff of `render.jsonl` is the behaviour change, and it lands with the renderer change that caused it.
+
+History: the records were first captured from the TypeScript renderer at `d3889c5` (`TS_BASELINE` = `c097c66` is the last commit carrying that renderer); the TS-era allowlist, the SGR-stripped relaxation and the frozen visitor byte tables were retired when `plans/rust-port-stage-3.md` (WP-1) re-baselined the file on Rust.
