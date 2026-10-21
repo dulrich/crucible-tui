@@ -22,9 +22,9 @@
  * current checkout's own built binary (`mdviewBinary`), so both sides of a comparison are
  * measured by the same code.
  */
-import { mkdir, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, rm, stat, utimes } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { scan } from "./measure/ansi";
 import { findColumnZeroMarkers, findContinuationOverIndent, findListOrphans } from "./measure/detectors";
 import { findFirstOverflow } from "./measure/overflow";
@@ -381,11 +381,82 @@ async function cargoBuild(root: string, targetDir: string): Promise<void> {
   }
 }
 
+/** A `dir-*` cache entry unused for longer than this is removed at the start of the next dir build. */
+export const DIR_ENTRY_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** True when `child` is a direct child of `parent` (no separators, not `.`/`..`). */
+function isDirectChild(parent: string, child: string): boolean {
+  const rel = basename(child);
+  return rel !== "" && rel !== "." && rel !== ".." && resolve(dirname(child)) === resolve(parent);
+}
+
+/** `rm -rf` of `path` only when it is a real (non-symlink) entry; symlinks are skipped. */
+async function removeRealEntry(path: string): Promise<void> {
+  const info = await lstat(path).catch(() => null);
+  if (info === null || info.isSymbolicLink()) return;
+  await rm(path, { recursive: true, force: true });
+}
+
+/**
+ * Reduce a built sha entry `<shaRoot>` to `target/release/mdview`: remove `tree/` and everything
+ * under `target/` except that file. Does nothing when the binary is not a regular file. Never
+ * throws — a failure warns on stderr, because stripping is housekeeping and must not fail a render.
+ * `release/mdview` is a hardlink of `deps/mdview-<hash>`, so dropping `deps/` leaves it intact.
+ */
+export async function stripShaEntry(shaRoot: string): Promise<void> {
+  try {
+    const targetDir = join(shaRoot, "target");
+    const releaseDir = join(targetDir, "release");
+    const binary = join(releaseDir, "mdview");
+    const binInfo = await lstat(binary).catch(() => null);
+    if (binInfo === null || !binInfo.isFile()) return;
+    for (const dir of [targetDir, releaseDir]) {
+      const info = await lstat(dir).catch(() => null);
+      if (info === null || !info.isDirectory()) return;
+    }
+    await removeRealEntry(join(shaRoot, "tree"));
+    for (const name of await readdir(targetDir)) {
+      if (name !== "release") await removeRealEntry(join(targetDir, name));
+    }
+    for (const name of await readdir(releaseDir)) {
+      if (name !== "mdview") await removeRealEntry(join(releaseDir, name));
+    }
+  } catch (error) {
+    process.stderr.write(`render-diff: could not strip ${shaRoot}: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
+
+/**
+ * Remove `<cacheRoot>/dir-*` entries last used (mtime) more than `DIR_ENTRY_RETENTION_MS` before
+ * `nowMs`, except `dir-<keepKey>`. Only real direct-child directories with the `dir-` prefix are
+ * touched; sha entries and symlinks are never removed. Never throws.
+ */
+export async function pruneStaleDirEntries(cacheRoot: string, nowMs: number, keepKey: string): Promise<void> {
+  try {
+    const names = await readdir(cacheRoot).catch(() => [] as string[]);
+    for (const name of names) {
+      if (!name.startsWith("dir-") || name === `dir-${keepKey}`) continue;
+      const path = join(cacheRoot, name);
+      if (!isDirectChild(cacheRoot, path)) continue;
+      try {
+        const info = await lstat(path);
+        if (!info.isDirectory() || info.isSymbolicLink()) continue;
+        if (nowMs - info.mtimeMs > DIR_ENTRY_RETENTION_MS) await rm(path, { recursive: true, force: true });
+      } catch (error) {
+        process.stderr.write(`render-diff: could not prune ${path}: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    }
+  } catch (error) {
+    process.stderr.write(`render-diff: dir-cache retention failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
+
 /**
  * Build (or reuse) a release mdview for `spec`. A ref is exported into
  * `<cache>/<sha>/tree` and built into `<cache>/<sha>/target`, and the build is skipped when
- * that binary already exists — a sha's binary never changes. A directory is built in place
- * with `CARGO_TARGET_DIR=<cache>/dir-<path hash>/target`, every time (cargo is incremental).
+ * that binary already exists — a sha's binary never changes. After a successful build the entry is
+ * stripped to that binary alone (`stripShaEntry`). A directory is built in place
+ * with `CARGO_TARGET_DIR=<cache>/dir-<path hash>/target`, every time (cargo is incremental); unused `dir-*` entries are pruned (`pruneStaleDirEntries`).
  */
 export async function buildRustRevision(
   spec: string,
@@ -396,8 +467,12 @@ export async function buildRustRevision(
   const info = await stat(asPath).catch(() => null);
   if (info?.isDirectory()) {
     const key = new Bun.CryptoHasher("sha256").update(asPath).digest("hex").slice(0, 16);
-    const targetDir = join(cacheRoot, `dir-${key}`, "target");
+    const entryDir = join(cacheRoot, `dir-${key}`);
+    const targetDir = join(entryDir, "target");
+    await pruneStaleDirEntries(cacheRoot, Date.now(), key);
     await mkdir(targetDir, { recursive: true });
+    const used = new Date();
+    await utimes(entryDir, used, used).catch(() => undefined);
     await cargoBuild(asPath, targetDir);
     return { binary: join(targetDir, "release", "mdview"), label: `rust:dir:${asPath}` };
   }
@@ -414,6 +489,7 @@ export async function buildRustRevision(
   await mkdir(tree, { recursive: true });
   exportTree(spec, repoRoot, CARGO_TREE_PATHS, tree);
   await cargoBuild(tree, targetDir);
+  if ((await stat(binary).catch(() => null))?.isFile()) await stripShaEntry(shaRoot);
   return { binary, label };
 }
 
