@@ -16,6 +16,11 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as nodeEmoji from "node-emoji";
 
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log("usage: bun run scripts/gen-emoji-table.ts [--check]\n\nRegenerate the emoji table (writes), or with --check exit 1 if it is stale (writes nothing).");
+  process.exit(0);
+}
+
 const ROOT = join(import.meta.dir, "..");
 const OUT = join(ROOT, "crates/mdview/src/emoji_data.rs");
 const version = (JSON.parse(readFileSync(join(ROOT, "node_modules/node-emoji/package.json"), "utf8")) as {

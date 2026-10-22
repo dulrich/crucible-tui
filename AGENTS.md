@@ -142,6 +142,14 @@ bun run sweep -- --colour-mode both
 bun run test:security
 ```
 
+**`--help` gate (control plane, not part of `verify` — this repo publishes, so no private path may appear in tracked files and a public clone carries no checker):** run `cargo build --workspace` first (the checker probes the newer of `target/debug` and `target/release`), then
+
+```bash
+bun "$FLEET_ROOT/scripts/help-gate.mjs" .   # FLEET_ROOT = the fleet control-plane checkout
+```
+
+Every entrypoint answers a bare `--help` with usage on stdout and exit 0, no side effect (manifest `.help-gate.json`; the `scripts/*.ts` instruments that are not `package.json` scripts are listed there).
+
 That list is the explanation of what `verify` does, not a second thing to run by hand. Since WP-9 of `plans/mdview-rust-port.md`: the Bun build, its artifact smoke and the `TS_BASELINE` `src/cli.ts --check` self-smoke are gone with the TypeScript renderer, and so are the four TS-vs-Rust differentials (frontmatter census, table-allocator diff, lexer diff, CLI diff); `bun test` runs **after** `build:rust`, because the instruments' tests drive the built binary; and the render differential is Rust-vs-Rust, the working tree against `HEAD` over the T0 gate corpus, every combo class-A identical — no exemption; the divergence registry that once attributed TS-vs-Rust diffs is retired, and the last commit carrying `scripts/divergences.ts` is `a2ea0a1`, the parent of WP-1 of `plans/retire-ts-parity-residue.md`. License freshness runs in `--check` mode (renders to memory, never leaves the tree dirty — the default `bun run gen-licenses` still writes). The colour axis is three exact gates, no thresholds, over the fixed gate corpus — a colour decision may change which bytes a render emits, never which characters, and an undirected, piped render must emit no terminal sequence at all (`scripts/AGENTS.md`).
 
 **`verify` never runs `bun install`.** Local floats (`bun install`), CI freezes (`bun install --frozen-lockfile`), and that asymmetry is deliberate — installation stays a separate step, run once before `verify`, in both places.

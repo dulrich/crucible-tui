@@ -59,6 +59,11 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log("usage: bun run scripts/gen-licenses.ts [--check]\n\nRegenerate THIRD-PARTY-LICENSES.txt (writes), or with --check exit 1 if it is stale (writes nothing).");
+  process.exit(0);
+}
+
 const ROOT = join(import.meta.dir, "..");
 
 interface PackageInfo {
