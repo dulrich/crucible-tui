@@ -477,5 +477,9 @@ async function runCli(): Promise<void> {
 }
 
 if (import.meta.main) {
+  if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+    console.log("usage: bun run sweep [--corpus <name|all>] [--all] [--limit N] [--widths a,b,...] [--glyphs tier] [--detect] [--max-orphans N] [--max-over-indent N]\n\nRender whole corpora at several widths and report width defects; see the header comment of scripts/sweep.ts for every flag.");
+    process.exit(0);
+  }
   await runCli();
 }

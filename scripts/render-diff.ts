@@ -888,6 +888,10 @@ async function runCli(): Promise<void> {
 }
 
 if (import.meta.main) {
+  if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+    console.log("usage: bun run scripts/render-diff.ts [options]\n\nRender-differential harness (WP-1 of plans/marked-terminal-replacement.md); see the header comment of scripts/render-diff.ts for every flag.");
+    process.exit(0);
+  }
   try {
     await runCli();
   } catch (error) {

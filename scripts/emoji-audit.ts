@@ -306,6 +306,10 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
+  if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+    console.log("usage: MDVIEW_CORPUS_MANIFEST=/path/manifest.json bun run scripts/emoji-audit.ts [--all] [--limit N]\n\nAudit emoji shortcodes across the corpus (read-only); see the header comment for details.");
+    process.exit(0);
+  }
   main()
     .then(() => server?.close())
     .catch((error) => {

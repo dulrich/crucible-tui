@@ -27,6 +27,11 @@ import { join } from "node:path";
 // @ts-expect-error -- untyped private module of a locked transitive dependency
 import { isAmbiguous, isFullWidth, isWide } from "../node_modules/get-east-asian-width/lookup.js";
 
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log("usage: bun run scripts/gen-width-tables.ts [--check]\n\nRegenerate the width tables (writes), or with --check exit 1 if they are stale (writes nothing).");
+  process.exit(0);
+}
+
 const ROOT = join(import.meta.dir, "..");
 const OUT = join(ROOT, "crates/mdview/src/width/tables.rs");
 const EAW_VERSION = JSON.parse(

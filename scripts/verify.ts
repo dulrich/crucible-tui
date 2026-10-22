@@ -22,6 +22,11 @@
  * places.
  */
 
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log("usage: bun run verify\n\nRun the canonical verification chain (typecheck, lint, cargo gates, build, tests, freshness checks, sweeps, security scan), failing fast. Takes no arguments.");
+  process.exit(0);
+}
+
 interface StepResult {
   code: number;
 }

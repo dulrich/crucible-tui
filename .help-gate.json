@@ -1,0 +1,10 @@
+{
+  "entrypoints": [
+    { "path": "scripts/emoji-audit.ts", "invoke": ["bun", "./scripts/emoji-audit.ts"] },
+    { "path": "scripts/gen-emoji-table.ts", "invoke": ["bun", "./scripts/gen-emoji-table.ts"] },
+    { "path": "scripts/gen-hljs-map.ts", "invoke": ["bun", "./scripts/gen-hljs-map.ts"] },
+    { "path": "scripts/gen-width-tables.ts", "invoke": ["bun", "./scripts/gen-width-tables.ts"] },
+    { "path": "scripts/render-diff.ts", "invoke": ["bun", "./scripts/render-diff.ts"] }
+  ],
+  "exclude": []
+}

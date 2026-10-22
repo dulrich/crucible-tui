@@ -21,6 +21,11 @@ import hljs from "highlight.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log("usage: bun run scripts/gen-hljs-map.ts [--check]\n\nRegenerate the highlight.js language map (writes), or with --check exit 1 if it is stale (writes nothing).");
+  process.exit(0);
+}
+
 const ROOT = join(import.meta.dir, "..");
 const OUT = join(ROOT, "crates/mdview/src/hljs_map.rs");
 
