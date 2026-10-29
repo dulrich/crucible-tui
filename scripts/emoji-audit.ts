@@ -73,6 +73,8 @@ import { loadManifest, resolveCorpusFiles, resolveManifestSource, selectCorpusFi
 import { parseArgs } from "./sweep";
 import { resolve } from "node:path";
 import { mdviewBinary, POLICIES, spawnJsonlServer } from "./revision";
+// @ts-expect-error -- untyped fleet build-id helper
+import { handleBuildFlags } from "./build-id.mjs";
 
 /** Loose enough to catch every real node-emoji shortcode shape; false positives
  * (a timestamp like `:30:`, a Windows drive-adjacent path) are harmless because
@@ -310,6 +312,8 @@ if (import.meta.main) {
     console.log("usage: MDVIEW_CORPUS_MANIFEST=/path/manifest.json bun run scripts/emoji-audit.ts [--all] [--limit N]\n\nAudit emoji shortcodes across the corpus (read-only); see the header comment for details.");
     process.exit(0);
   }
+  const buildRc = handleBuildFlags(process.argv.slice(2), { path: import.meta.filename, name: "emoji-audit.ts" });
+  if (buildRc !== null) process.exit(buildRc);
   main()
     .then(() => server?.close())
     .catch((error) => {

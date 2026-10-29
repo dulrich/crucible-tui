@@ -22,10 +22,15 @@
  * places.
  */
 
+// @ts-expect-error -- untyped fleet build-id helper
+import { handleBuildFlags } from "./build-id.mjs";
+
 if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
   console.log("usage: bun run verify\n\nRun the canonical verification chain (typecheck, lint, cargo gates, build, tests, freshness checks, sweeps, security scan), failing fast. Takes no arguments.");
   process.exit(0);
 }
+const buildRc = handleBuildFlags(process.argv.slice(2), { path: import.meta.filename, name: "verify.ts" });
+if (buildRc !== null) process.exit(buildRc);
 
 interface StepResult {
   code: number;

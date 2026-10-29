@@ -30,6 +30,21 @@ fn fixture(name: &str) -> String {
 }
 
 #[test]
+fn build_and_version_print_the_build_id() {
+    let d = sandbox("build");
+    for flag in ["--build", "--version"] {
+        let out = mdview(&d, &[flag]);
+        assert_eq!(out.status.code(), Some(0));
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let id = text.strip_suffix('\n').expect("one line");
+        let hex = id.strip_suffix("-dirty").unwrap_or(id);
+        assert!(hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()) || id == "unknown");
+    }
+    let out = mdview(&d, &["--build", "--help"]);
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("usage: mdview"));
+}
+
+#[test]
 fn help_and_licenses_exit_zero() {
     let d = sandbox("help");
     let out = mdview(&d, &["--help"]);

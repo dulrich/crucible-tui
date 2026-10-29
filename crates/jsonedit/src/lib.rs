@@ -15,12 +15,16 @@ pub use validate::{Diagnostic, Dialect, validate};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Build id embedded by `build.rs` (fleet `--build` / `--version` contract).
+pub const BUILD_ID: &str = env!("FLEET_BUILD_ID");
+
 const USAGE: &str = "usage: jsonedit [--dialect json|jsonc|json5] [--indent tab|N] FILE\n       jsonedit --check [--dialect json|jsonc|json5] FILE\n       jsonedit --version | --help";
 
 /// Outcome of parsing the command line, kept pure for testing.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Version,
+    Build,
     Help,
     Check {
         file: String,
@@ -35,10 +39,15 @@ pub enum Command {
 }
 
 pub fn parse_args(args: &[String]) -> Command {
-    match args {
-        [a] if a == "--version" => return Command::Version,
-        [a] if a == "--help" || a == "-h" => return Command::Help,
-        _ => {}
+    // `--help` wins over `--build`/`--version` (fleet build/version gate); both answer before any file I/O.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Command::Help;
+    }
+    if args.iter().any(|a| a == "--build") {
+        return Command::Build;
+    }
+    if args.iter().any(|a| a == "--version") {
+        return Command::Version;
     }
     let (mut check, mut dialect, mut file, mut indent) = (false, None, None, None);
     let mut it = args.iter();
@@ -103,7 +112,11 @@ pub fn run_env(
 ) -> i32 {
     match parse_args(args) {
         Command::Version => {
-            let _ = writeln!(out, "jsonedit {VERSION}");
+            let _ = writeln!(out, "jsonedit {VERSION} ({BUILD_ID})");
+            0
+        }
+        Command::Build => {
+            let _ = writeln!(out, "{BUILD_ID}");
             0
         }
         Command::Help => {
@@ -168,8 +181,18 @@ mod tests {
     fn version_and_help_exit_zero() {
         assert_eq!(
             call(&["--version"]),
-            (0, format!("jsonedit {VERSION}\n"), String::new())
+            (
+                0,
+                format!("jsonedit {VERSION} ({BUILD_ID})\n"),
+                String::new()
+            )
         );
+        assert_eq!(
+            call(&["--build"]),
+            (0, format!("{BUILD_ID}\n"), String::new())
+        );
+        assert_eq!(call(&["--build", "--help"]).0, 0);
+        assert!(call(&["--build", "--help"]).1.contains("usage:"));
         let (code, out, _) = call(&["--help"]);
         assert_eq!(code, 0);
         assert!(out.contains("usage:"));
@@ -179,7 +202,6 @@ mod tests {
     fn anything_else_is_usage_exit_two() {
         for args in [
             &[][..],
-            &["--version", "x"][..],
             &["--check", "--indent", "2", "x"][..],
             &["--indent", "3x", "x"][..],
         ] {
