@@ -20,11 +20,15 @@
 import hljs from "highlight.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+// @ts-expect-error -- untyped fleet build-id helper
+import { handleBuildFlags } from "./build-id.mjs";
 
 if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
   console.log("usage: bun run scripts/gen-hljs-map.ts [--check]\n\nRegenerate the highlight.js language map (writes), or with --check exit 1 if it is stale (writes nothing).");
   process.exit(0);
 }
+const buildRc = handleBuildFlags(process.argv.slice(2), { path: import.meta.filename, name: "gen-hljs-map.ts" });
+if (buildRc !== null) process.exit(buildRc);
 
 const ROOT = join(import.meta.dir, "..");
 const OUT = join(ROOT, "crates/mdview/src/hljs_map.rs");

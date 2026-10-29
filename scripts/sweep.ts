@@ -74,6 +74,8 @@ import {
 // corpus` cycle. Both live in a leaf both CLIs import downward since WP-R1
 // (`plans/post-refactor-code-quality-remediation.md`); see `scripts/sweep-options.ts`.
 import { DEFAULT_WIDTHS, parseWidths } from "./sweep-options";
+// @ts-expect-error -- untyped fleet build-id helper
+import { handleBuildFlags } from "./build-id.mjs";
 
 
 export function parseArgs(argv: string[]): { corpus: string; options: SweepOptions } {
@@ -481,5 +483,7 @@ if (import.meta.main) {
     console.log("usage: bun run sweep [--corpus <name|all>] [--all] [--limit N] [--widths a,b,...] [--glyphs tier] [--detect] [--max-orphans N] [--max-over-indent N]\n\nRender whole corpora at several widths and report width defects; see the header comment of scripts/sweep.ts for every flag.");
     process.exit(0);
   }
+  const buildRc = handleBuildFlags(process.argv.slice(2), { path: import.meta.filename, name: "sweep.ts" });
+  if (buildRc !== null) process.exit(buildRc);
   await runCli();
 }

@@ -134,6 +134,8 @@ import {
   type RevisionHandle,
 } from "./revision";
 import { DEFAULT_WIDTHS, parseWidths } from "./sweep-options";
+// @ts-expect-error -- untyped fleet build-id helper
+import { handleBuildFlags } from "./build-id.mjs";
 
 // --- Baseline artifact ------------------------------------------------------------
 
@@ -892,6 +894,8 @@ if (import.meta.main) {
     console.log("usage: bun run scripts/render-diff.ts [options]\n\nRender-differential harness (WP-1 of plans/marked-terminal-replacement.md); see the header comment of scripts/render-diff.ts for every flag.");
     process.exit(0);
   }
+  const buildRc = handleBuildFlags(process.argv.slice(2), { path: import.meta.filename, name: "render-diff.ts" });
+  if (buildRc !== null) process.exit(buildRc);
   try {
     await runCli();
   } catch (error) {
