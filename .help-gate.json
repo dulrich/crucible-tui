@@ -1,5 +1,4 @@
 {
-  "build-flags": "enforce",
   "entrypoints": [
     { "path": "crates/jsonedit/src/main.rs", "version": "semver" },
     { "path": "scripts/emoji-audit.ts", "invoke": ["bun", "./scripts/emoji-audit.ts"] },
