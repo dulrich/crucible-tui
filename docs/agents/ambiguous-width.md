@@ -100,6 +100,8 @@ gnome-terminal reports the *generic* `xterm-256color`, the value plain xterm, al
 terminator also claim. `VTE_VERSION` is what separates it. That is the real justification; the
 multiplexer-rewrite story was speculation that happened to be wrong.
 
+**Host roster since 2026-11 (the survey above is the 2026-07-28 record, kept as measured).** The dev system's default terminal is now **foot** (`TERM=foot`, `COLORTERM=truecolor`, no `TERM_PROGRAM`, no `VTE_VERSION`) — keyed by `TERM` like the others, live-probed **narrow** 2026-11-01. Bare ghostty (no multiplexer) was live-probed **narrow** 2026-10-31, closing the survey's one "not run" gap. **kitty, alacritty and zellij are no longer installed**, so the kitty and zellij rows, and the zellij paragraph below, are history that cannot be re-run here; still installed are foot, ghostty, urxvt, gnome-terminal, mlterm, tmux and screen. gnome-terminal is the only VTE terminal left and the only host that can re-demonstrate the generic-`TERM` case and `VTE_VERSION` surviving tmux. **Plain xterm is not a substitute for it**: xterm sets no `VTE_VERSION` (its `XTERM_VERSION` is not in the key), so it would key as `term=xterm-256color|…|vte=|…` (or `term=xterm` under the default `termName`) — it shows the generic name *without* a separating field, i.e. the collision side, not the separation. Any other VTE terminal (Ptyxis, Tilix, xfce4-terminal) would substitute.
+
 **Under tmux the key is dominated by tmux's own fields, and that is correct rather than a
 collision.** The reason it is correct is **not** that the host fields vanish — it is that **tmux
 answers DSR from its own grid model rather than relaying to the host**, measured by running the
@@ -293,6 +295,4 @@ else entirely.
 
 The probe's *arithmetic*, cleanup, timeout, interrupt and cache behaviour are covered by
 `tests/width.test.ts` against a scripted terminal double, and end-to-end against a scripted pty.
-**What no test here can establish is what a real terminal answers.** The user runs urxvt and
-ghostty-inside-zellij; run `mdview probe` in each and read the `ambiguous width` line. Nothing in
-this repo may claim those pass.
+**What no test here can establish is what a real terminal answers.** The user's default terminal is foot (since 2026-11; urxvt and ghostty+zellij were the drivers at the original sign-off, and zellij is gone); run `mdview probe --refresh` in it and read the `ambiguous width` line. Nothing in this repo may claim a terminal passes that the user has not probed.
