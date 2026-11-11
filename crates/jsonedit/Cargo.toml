@@ -1,6 +1,6 @@
 [package]
 name = "jsonedit"
-version = "0.1.0"
+version.workspace = true
 description = "Validate and edit JSON, JSONC and JSON5 files without losing their bytes"
 edition.workspace = true
 license.workspace = true

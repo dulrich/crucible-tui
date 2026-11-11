@@ -1,6 +1,6 @@
 [package]
 name = "mdview"
-version = "0.1.0"
+version.workspace = true
 description = "Terminal markdown viewer: lossless wide tables, list reflow, wiki-links"
 edition.workspace = true
 license.workspace = true

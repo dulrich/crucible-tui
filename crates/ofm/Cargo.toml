@@ -1,6 +1,6 @@
 [package]
 name = "ofm"
-version = "0.1.0"
+version.workspace = true
 description = "Pure Obsidian-Flavored-Markdown parse primitives: frontmatter, wiki-link grammar, comrak base options"
 edition.workspace = true
 license.workspace = true
