@@ -36,6 +36,15 @@ fn main() {
     syntect::dumps::dump_to_uncompressed_file(&set, out).expect("write syntaxes.bin");
 }
 
+/// Pathspecs every build-id git call uses, relative to the tool root (same literal text in every language).
+const BUILD_ID_EXCLUDES: [&str; 5] = [
+    ".",
+    ":(exclude)plans",
+    ":(exclude)references",
+    ":(exclude,glob)**/FEEDBACK.md",
+    ":(exclude,glob)**/INITIATIVE.md",
+];
+
 // Fleet build-id helper, merged from the fleet build-id.rs template
 // (`fn main` renamed `emit_build_id`; the shared `use std::path` line is the one above).
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
@@ -75,13 +84,33 @@ fn build_id(dir: &Path) -> String {
             _ => break,
         }
     }
-    let tool_s = tool.to_string_lossy().into_owned();
-    let sha = git(&top, &["log", "-1", "--format=%H", "--", &tool_s]).map(|s| s.trim().to_string()).unwrap_or_default();
+    let sha = git(
+        &tool,
+        &[
+            &["log", "-1", "--format=%H", "--"][..],
+            &BUILD_ID_EXCLUDES[..],
+        ]
+        .concat(),
+    )
+    .map(|s| s.trim().to_string())
+    .unwrap_or_default();
     if sha.is_empty() {
         return "unknown".into();
     }
-    let dirty = git(&top, &["status", "--porcelain", "--untracked-files=no", "--", &tool_s]).is_some_and(|s| !s.trim().is_empty());
-    if dirty { format!("{sha}-dirty") } else { sha }
+    let dirty = git(
+        &tool,
+        &[
+            &["status", "--porcelain", "--untracked-files=no", "--"][..],
+            &BUILD_ID_EXCLUDES[..],
+        ]
+        .concat(),
+    )
+    .is_some_and(|s| !s.trim().is_empty());
+    if dirty {
+        format!("{sha}-dirty")
+    } else {
+        sha
+    }
 }
 
 #[rustfmt::skip]
