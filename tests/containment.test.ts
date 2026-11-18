@@ -183,6 +183,20 @@ describe("the runs/ exemption is exactly that narrow (WP-12d)", () => {
     }
   });
 
+  test("collectFiles skips gitignored files (an editor swap) and keeps untracked ones", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdview-ignored-collect-"));
+    try {
+      execFileSync("git", ["init", "-q", dir]);
+      await writeFile(join(dir, ".gitignore"), "*.swp\n");
+      await writeFile(join(dir, ".README.md.swp"), "b0VIM 9.1\n");
+      await writeFile(join(dir, "untracked.md"), "# not yet added\n");
+      const rel = collectFiles(dir).map((f) => relative(dir, f)).sort();
+      expect(rel).toEqual([".gitignore", "untracked.md"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("collectFiles skips a top-level FEEDBACK.md and nothing else by that name", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mdview-feedback-collect-"));
     try {

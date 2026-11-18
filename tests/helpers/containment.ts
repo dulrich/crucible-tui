@@ -1,6 +1,6 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 /**
  * Containment rules for a repo that is published publicly but developed next to
@@ -554,7 +554,34 @@ export function collectFiles(root: string): string[] {
     }
   };
   recurse(root, "");
-  return files;
+  const ignored = gitIgnored(root, files);
+  return ignored.size === 0 ? files : files.filter((f) => !ignored.has(f));
+}
+
+/**
+ * The subset of `files` (absolute, under `root`) that git ignores in `root`.
+ *
+ * A gitignored file can never reach a public clone, so containment does not scan it: an
+ * editor's orphaned swap file (`.README.md.swp`, which embeds the absolute path of the
+ * file it shadows) used to fail the scan on content no commit could carry (user,
+ * 2026-11-18). Outside a git work tree (the tests' scratch dirs) nothing is ignored.
+ */
+function gitIgnored(root: string, files: readonly string[]): Set<string> {
+  if (files.length === 0) return new Set();
+  const rels = files.map((f) => relative(root, f));
+  const res = spawnSync("git", ["-C", root, "check-ignore", "--stdin", "-z"], {
+    input: `${rels.join("\0")}\0`,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  // 0: some ignored; 1: none ignored; anything else (128: not a work tree): ignore nothing.
+  if (res.status !== 0) return new Set();
+  return new Set(
+    res.stdout
+      .split("\0")
+      .filter((p) => p !== "")
+      .map((p) => resolve(root, p)),
+  );
 }
 
 export interface FileFinding extends ContainmentFinding {
