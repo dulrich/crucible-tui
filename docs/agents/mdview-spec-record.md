@@ -268,7 +268,7 @@ granted parity class.
 
 - **The `extractCodeRanges` narrowing (field note F6 of
   `runs/dispatch/mt-wp-5-list-item-layout-brief.md:164` — dispatch-brief numbering, **not** the
-  F6 of `reviews/2026-07-30-tn-code-review.md`, which is the unrelated, still-Open file-size
+  F6 of the 2026-07-30 TN code review, which is the unrelated, still-Open file-size
   finding) is implemented, measured, and deliberately not applied.** The narrowing — start on
   the next line when the opening marker
   has non-whitespace before it, end on the previous one when the closing marker has
